@@ -36,7 +36,7 @@ describe('Quota (e2e)', () => {
     });
   });
 
-  it('upgrade marks device PRO', async () => {
+  it('upgrade marks device PRO in client-trust mode (default in tests)', async () => {
     const did = uniqueDeviceId();
     const res = await request(app.getHttpServer())
       .post('/quota/upgrade')
@@ -53,5 +53,25 @@ describe('Quota (e2e)', () => {
       .set('x-device-id', did)
       .send({ platform: 'web', receipt: 'x' })
       .expect(400);
+  });
+
+  it('upgrade rejects when IAP server-mode is on but Apple creds are missing', async () => {
+    // Force server mode without creds for this single test, then restore.
+    const prevMode = process.env.IAP_VALIDATION_MODE;
+    process.env.IAP_VALIDATION_MODE = 'server';
+    const isolated = await createTestApp();
+    try {
+      const did = uniqueDeviceId();
+      const res = await request(isolated.getHttpServer())
+        .post('/quota/upgrade')
+        .set('x-device-id', did)
+        .send({ platform: 'ios', receipt: 'definitely-fake' })
+        .expect(400);
+      expect(res.body.message).toMatch(/APPLE_SHARED_SECRET|APPLE_/);
+    } finally {
+      await isolated.close();
+      if (prevMode === undefined) delete process.env.IAP_VALIDATION_MODE;
+      else process.env.IAP_VALIDATION_MODE = prevMode;
+    }
   });
 });

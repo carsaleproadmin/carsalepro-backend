@@ -20,6 +20,22 @@ export interface AppConfig {
   nhtsa: {
     baseUrl: string;
   };
+  iap: {
+    mode: 'client-trust' | 'server';
+    bundleId: string;
+    apple: {
+      sharedSecret: string;
+      issuerId: string;
+      keyId: string;
+      privateKey: string;
+      useSandboxFirst: boolean;
+    };
+    google: {
+      packageName: string;
+      serviceAccountJson: string;
+      subscriptionProductIds: string[];
+    };
+  };
   sentry: {
     dsn?: string;
     environment: string;
@@ -47,6 +63,25 @@ export default (): AppConfig => ({
   },
   nhtsa: {
     baseUrl: process.env.NHTSA_BASE_URL ?? 'https://vpic.nhtsa.dot.gov/api',
+  },
+  iap: {
+    mode: (process.env.IAP_VALIDATION_MODE as 'client-trust' | 'server') || 'client-trust',
+    bundleId: process.env.IAP_BUNDLE_ID ?? 'com.carsalepro.app',
+    apple: {
+      sharedSecret: process.env.APPLE_SHARED_SECRET ?? '',
+      issuerId: process.env.APPLE_ISSUER_ID ?? '',
+      keyId: process.env.APPLE_KEY_ID ?? '',
+      privateKey: (process.env.APPLE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
+      useSandboxFirst: (process.env.APPLE_USE_SANDBOX_FIRST ?? 'false') === 'true',
+    },
+    google: {
+      packageName: process.env.GOOGLE_PLAY_PACKAGE_NAME ?? process.env.IAP_BUNDLE_ID ?? 'com.carsalepro.app',
+      serviceAccountJson: process.env.GOOGLE_PLAY_SA_JSON ?? '',
+      subscriptionProductIds: (process.env.GOOGLE_PLAY_SUBSCRIPTION_IDS ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    },
   },
   sentry: {
     dsn: process.env.SENTRY_DSN || undefined,

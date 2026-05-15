@@ -28,12 +28,14 @@ export class QuotaController {
   @ApiOperation({
     summary: 'Mark device as PRO after IAP success',
     description:
-      'MVP: trusts client-side IAP validation. Persists isPro=true and platform. ' +
-      'Phase 2 will perform server-side receipt validation against App Store / Play.',
+      'When `IAP_VALIDATION_MODE=server` (Render env), the receipt is validated against ' +
+      "Apple's App Store servers or Google Play Developer API before the device is upgraded. " +
+      'If validation fails the request returns 400 with the provider error code. ' +
+      'In `client-trust` mode the call upgrades the device unconditionally (used in MVP launch).',
   })
   @ApiOkResponse({ type: QuotaDto })
   async upgrade(@DeviceId() deviceId: string, @Body() dto: UpgradeDto): Promise<QuotaDto> {
-    const quota = await this.quotaService.markPro(deviceId, dto.platform, dto.receipt);
+    const quota = await this.quotaService.markPro(deviceId, dto);
     return this.quotaService.toDto(quota);
   }
 }

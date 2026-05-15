@@ -1,16 +1,23 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DeviceQuota } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
 import { PrismaService } from '../prisma/prisma.service';
 import { QuotaDto } from './dto/quota.dto';
+import { UpgradeDto } from './dto/upgrade.dto';
+import { IapValidatorService } from './iap/iap-validator.service';
+import { IapValidationError } from './iap/iap.types';
 
 @Injectable()
 export class QuotaService {
   private readonly logger = new Logger(QuotaService.name);
   private readonly defaultLimit: number;
 
-  constructor(private readonly prisma: PrismaService, config: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly prisma: PrismaService,
+    config: ConfigService<AppConfig, true>,
+    private readonly iap: IapValidatorService,
+  ) {
     this.defaultLimit = config.get('quota', { infer: true }).freeReportsLimit;
   }
 
@@ -36,22 +43,49 @@ export class QuotaService {
     };
   }
 
-  async markPro(deviceId: string, platform: 'ios' | 'android', receipt: string): Promise<DeviceQuota> {
-    this.logger.log(`PRO activation requested for device ${this.mask(deviceId)} via ${platform}`);
-    // MVP: trust client. Phase 2: validate receipt via App Store Server API / Play Developer API.
-    void receipt; // referenced to satisfy linter; persistence intentionally omitted (PII / receipt size)
+  async markPro(deviceId: string, dto: UpgradeDto): Promise<DeviceQuota> {
+    this.logger.log(
+      `PRO activation requested for ${this.mask(deviceId)} via ${dto.platform} (mode=${this.iap.currentMode})`,
+    );
+
+    try {
+      const result = await this.iap.validate({
+        platform: dto.platform,
+        receipt: dto.receipt,
+        productId: dto.productId,
+        environment: dto.environment,
+      });
+      this.logger.log(
+        `IAP validated for ${this.mask(deviceId)}: provider=${result.provider} ` +
+          `productId=${result.productId ?? '-'} env=${result.environment} ` +
+          `txn=${result.transactionId ?? '-'}`,
+      );
+    } catch (err) {
+      if (err instanceof IapValidationError) {
+        this.logger.warn(
+          `IAP rejected for ${this.mask(deviceId)}: ${err.reason} (code=${err.providerCode ?? '-'})`,
+        );
+        throw new BadRequestException({
+          error: 'IapValidationFailed',
+          message: err.reason,
+          providerCode: err.providerCode,
+        });
+      }
+      throw err;
+    }
+
     return this.prisma.deviceQuota.upsert({
       where: { deviceId },
       update: {
         isPro: true,
         proActivatedAt: new Date(),
-        proPlatform: platform,
+        proPlatform: dto.platform,
       },
       create: {
         deviceId,
         isPro: true,
         proActivatedAt: new Date(),
-        proPlatform: platform,
+        proPlatform: dto.platform,
         freeReportsLimit: this.defaultLimit,
       },
     });
