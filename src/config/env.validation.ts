@@ -21,6 +21,17 @@ export const envValidationSchema = Joi.object({
 
   NHTSA_BASE_URL: Joi.string().uri().default('https://vpic.nhtsa.dot.gov/api'),
 
+  IAP_VALIDATION_MODE: Joi.string().valid('client-trust', 'server').default('client-trust'),
+  IAP_BUNDLE_ID: Joi.string().default('com.carsalepro.app'),
+  APPLE_SHARED_SECRET: Joi.string().allow('').default(''),
+  APPLE_ISSUER_ID: Joi.string().allow('').default(''),
+  APPLE_KEY_ID: Joi.string().allow('').default(''),
+  APPLE_PRIVATE_KEY: Joi.string().allow('').default(''),
+  APPLE_USE_SANDBOX_FIRST: Joi.string().valid('true', 'false').default('false'),
+  GOOGLE_PLAY_PACKAGE_NAME: Joi.string().allow('').default(''),
+  GOOGLE_PLAY_SA_JSON: Joi.string().allow('').default(''),
+  GOOGLE_PLAY_SUBSCRIPTION_IDS: Joi.string().allow('').default(''),
+
   SENTRY_DSN: Joi.string().allow('').default(''),
   SENTRY_ENVIRONMENT: Joi.string().default('development'),
 }).custom((envVars, helpers) => {

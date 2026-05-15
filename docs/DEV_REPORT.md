@@ -210,7 +210,7 @@ On `402`: show the PRO paywall, then call `POST /quota/upgrade` after a successf
 |---|---|---|
 | **IAP receipt validation** | Server trusts the client and flips `isPro=true`. | Phase 2: validate via App Store Server API / Play Developer API server-side. |
 | **Render free Postgres** | Free instance expires 2026-06-14. | Before expiry, upgrade to a paid plan (one env-var edit) or rotate to a new free instance. |
-| **CI/CD** | Render auto-deploys on push to `main` only; no GitHub Actions for tests yet. | Add a GitHub Actions workflow that runs `npm test && npm run test:e2e` on PRs. |
+| **CI/CD** | Render auto-deploys on push to `main` (CD only — it does **not** run the test suite). For a solo dev this is fine; tests run locally before push. | Add GitHub Actions only once a second contributor joins, to gate PRs on `npm test && npm run test:e2e` before they reach `main`. |
 | **Sentry** | Wired but disabled (DSN empty). | Create a Sentry project and paste the DSN into Render env vars. |
 | **Cold-start latency** | Free plan idles after 15 min; first request ~30 s. | Upgrade to Starter ($7/mo) for always-on, or add a tiny external ping job. |
 | **NHTSA EU coverage** | Some European VINs return empty `Results`. The mobile app already supports manual entry. | No backend change needed. |
