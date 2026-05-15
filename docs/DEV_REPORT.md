@@ -208,7 +208,7 @@ On `402`: show the PRO paywall, then call `POST /quota/upgrade` after a successf
 
 | Topic | Current state | Recommended next step |
 |---|---|---|
-| **IAP receipt validation** | Server trusts the client and flips `isPro=true`. | Phase 2: validate via App Store Server API / Play Developer API server-side. |
+| **IAP receipt validation** | **Implemented.** Apple (verifyReceipt + StoreKit 2 transactions) and Google (Play Developer API) validators are wired in `src/quota/iap/`. Mode is selected by `IAP_VALIDATION_MODE` env var (`client-trust` or `server`). | Provide real App Store shared secret + Play service-account JSON to switch from rejection-only to full validation. See §10 below. |
 | **Render free Postgres** | Free instance expires 2026-06-14. | Before expiry, upgrade to a paid plan (one env-var edit) or rotate to a new free instance. |
 | **CI/CD** | Render auto-deploys on push to `main` (CD only — it does **not** run the test suite). For a solo dev this is fine; tests run locally before push. | Add GitHub Actions only once a second contributor joins, to gate PRs on `npm test && npm run test:e2e` before they reach `main`. |
 | **Sentry** | Wired but disabled (DSN empty). | Create a Sentry project and paste the DSN into Render env vars. |
@@ -235,6 +235,66 @@ carsalepro-backend/
 
 ---
 
+## 10. IAP receipt validation (server-side)
+
+The `POST /quota/upgrade` endpoint can run in two modes, selected by `IAP_VALIDATION_MODE`:
+
+| Mode | Behavior |
+|---|---|
+| `client-trust` (default) | Accepts any receipt and flips `isPro=true`. Used during MVP launch when the mobile app handles validation locally. |
+| `server` | Verifies the receipt against Apple's `verifyReceipt` (or App Store Server API if a P8 key is provided) and Google Play Developer API. Rejects with **400 IapValidationFailed** on any mismatch. |
+
+### 10.1 Apple
+
+Two validation paths, picked automatically:
+
+| Receipt shape | Path used | Credentials required |
+|---|---|---|
+| Base64-encoded App Receipt blob (Flutter `in_app_purchase` default on iOS) | `POST https://buy.itunes.apple.com/verifyReceipt` with prod→sandbox fallback on status 21007 | `APPLE_SHARED_SECRET` |
+| Numeric StoreKit 2 transactionId | `GET https://api.storekit.itunes.apple.com/inApps/v1/transactions/:id` with an ES256-signed JWT | `APPLE_ISSUER_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` (the P8 PEM with `\n` literal newlines) |
+
+Bundle ID is checked against `IAP_BUNDLE_ID` (default `com.carsalepro.app`) and the request is rejected on mismatch.
+
+### 10.2 Google Play
+
+`GET https://androidpublisher.googleapis.com/androidpublisher/v3/applications/<pkg>/purchases/products/<sku>/tokens/<token>` (or `/subscriptions/...` for SKUs listed in `GOOGLE_PLAY_SUBSCRIPTION_IDS`), authenticated by a service-account JWT bearer exchanged for an OAuth2 token (cached for 1 h).
+
+Required env vars: `GOOGLE_PLAY_SA_JSON` (the full service-account JSON, optionally base64-wrapped for env-var safety), `GOOGLE_PLAY_PACKAGE_NAME` (defaults to `IAP_BUNDLE_ID`).
+
+Purchase state is checked: products must be `purchaseState=0`, subscriptions must be in payment state 1 (received) or 2 (free trial).
+
+### 10.3 Production verification
+
+Six rejection paths verified on the live backend (`scripts/test-iap-rejection.mjs`):
+
+```text
+>> IAP rejection tests against https://carsalepro-backend.onrender.com
+
+PASS  ios: REJECTS fake receipt with clear error  — "receipt-data property malformed"
+PASS  ios: failed upgrade does NOT flip isPro  — upgrade=400 isPro=false
+PASS  android: REJECTS fake token with clear error  — "GOOGLE_PLAY_SA_JSON is not configured"
+PASS  shape: rejects unknown platform
+PASS  shape: rejects missing receipt
+PASS  shape: rejects missing X-Device-Id
+
+--- Summary: 6 passed, 0 failed ---
+```
+
+The Apple test sends a fake blob to **the real `buy.itunes.apple.com/verifyReceipt` endpoint** and surfaces Apple's own status 21002 (`receipt-data property malformed`) to the caller as `400 IapValidationFailed`. That confirms the backend is making the live round-trip to Apple's servers; the receipt text is just intentionally malformed.
+
+### 10.4 Real-token testing
+
+A real token test requires either a TestFlight sandbox receipt (Apple) or a Play Internal Testing purchase token (Google). Neither was available during this implementation because the mobile app isn't published yet. The implementation is verified against the rejection path; once credentials and sandbox receipts exist, run the same script with valid input and expect `200 isPro=true`.
+
+To turn validation on for real receipts:
+
+1. Apple: paste the **App-Specific Shared Secret** from App Store Connect into Render env var `APPLE_SHARED_SECRET`.
+2. Google: paste the service-account JSON (with `androidpublisher` scope) into `GOOGLE_PLAY_SA_JSON`, comma-separate subscription SKUs into `GOOGLE_PLAY_SUBSCRIPTION_IDS`.
+3. Confirm `IAP_VALIDATION_MODE=server` is set (it is, as of this deploy).
+4. Re-run `scripts/test-iap-rejection.mjs` — fake receipts still get 400; submit a real sandbox receipt manually and confirm `200 isPro=true`.
+
+---
+
 ## 9. Definition of done — checklist
 
 - [x] All 6 Week-7 endpoints implemented and reachable in production.
@@ -242,7 +302,8 @@ carsalepro-backend/
 - [x] Cloud backup roundtrip works: client → presigned PUT → R2; backend → presigned GET → download; SHA-256 verified.
 - [x] GDPR erasure works (DB + R2).
 - [x] Swagger UI live at `/docs`.
-- [x] 20 automated tests passing locally.
+- [x] 33 automated tests passing locally (21 unit + 12 E2E).
+- [x] Server-side IAP receipt validation (Apple + Google) implemented and verified against real Apple servers (rejection path).
 - [x] End-to-end smoke against deployed URL passes 15/15.
 - [x] Documentation: README, CLAUDE.md, ARCHITECTURE, DEPLOY, API, DEV_REPORT.
 - [x] Source published on GitHub.
