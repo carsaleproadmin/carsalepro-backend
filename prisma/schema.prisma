@@ -1,0 +1,56 @@
+// CarSalePro Backend — Prisma schema
+// Three tables only in MVP: VinCache, DeviceQuota, Report.
+// No users / no auth — identity is X-Device-Id header (UUID v4).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Cache of NHTSA vPIC VIN-decode responses. Keyed by 17-char VIN.
+model VinCache {
+  vin       String   @id @db.VarChar(17)
+  payload   Json
+  source    String   @default("nhtsa-vpic")
+  fetchedAt DateTime @default(now())
+
+  @@index([fetchedAt])
+  @@map("vin_cache")
+}
+
+/// Per-device quota state. Anti-tamper guard for FREE-tier 3-reports lifetime cap.
+model DeviceQuota {
+  deviceId         String    @id @map("device_id")
+  freeReportsUsed  Int       @default(0) @map("free_reports_used")
+  freeReportsLimit Int       @default(3) @map("free_reports_limit")
+  isPro            Boolean   @default(false) @map("is_pro")
+  proActivatedAt   DateTime? @map("pro_activated_at")
+  proPlatform      String?   @map("pro_platform")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@map("device_quota")
+}
+
+/// One row per inspection report PDF uploaded to R2. Soft-deletable.
+model Report {
+  id        String    @id @default(cuid())
+  deviceId  String    @map("device_id")
+  lrg       String
+  vin       String?   @db.VarChar(17)
+  s3Key     String    @map("s3_key")
+  sizeBytes Int?      @map("size_bytes")
+  hash      String?
+  tier      String // "free" | "pro"
+  uploaded  Boolean   @default(false)
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  @@index([deviceId, createdAt])
+  @@index([vin])
+  @@map("report")
+}
