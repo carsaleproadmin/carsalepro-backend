@@ -1,0 +1,52 @@
+# Render Blueprint for CarSalePro backend.
+# Useful as documentation even when the service is created via the MCP CLI.
+
+services:
+  - type: web
+    name: carsalepro-backend
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    branch: main
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: LOG_LEVEL
+        value: info
+      - key: FREE_REPORTS_LIMIT
+        value: "3"
+      - key: PRESIGNED_UPLOAD_TTL
+        value: "900"
+      - key: PRESIGNED_DOWNLOAD_TTL
+        value: "3600"
+      - key: NHTSA_BASE_URL
+        value: https://vpic.nhtsa.dot.gov/api
+      - key: DATABASE_URL
+        fromDatabase:
+          name: carsalepro-db
+          property: connectionString
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        value: carsalepro-reports
+      - key: R2_PUBLIC_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_ENVIRONMENT
+        value: production
+
+databases:
+  - name: carsalepro-db
+    plan: free
+    region: frankfurt
+    postgresMajorVersion: "16"
