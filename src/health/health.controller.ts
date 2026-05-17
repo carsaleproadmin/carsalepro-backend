@@ -1,4 +1,5 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   HealthCheck,
   HealthCheckResult,
@@ -6,7 +7,12 @@ import {
   HealthIndicatorResult,
   PrismaHealthIndicator,
 } from '@nestjs/terminus';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { AppConfig } from '../config/configuration';
+import {
+  captureMessageIfEnabled,
+  flushSentry,
+} from '../common/sentry/sentry.bootstrap';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 
@@ -18,7 +24,14 @@ export class HealthController {
     private readonly prismaHealth: PrismaHealthIndicator,
     private readonly prisma: PrismaService,
     private readonly r2: R2Service,
+    private readonly config: ConfigService<AppConfig, true>,
   ) {}
+
+  private requireDebugEnabled(): void {
+    if ((process.env.SENTRY_TEST_ENABLED ?? '').toLowerCase() !== 'true') {
+      throw new NotFoundException();
+    }
+  }
 
   @Get()
   @HealthCheck()
@@ -39,5 +52,33 @@ export class HealthController {
         }
       },
     ]);
+  }
+
+  /**
+   * Sends an `info` message to Sentry. Returns the Sentry event id so callers
+   * can confirm ingestion. Gated by SENTRY_TEST_ENABLED=true.
+   */
+  @Get('sentry-test')
+  @ApiExcludeEndpoint()
+  async sentryTest(): Promise<{ ok: boolean; eventId?: string; dsnConfigured: boolean }> {
+    this.requireDebugEnabled();
+    const dsn = this.config.get('sentry', { infer: true }).dsn;
+    const eventId = captureMessageIfEnabled(
+      `Sentry connectivity test from carsalepro-backend at ${new Date().toISOString()}`,
+      'info',
+    );
+    await flushSentry();
+    return { ok: true, eventId, dsnConfigured: Boolean(dsn) };
+  }
+
+  /**
+   * Throws a synthetic 500 so the global exception filter forwards it to
+   * Sentry. Gated by SENTRY_TEST_ENABLED=true.
+   */
+  @Get('sentry-throw')
+  @ApiExcludeEndpoint()
+  sentryThrow(): never {
+    this.requireDebugEnabled();
+    throw new Error(`carsalepro-backend sentry-throw at ${new Date().toISOString()}`);
   }
 }
