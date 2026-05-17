@@ -18,10 +18,29 @@ export function initSentry(dsn: string | undefined, environment: string, release
   return true;
 }
 
-export function captureExceptionIfEnabled(err: unknown): void {
+export function captureExceptionIfEnabled(
+  err: unknown,
+  context?: Record<string, unknown>,
+): string | undefined {
   try {
-    Sentry.captureException(err);
+    return Sentry.captureException(err, context ? { extra: context } : undefined);
   } catch {
-    // no-op if Sentry isn't initialized
+    return undefined;
+  }
+}
+
+export function captureMessageIfEnabled(message: string, level: Sentry.SeverityLevel = 'info'): string | undefined {
+  try {
+    return Sentry.captureMessage(message, level);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function flushSentry(timeoutMs = 2000): Promise<void> {
+  try {
+    await Sentry.flush(timeoutMs);
+  } catch {
+    /* ignore */
   }
 }

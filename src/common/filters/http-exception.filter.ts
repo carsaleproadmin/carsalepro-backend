@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { captureExceptionIfEnabled } from '../sentry/sentry.bootstrap';
 
 interface ErrorResponseBody {
   statusCode: number;
@@ -46,11 +47,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
       errorName = exception.name;
     }
 
+    let sentryEventId: string | undefined;
     if (status >= 500) {
       this.logger.error(
         `${request.method} ${request.url} -> ${status} ${errorName}`,
         exception instanceof Error ? exception.stack : undefined,
       );
+      sentryEventId = captureExceptionIfEnabled(exception, {
+        method: request.method,
+        url: request.originalUrl ?? request.url,
+        deviceId: request.deviceId,
+        status,
+      });
     } else {
       this.logger.warn(`${request.method} ${request.url} -> ${status} ${errorName}`);
     }
@@ -61,6 +69,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       message,
       path: request.url,
       timestamp: new Date().toISOString(),
+      ...(sentryEventId ? { requestId: sentryEventId } : {}),
     };
 
     response.status(status).json(body);

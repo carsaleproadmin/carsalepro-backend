@@ -34,6 +34,7 @@ export const envValidationSchema = Joi.object({
 
   SENTRY_DSN: Joi.string().allow('').default(''),
   SENTRY_ENVIRONMENT: Joi.string().default('development'),
+  SENTRY_TEST_ENABLED: Joi.string().valid('true', 'false').default('false'),
 }).custom((envVars, helpers) => {
   if (envVars.NODE_ENV === 'production') {
     const requiredInProd = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
