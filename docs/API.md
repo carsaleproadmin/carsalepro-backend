@@ -192,7 +192,7 @@ Atomically checks the FREE-tier quota (3 reports lifetime). PRO devices have no 
 
 ```json
 {
-  "lrg": "LRG-042",
+  "code": "CSP-042",
   "vin": "1HGBH41JXMN109186",
   "sizeBytes": 1834217,
   "hash": "7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",

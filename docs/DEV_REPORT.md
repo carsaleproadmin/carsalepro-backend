@@ -87,7 +87,7 @@ Three tables, all keyed by string identifiers — no foreign keys:
 
 - **`VinCache`** — `vin` (PK), `payload` JSON, `source`, `fetchedAt`.
 - **`DeviceQuota`** — `deviceId` (PK), `freeReportsUsed`, `freeReportsLimit` (3), `isPro`, `proActivatedAt`, `proPlatform`.
-- **`Report`** — `id` (cuid), `deviceId`, `lrg`, `vin`, `s3Key`, `sizeBytes`, `hash` (SHA-256), `tier`, `uploaded`, `createdAt`, `deletedAt`.
+- **`Report`** — `id` (cuid), `deviceId`, `code`, `vin`, `s3Key`, `sizeBytes`, `hash` (SHA-256), `tier`, `uploaded`, `createdAt`, `deletedAt`.
 
 ---
 
@@ -188,7 +188,7 @@ Minimal client flow for one report upload:
 // 1. ask backend for an upload URL (returns 402 if FREE limit reached)
 final reserve = await dio.post('/reports',
     options: Options(headers: {'X-Device-Id': deviceId}),
-    data: {'lrg': 'LRG-042', 'vin': '1HGBH41JXMN109186'});
+    data: {'code': 'CSP-042', 'vin': '1HGBH41JXMN109186'});
 
 // 2. PUT the PDF straight to R2 with the presigned URL
 await dio.put<void>(reserve.data['presignedUploadUrl'],

@@ -48,7 +48,7 @@ export class ReportsService {
     const report = await this.prisma.report.create({
       data: {
         deviceId,
-        lrg: dto.lrg,
+        code: dto.code,
         vin: dto.vin?.toUpperCase() ?? null,
         sizeBytes: dto.sizeBytes ?? null,
         hash: dto.hash ?? null,
@@ -197,7 +197,7 @@ export class ReportsService {
   private async toItemDto(r: Report): Promise<ReportItemDto> {
     const base: ReportItemDto = {
       id: r.id,
-      lrg: r.lrg,
+      code: r.code,
       vin: r.vin,
       tier: r.tier as 'free' | 'pro',
       sizeBytes: r.sizeBytes,

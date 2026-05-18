@@ -40,7 +40,7 @@ model DeviceQuota {
 model Report {
   id        String    @id @default(cuid())
   deviceId  String    @map("device_id")
-  lrg       String
+  code      String
   vin       String?   @db.VarChar(17)
   s3Key     String    @map("s3_key")
   sizeBytes Int?      @map("size_bytes")

@@ -1,4 +1,4 @@
-import { INestApplication } from '@nestjs/common';
+﻿import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { cleanDb, createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -32,7 +32,7 @@ describe('Reports (e2e)', () => {
         const res = await request(app.getHttpServer())
           .post('/reports')
           .set('x-device-id', did)
-          .send({ lrg: `LRG-${i + 1}`, vin: '1HGBH41JXMN109186' })
+          .send({ code: `CSP-${i + 1}`, vin: '1HGBH41JXMN109186' })
           .expect(201);
         expect(res.body.tier).toBe('free');
       }
@@ -40,7 +40,7 @@ describe('Reports (e2e)', () => {
       const fourth = await request(app.getHttpServer())
         .post('/reports')
         .set('x-device-id', did)
-        .send({ lrg: 'LRG-4' });
+        .send({ code: 'CSP-4' });
       expect(fourth.status).toBe(402);
       expect(fourth.body.message).toMatch(/FREE-tier limit/);
 
@@ -53,7 +53,7 @@ describe('Reports (e2e)', () => {
       const fifth = await request(app.getHttpServer())
         .post('/reports')
         .set('x-device-id', did)
-        .send({ lrg: 'LRG-5' })
+        .send({ code: 'CSP-5' })
         .expect(201);
       expect(fifth.body.tier).toBe('pro');
     } else {
@@ -66,7 +66,7 @@ describe('Reports (e2e)', () => {
       const fourth = await request(app.getHttpServer())
         .post('/reports')
         .set('x-device-id', did)
-        .send({ lrg: 'LRG-4' });
+        .send({ code: 'CSP-4' });
       expect(fourth.status).toBe(402);
     }
   });
@@ -76,10 +76,10 @@ describe('Reports (e2e)', () => {
     const otherDid = uniqueDeviceId('other');
 
     await prisma.report.create({
-      data: { deviceId: did, lrg: 'LRG-1', s3Key: 'free/x/1.pdf', tier: 'free' },
+      data: { deviceId: did, code: 'CSP-1', s3Key: 'free/x/1.pdf', tier: 'free' },
     });
     await prisma.report.create({
-      data: { deviceId: otherDid, lrg: 'LRG-1', s3Key: 'free/y/1.pdf', tier: 'free' },
+      data: { deviceId: otherDid, code: 'CSP-1', s3Key: 'free/y/1.pdf', tier: 'free' },
     });
 
     const res = await request(app.getHttpServer())
@@ -87,14 +87,14 @@ describe('Reports (e2e)', () => {
       .set('x-device-id', did)
       .expect(200);
     expect(res.body.total).toBe(1);
-    expect(res.body.items[0].lrg).toBe('LRG-1');
+    expect(res.body.items[0].code).toBe('CSP-1');
   });
 
   it('forbids deleting another device\'s report', async () => {
     const did = uniqueDeviceId();
     const otherDid = uniqueDeviceId('other');
     const rep = await prisma.report.create({
-      data: { deviceId: otherDid, lrg: 'LRG-1', s3Key: 'free/other/1.pdf', tier: 'free' },
+      data: { deviceId: otherDid, code: 'CSP-1', s3Key: 'free/other/1.pdf', tier: 'free' },
     });
     await request(app.getHttpServer())
       .delete(`/reports/${rep.id}`)
@@ -102,3 +102,4 @@ describe('Reports (e2e)', () => {
       .expect(403);
   });
 });
+
