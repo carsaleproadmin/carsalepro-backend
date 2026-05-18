@@ -107,7 +107,7 @@ async function jsonFetch(method, path, { body, headers, raw = false } = {}) {
   for (let i = 0; i < 3; i++) {
     const r = await jsonFetch('POST', '/reports', {
       headers: { 'X-Device-Id': did },
-      body: { lrg: `LRG-${i + 1}`, vin: sampleVin },
+      body: { code: `CSP-${i + 1}`, vin: sampleVin },
     });
     const ok = r.status === 201 && r.body?.reportId && r.body?.presignedUploadUrl;
     record(`reports: reservation ${i + 1}/3 (201)`, ok, `status=${r.status} tier=${r.body?.tier}`);
@@ -121,7 +121,7 @@ async function jsonFetch(method, path, { body, headers, raw = false } = {}) {
   }
   const fourth = await jsonFetch('POST', '/reports', {
     headers: { 'X-Device-Id': did },
-    body: { lrg: 'LRG-4' },
+    body: { code: 'CSP-4' },
   });
   record(
     'reports: 4th reservation returns 402',

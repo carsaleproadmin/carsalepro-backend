@@ -25,8 +25,8 @@ describe('DELETE /me (GDPR erasure) (e2e)', () => {
     await prisma.deviceQuota.create({ data: { deviceId: did, freeReportsUsed: 2 } });
     await prisma.report.createMany({
       data: [
-        { deviceId: did, lrg: 'LRG-1', s3Key: `free/${did}/1.pdf`, tier: 'free' },
-        { deviceId: did, lrg: 'LRG-2', s3Key: `free/${did}/2.pdf`, tier: 'free' },
+        { deviceId: did, code: 'CSP-1', s3Key: `free/${did}/1.pdf`, tier: 'free' },
+        { deviceId: did, code: 'CSP-2', s3Key: `free/${did}/2.pdf`, tier: 'free' },
       ],
     });
 

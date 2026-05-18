@@ -24,8 +24,8 @@ export class ReportItemDto {
   @ApiProperty({ example: 'ckqz2zk5e0000a8b8h4t8j2z3' })
   id!: string;
 
-  @ApiProperty({ example: 'LRG-042' })
-  lrg!: string;
+  @ApiProperty({ example: 'CSP-042' })
+  code!: string;
 
   @ApiPropertyOptional({ example: '1HGBH41JXMN109186' })
   vin?: string | null;

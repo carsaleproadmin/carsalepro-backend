@@ -45,7 +45,7 @@ erDiagram
   Report {
     string id PK "cuid"
     string deviceId "indexed"
-    string lrg "LRG-###"
+    string code "CSP-###"
     string vin "17 chars, nullable"
     string s3Key "free|pro/<deviceId>/<id>.pdf"
     int sizeBytes
@@ -66,7 +66,7 @@ sequenceDiagram
   participant DB as Postgres
   participant R2 as Cloudflare R2
 
-  App->>API: POST /reports {lrg, vin, ...} with X-Device-Id
+  App->>API: POST /reports {code, vin, ...} with X-Device-Id
   API->>DB: BEGIN
   API->>DB: SELECT/UPSERT DeviceQuota
   API->>DB: UPDATE freeReportsUsed += 1 (or detect isPro)
