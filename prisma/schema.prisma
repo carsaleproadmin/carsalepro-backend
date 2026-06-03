@@ -40,15 +40,18 @@ model DeviceQuota {
 model Report {
   id        String    @id @default(cuid())
   deviceId  String    @map("device_id")
-  code      String
-  vin       String?   @db.VarChar(17)
-  s3Key     String    @map("s3_key")
-  sizeBytes Int?      @map("size_bytes")
-  hash      String?
-  tier      String // "free" | "pro"
-  uploaded  Boolean   @default(false)
-  createdAt DateTime  @default(now()) @map("created_at")
-  deletedAt DateTime? @map("deleted_at")
+  code        String
+  vin         String?   @db.VarChar(17)
+  make        String?
+  model       String?
+  inspectedAt DateTime? @map("inspected_at")
+  s3Key       String    @map("s3_key")
+  sizeBytes   Int?      @map("size_bytes")
+  hash        String?
+  tier        String // "free" | "pro"
+  uploaded    Boolean   @default(false)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  deletedAt   DateTime? @map("deleted_at")
 
   @@index([deviceId, createdAt])
   @@index([vin])

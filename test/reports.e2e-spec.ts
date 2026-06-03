@@ -90,6 +90,40 @@ describe('Reports (e2e)', () => {
     expect(res.body.items[0].code).toBe('CSP-1');
   });
 
+  it('persists and returns make/model/inspectedAt display metadata', async () => {
+    const did = uniqueDeviceId();
+    const inspectedAt = '2026-06-01T09:30:00.000Z';
+    await prisma.report.create({
+      data: {
+        deviceId: did,
+        code: 'CSP-7',
+        s3Key: 'free/x/7.pdf',
+        tier: 'free',
+        make: 'BMW',
+        model: '320d',
+        inspectedAt: new Date(inspectedAt),
+      },
+    });
+    const res = await request(app.getHttpServer())
+      .get('/reports')
+      .set('x-device-id', did)
+      .expect(200);
+    expect(res.body.items[0].make).toBe('BMW');
+    expect(res.body.items[0].model).toBe('320d');
+    expect(res.body.items[0].inspectedAt).toBe(inspectedAt);
+  });
+
+  it('accepts make/model/inspectedAt on POST /reports when R2 is configured', async () => {
+    if (!r2Configured) return; // quota gate + R2 covered elsewhere; skip create path without R2
+    const did = uniqueDeviceId();
+    const res = await request(app.getHttpServer())
+      .post('/reports')
+      .set('x-device-id', did)
+      .send({ code: 'CSP-1', make: 'Audi', model: 'A4', inspectedAt: '2026-06-02T08:00:00.000Z' })
+      .expect(201);
+    expect(res.body.reportId).toBeTruthy();
+  });
+
   it('forbids deleting another device\'s report', async () => {
     const did = uniqueDeviceId();
     const otherDid = uniqueDeviceId('other');

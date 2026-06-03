@@ -71,6 +71,43 @@ async function jsonFetch(method, path, { body, headers, raw = false } = {}) {
     `status=${docsRes.status} size=${docsText.length}`,
   );
 
+  // 2b. Legal pages (privacy + terms, localized HTML)
+  const legalIndex = await jsonFetch('GET', '/legal');
+  record(
+    'legal: JSON index has privacy + terms in 3 langs',
+    legalIndex.status === 200 &&
+      ['de', 'en', 'ru'].every((l) => legalIndex.body?.privacy?.[l] && legalIndex.body?.terms?.[l]),
+    JSON.stringify(legalIndex.body?.updatedAt),
+  );
+  const privacyEn = await fetch(`${baseUrl}/legal/privacy?lang=en`);
+  const privacyText = await privacyEn.text();
+  record(
+    'legal: privacy HTML states permanent retention',
+    privacyEn.status === 200 && /text\/html/.test(privacyEn.headers.get('content-type') ?? '') &&
+      /permanent|forever/i.test(privacyText),
+    `status=${privacyEn.status} size=${privacyText.length}`,
+  );
+
+  // 2c. Catalog reference data
+  const catalog = await jsonFetch('GET', '/catalog');
+  record(
+    'catalog: 68 K/S/T codes + 98 checklist items + 8+ angles',
+    catalog.status === 200 &&
+      catalog.body?.kstCodes?.length === 68 &&
+      catalog.body?.checklist?.length === 98 &&
+      catalog.body?.angles?.length >= 8,
+    `v=${catalog.body?.version} codes=${catalog.body?.kstCodes?.length} checklist=${catalog.body?.checklist?.length}`,
+  );
+  const catalogVersion = catalog.body?.version;
+  if (catalogVersion) {
+    const upToDate = await jsonFetch('GET', `/catalog?version=${catalogVersion}`);
+    record(
+      'catalog: version match returns upToDate',
+      upToDate.status === 200 && upToDate.body?.upToDate === true && !upToDate.body?.kstCodes,
+      `upToDate=${upToDate.body?.upToDate}`,
+    );
+  }
+
   // 3. VIN decode (cache miss + cache hit)
   const did = randomUUID();
   const t1 = Date.now();
