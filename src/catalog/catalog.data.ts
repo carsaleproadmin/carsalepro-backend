@@ -1,0 +1,2656 @@
+/**
+ * Canonical trilingual (DE / EN / RU) reference catalog for the CarSalePro
+ * vehicle-inspection app.
+ *
+ * Single source of truth consumed by the backend's `GET /catalog` endpoint
+ * and (later) bundled into the mobile app as a read-only asset.
+ *
+ * Transcribed from `docs/05_Списки_осмотра_и_повреждений.md` (catalog v1.1):
+ *  - §1.3  — 8 exterior view angles
+ *  - §2.1  — 36 K-codes (body / paint)
+ *  - §2.2  —  5 S-codes (service)
+ *  - §2.3  — 27 T-codes (technical condition / equipment)
+ *  - §3.1–3.8 — 98 expert checklist items
+ *  - §4.1  — parts catalog by zone
+ *  - §4.2  — 10 damage types
+ *  - §4.3  — severity tiers T1 / T2 / T3
+ *
+ * German is the primary market: DE labels use correct automotive terminology.
+ */
+
+export interface LocalizedLabel {
+  de: string;
+  en: string;
+  ru: string;
+}
+
+export interface AngleDef {
+  id: string;
+  group: 'exterior' | 'interior' | 'wheel' | 'misc';
+  order: number;
+  label: LocalizedLabel;
+  required: boolean;
+}
+
+export interface PartDef {
+  id: string;
+  zone: string;
+  label: LocalizedLabel;
+}
+
+export interface DamageTypeDef {
+  id: string;
+  label: LocalizedLabel;
+}
+
+export interface KstCodeDef {
+  code: string;
+  group: 'K' | 'S' | 'T';
+  partId: string | null;
+  typeId: string | null;
+  defaultTier: 'T1' | 'T2' | 'T3';
+  label: LocalizedLabel;
+}
+
+export type ChecklistCategory =
+  | 'body'
+  | 'glass'
+  | 'interior'
+  | 'engine'
+  | 'chassis'
+  | 'completeness'
+  | 'electronics'
+  | 'operational';
+
+export interface ChecklistItemDef {
+  number: number;
+  category: ChecklistCategory;
+  label: LocalizedLabel;
+  frequent: boolean;
+}
+
+export const CATALOG_VERSION = '1';
+
+export interface CatalogV1 {
+  version: string;
+  angles: AngleDef[];
+  parts: PartDef[];
+  damageTypes: DamageTypeDef[];
+  kstCodes: KstCodeDef[];
+  checklist: ChecklistItemDef[];
+}
+
+// ---------------------------------------------------------------------------
+// Angles (§1.3 + interior / wheel / misc additions)
+// ---------------------------------------------------------------------------
+
+const ANGLES: AngleDef[] = [
+  {
+    id: 'front',
+    group: 'exterior',
+    order: 1,
+    required: true,
+    label: { de: 'Vorderansicht', en: 'Front view', ru: 'Вид спереди' },
+  },
+  {
+    id: 'diag_front_right',
+    group: 'exterior',
+    order: 2,
+    required: true,
+    label: {
+      de: 'Diagonal vorne rechts',
+      en: 'Front right (3/4)',
+      ru: 'Диагональ спереди-справа',
+    },
+  },
+  {
+    id: 'diag_front_left',
+    group: 'exterior',
+    order: 3,
+    required: true,
+    label: {
+      de: 'Diagonal vorne links',
+      en: 'Front left (3/4)',
+      ru: 'Диагональ спереди-слева',
+    },
+  },
+  {
+    id: 'left',
+    group: 'exterior',
+    order: 4,
+    required: true,
+    label: { de: 'Linke Seite', en: 'Left side', ru: 'Левая сторона' },
+  },
+  {
+    id: 'rear',
+    group: 'exterior',
+    order: 5,
+    required: true,
+    label: { de: 'Rückansicht', en: 'Rear view', ru: 'Задняя часть' },
+  },
+  {
+    id: 'right',
+    group: 'exterior',
+    order: 6,
+    required: true,
+    label: { de: 'Rechte Seite', en: 'Right side', ru: 'Правая сторона' },
+  },
+  {
+    id: 'diag_rear_right',
+    group: 'exterior',
+    order: 7,
+    required: true,
+    label: {
+      de: 'Diagonal hinten rechts',
+      en: 'Rear right (3/4)',
+      ru: 'Диагональ сзади-справа',
+    },
+  },
+  {
+    id: 'diag_rear_left',
+    group: 'exterior',
+    order: 8,
+    required: true,
+    label: {
+      de: 'Diagonal hinten links',
+      en: 'Rear left (3/4)',
+      ru: 'Диагональ сзади-слева',
+    },
+  },
+  {
+    id: 'interior_front',
+    group: 'interior',
+    order: 9,
+    required: false,
+    label: {
+      de: 'Innenraum vorne',
+      en: 'Interior front',
+      ru: 'Салон спереди',
+    },
+  },
+  {
+    id: 'interior_rear',
+    group: 'interior',
+    order: 10,
+    required: false,
+    label: { de: 'Innenraum hinten', en: 'Interior rear', ru: 'Салон сзади' },
+  },
+  {
+    id: 'interior_dashboard',
+    group: 'interior',
+    order: 11,
+    required: false,
+    label: { de: 'Armaturenbrett', en: 'Dashboard', ru: 'Приборная панель' },
+  },
+  {
+    id: 'interior_boot',
+    group: 'interior',
+    order: 12,
+    required: false,
+    label: { de: 'Kofferraum', en: 'Boot / trunk', ru: 'Багажник' },
+  },
+  {
+    id: 'interior_seats',
+    group: 'interior',
+    order: 13,
+    required: false,
+    label: { de: 'Sitze', en: 'Seats', ru: 'Сиденья' },
+  },
+  {
+    id: 'wheel_fl',
+    group: 'wheel',
+    order: 14,
+    required: false,
+    label: {
+      de: 'Rad vorne links',
+      en: 'Front left wheel',
+      ru: 'Колесо переднее левое',
+    },
+  },
+  {
+    id: 'wheel_fr',
+    group: 'wheel',
+    order: 15,
+    required: false,
+    label: {
+      de: 'Rad vorne rechts',
+      en: 'Front right wheel',
+      ru: 'Колесо переднее правое',
+    },
+  },
+  {
+    id: 'wheel_rl',
+    group: 'wheel',
+    order: 16,
+    required: false,
+    label: {
+      de: 'Rad hinten links',
+      en: 'Rear left wheel',
+      ru: 'Колесо заднее левое',
+    },
+  },
+  {
+    id: 'wheel_rr',
+    group: 'wheel',
+    order: 17,
+    required: false,
+    label: {
+      de: 'Rad hinten rechts',
+      en: 'Rear right wheel',
+      ru: 'Колесо заднее правое',
+    },
+  },
+  {
+    id: 'odometer',
+    group: 'misc',
+    order: 18,
+    required: false,
+    label: { de: 'Kilometerstand', en: 'Odometer', ru: 'Одометр' },
+  },
+  {
+    id: 'vin_plate',
+    group: 'misc',
+    order: 19,
+    required: false,
+    label: { de: 'FIN-Schild', en: 'VIN plate', ru: 'Табличка VIN' },
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Parts (§4.1)
+// ---------------------------------------------------------------------------
+
+const PARTS: PartDef[] = [
+  // front
+  {
+    id: 'bumper_front',
+    zone: 'front',
+    label: { de: 'Stoßfänger vorne', en: 'Front bumper', ru: 'Передний бампер' },
+  },
+  {
+    id: 'hood',
+    zone: 'front',
+    label: { de: 'Motorhaube', en: 'Hood / bonnet', ru: 'Капот' },
+  },
+  {
+    id: 'grille',
+    zone: 'front',
+    label: { de: 'Kühlergrill', en: 'Radiator grille', ru: 'Решётка радиатора' },
+  },
+  {
+    id: 'headlight_left',
+    zone: 'front',
+    label: { de: 'Scheinwerfer links', en: 'Left headlight', ru: 'Фара левая' },
+  },
+  {
+    id: 'headlight_right',
+    zone: 'front',
+    label: {
+      de: 'Scheinwerfer rechts',
+      en: 'Right headlight',
+      ru: 'Фара правая',
+    },
+  },
+  {
+    id: 'fog_light_left',
+    zone: 'front',
+    label: {
+      de: 'Nebelscheinwerfer links',
+      en: 'Left fog light',
+      ru: 'Противотуманка левая',
+    },
+  },
+  {
+    id: 'fog_light_right',
+    zone: 'front',
+    label: {
+      de: 'Nebelscheinwerfer rechts',
+      en: 'Right fog light',
+      ru: 'Противотуманка правая',
+    },
+  },
+  {
+    id: 'windshield',
+    zone: 'front',
+    label: { de: 'Frontscheibe', en: 'Windshield', ru: 'Лобовое стекло' },
+  },
+
+  // left
+  {
+    id: 'fender_front_left',
+    zone: 'left',
+    label: {
+      de: 'Kotflügel vorne links',
+      en: 'Front left fender',
+      ru: 'Переднее левое крыло',
+    },
+  },
+  {
+    id: 'door_front_left',
+    zone: 'left',
+    label: {
+      de: 'Tür vorne links',
+      en: 'Front left door',
+      ru: 'Передняя левая дверь',
+    },
+  },
+  {
+    id: 'door_rear_left',
+    zone: 'left',
+    label: {
+      de: 'Tür hinten links',
+      en: 'Rear left door',
+      ru: 'Задняя левая дверь',
+    },
+  },
+  {
+    id: 'sill_left',
+    zone: 'left',
+    label: {
+      de: 'Schwellerverkleidung links',
+      en: 'Left sill trim',
+      ru: 'Накладка порога слева',
+    },
+  },
+  {
+    id: 'side_panel_rear_left',
+    zone: 'left',
+    label: {
+      de: 'Seitenwand hinten links',
+      en: 'Rear left side panel',
+      ru: 'Задняя боковина слева',
+    },
+  },
+  {
+    id: 'mirror_left',
+    zone: 'left',
+    label: { de: 'Außenspiegel links', en: 'Left mirror', ru: 'Зеркало левое' },
+  },
+  {
+    id: 'wheel_arch_front_left',
+    zone: 'left',
+    label: {
+      de: 'Radlauf vorne links',
+      en: 'Front left wheel arch',
+      ru: 'Колёсная арка передняя левая',
+    },
+  },
+  {
+    id: 'wheel_arch_rear_left',
+    zone: 'left',
+    label: {
+      de: 'Radlauf hinten links',
+      en: 'Rear left wheel arch',
+      ru: 'Колёсная арка задняя левая',
+    },
+  },
+  {
+    id: 'window_front_left',
+    zone: 'left',
+    label: {
+      de: 'Seitenscheibe vorne links',
+      en: 'Front left window',
+      ru: 'Боковое стекло переднее левое',
+    },
+  },
+  {
+    id: 'window_rear_left',
+    zone: 'left',
+    label: {
+      de: 'Seitenscheibe hinten links',
+      en: 'Rear left window',
+      ru: 'Боковое стекло заднее левое',
+    },
+  },
+
+  // right (mirror of left)
+  {
+    id: 'fender_front_right',
+    zone: 'right',
+    label: {
+      de: 'Kotflügel vorne rechts',
+      en: 'Front right fender',
+      ru: 'Переднее правое крыло',
+    },
+  },
+  {
+    id: 'door_front_right',
+    zone: 'right',
+    label: {
+      de: 'Tür vorne rechts',
+      en: 'Front right door',
+      ru: 'Передняя правая дверь',
+    },
+  },
+  {
+    id: 'door_rear_right',
+    zone: 'right',
+    label: {
+      de: 'Tür hinten rechts',
+      en: 'Rear right door',
+      ru: 'Задняя правая дверь',
+    },
+  },
+  {
+    id: 'sill_right',
+    zone: 'right',
+    label: {
+      de: 'Schwellerverkleidung rechts',
+      en: 'Right sill trim',
+      ru: 'Накладка порога справа',
+    },
+  },
+  {
+    id: 'side_panel_rear_right',
+    zone: 'right',
+    label: {
+      de: 'Seitenwand hinten rechts',
+      en: 'Rear right side panel',
+      ru: 'Задняя боковина справа',
+    },
+  },
+  {
+    id: 'mirror_right',
+    zone: 'right',
+    label: {
+      de: 'Außenspiegel rechts',
+      en: 'Right mirror',
+      ru: 'Зеркало правое',
+    },
+  },
+  {
+    id: 'wheel_arch_front_right',
+    zone: 'right',
+    label: {
+      de: 'Radlauf vorne rechts',
+      en: 'Front right wheel arch',
+      ru: 'Колёсная арка передняя правая',
+    },
+  },
+  {
+    id: 'wheel_arch_rear_right',
+    zone: 'right',
+    label: {
+      de: 'Radlauf hinten rechts',
+      en: 'Rear right wheel arch',
+      ru: 'Колёсная арка задняя правая',
+    },
+  },
+  {
+    id: 'window_front_right',
+    zone: 'right',
+    label: {
+      de: 'Seitenscheibe vorne rechts',
+      en: 'Front right window',
+      ru: 'Боковое стекло переднее правое',
+    },
+  },
+  {
+    id: 'window_rear_right',
+    zone: 'right',
+    label: {
+      de: 'Seitenscheibe hinten rechts',
+      en: 'Rear right window',
+      ru: 'Боковое стекло заднее правое',
+    },
+  },
+
+  // rear
+  {
+    id: 'bumper_rear',
+    zone: 'rear',
+    label: { de: 'Stoßfänger hinten', en: 'Rear bumper', ru: 'Задний бампер' },
+  },
+  {
+    id: 'trunk_lid',
+    zone: 'rear',
+    label: {
+      de: 'Heckklappe',
+      en: 'Trunk lid / tailgate',
+      ru: 'Крышка багажника / 5-я дверь',
+    },
+  },
+  {
+    id: 'rear_window',
+    zone: 'rear',
+    label: { de: 'Heckscheibe', en: 'Rear window', ru: 'Заднее стекло' },
+  },
+  {
+    id: 'tail_light_left',
+    zone: 'rear',
+    label: {
+      de: 'Rückleuchte links',
+      en: 'Left tail light',
+      ru: 'Задний фонарь левый',
+    },
+  },
+  {
+    id: 'tail_light_right',
+    zone: 'rear',
+    label: {
+      de: 'Rückleuchte rechts',
+      en: 'Right tail light',
+      ru: 'Задний фонарь правый',
+    },
+  },
+  {
+    id: 'heckspoiler',
+    zone: 'rear',
+    label: { de: 'Heckspoiler', en: 'Rear spoiler', ru: 'Задний спойлер' },
+  },
+  {
+    id: 'license_plate_holder',
+    zone: 'rear',
+    label: {
+      de: 'Kennzeichenhalter',
+      en: 'License plate holder',
+      ru: 'Рамка номерного знака',
+    },
+  },
+
+  // roof
+  {
+    id: 'roof',
+    zone: 'roof',
+    label: { de: 'Dach', en: 'Roof', ru: 'Крыша' },
+  },
+  {
+    id: 'panoramic_roof',
+    zone: 'roof',
+    label: { de: 'Panoramadach', en: 'Panoramic roof', ru: 'Панорамная крыша' },
+  },
+  {
+    id: 'antenna',
+    zone: 'roof',
+    label: { de: 'Antenne', en: 'Antenna', ru: 'Антенна' },
+  },
+
+  // interior
+  {
+    id: 'dashboard',
+    zone: 'interior',
+    label: { de: 'Armaturenbrett', en: 'Dashboard', ru: 'Торпедо' },
+  },
+  {
+    id: 'steering_wheel',
+    zone: 'interior',
+    label: { de: 'Lenkrad', en: 'Steering wheel', ru: 'Руль' },
+  },
+  {
+    id: 'gear_lever',
+    zone: 'interior',
+    label: { de: 'Schalthebel', en: 'Gear lever', ru: 'Рычаг КПП' },
+  },
+  {
+    id: 'seat_driver',
+    zone: 'interior',
+    label: { de: 'Fahrersitz', en: 'Driver seat', ru: 'Сиденье водителя' },
+  },
+  {
+    id: 'seat_passenger',
+    zone: 'interior',
+    label: {
+      de: 'Beifahrersitz',
+      en: 'Passenger seat',
+      ru: 'Сиденье пассажира',
+    },
+  },
+  {
+    id: 'seat_rear',
+    zone: 'interior',
+    label: { de: 'Rücksitzbank', en: 'Rear seat', ru: 'Заднее сиденье' },
+  },
+  {
+    id: 'door_card_FL',
+    zone: 'interior',
+    label: {
+      de: 'Türverkleidung vorne links',
+      en: 'Front left door card',
+      ru: 'Обшивка двери перед. лев.',
+    },
+  },
+  {
+    id: 'door_card_FR',
+    zone: 'interior',
+    label: {
+      de: 'Türverkleidung vorne rechts',
+      en: 'Front right door card',
+      ru: 'Обшивка двери перед. прав.',
+    },
+  },
+  {
+    id: 'door_card_RL',
+    zone: 'interior',
+    label: {
+      de: 'Türverkleidung hinten links',
+      en: 'Rear left door card',
+      ru: 'Обшивка двери задн. лев.',
+    },
+  },
+  {
+    id: 'door_card_RR',
+    zone: 'interior',
+    label: {
+      de: 'Türverkleidung hinten rechts',
+      en: 'Rear right door card',
+      ru: 'Обшивка двери задн. прав.',
+    },
+  },
+  {
+    id: 'headliner',
+    zone: 'interior',
+    label: { de: 'Dachhimmel', en: 'Headliner', ru: 'Обшивка потолка' },
+  },
+  {
+    id: 'sun_visor',
+    zone: 'interior',
+    label: { de: 'Sonnenblende', en: 'Sun visor', ru: 'Солнцезащитный козырёк' },
+  },
+  {
+    id: 'infotainment_screen',
+    zone: 'interior',
+    label: {
+      de: 'Infotainment-Display',
+      en: 'Infotainment screen',
+      ru: 'Дисплей мультимедиа',
+    },
+  },
+  {
+    id: 'instrument_cluster',
+    zone: 'interior',
+    label: {
+      de: 'Kombiinstrument',
+      en: 'Instrument cluster',
+      ru: 'Приборная панель',
+    },
+  },
+  {
+    id: 'floor_mats',
+    zone: 'interior',
+    label: { de: 'Fußmatten', en: 'Floor mats', ru: 'Коврики салона' },
+  },
+  {
+    id: 'trunk_mat',
+    zone: 'interior',
+    label: { de: 'Kofferraummatte', en: 'Trunk mat', ru: 'Коврик багажника' },
+  },
+  {
+    id: 'airbag_indicator',
+    zone: 'interior',
+    label: {
+      de: 'Airbag-Kontrollleuchte',
+      en: 'Airbag indicator',
+      ru: 'Индикатор подушки безопасности',
+    },
+  },
+
+  // wheels
+  {
+    id: 'rim',
+    zone: 'wheels',
+    label: { de: 'Felge', en: 'Rim', ru: 'Диск' },
+  },
+  {
+    id: 'tire',
+    zone: 'wheels',
+    label: { de: 'Reifen', en: 'Tire', ru: 'Шина' },
+  },
+  {
+    id: 'brake_disc',
+    zone: 'wheels',
+    label: { de: 'Bremsscheibe', en: 'Brake disc', ru: 'Тормозной диск' },
+  },
+  {
+    id: 'brake_caliper',
+    zone: 'wheels',
+    label: { de: 'Bremssattel', en: 'Brake caliper', ru: 'Тормозной суппорт' },
+  },
+  {
+    id: 'hub_dust_cap',
+    zone: 'wheels',
+    label: { de: 'Nabendeckel', en: 'Hub dust cap', ru: 'Колпак ступицы' },
+  },
+
+  // undercarriage
+  {
+    id: 'underbody_panel',
+    zone: 'undercarriage',
+    label: {
+      de: 'Unterbodenverkleidung',
+      en: 'Underbody panel',
+      ru: 'Защита днища',
+    },
+  },
+  {
+    id: 'oil_pan_guard',
+    zone: 'undercarriage',
+    label: { de: 'Ölwannenschutz', en: 'Oil pan guard', ru: 'Защита картера' },
+  },
+  {
+    id: 'exhaust',
+    zone: 'undercarriage',
+    label: { de: 'Auspuffanlage', en: 'Exhaust', ru: 'Выхлопная система' },
+  },
+  {
+    id: 'catalytic_converter',
+    zone: 'undercarriage',
+    label: { de: 'Katalysator', en: 'Catalytic converter', ru: 'Катализатор' },
+  },
+  {
+    id: 'cv_joint_dust_cover',
+    zone: 'undercarriage',
+    label: {
+      de: 'Achsmanschette',
+      en: 'CV joint dust cover',
+      ru: 'Пыльник ШРУС',
+    },
+  },
+  {
+    id: 'suspension_arm',
+    zone: 'undercarriage',
+    label: { de: 'Querlenker', en: 'Suspension arm', ru: 'Рычаг подвески' },
+  },
+  {
+    id: 'shock_absorber',
+    zone: 'undercarriage',
+    label: { de: 'Stoßdämpfer', en: 'Shock absorber', ru: 'Амортизатор' },
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Damage types (§4.2)
+// ---------------------------------------------------------------------------
+
+const DAMAGE_TYPES: DamageTypeDef[] = [
+  {
+    id: 'scratch',
+    label: { de: 'Kratzer', en: 'Scratch', ru: 'Царапина' },
+  },
+  {
+    id: 'dent',
+    label: { de: 'Delle', en: 'Dent', ru: 'Вмятина' },
+  },
+  {
+    id: 'chip',
+    label: { de: 'Steinschlag', en: 'Chip', ru: 'Скол' },
+  },
+  {
+    id: 'crack',
+    label: { de: 'Riss', en: 'Crack', ru: 'Трещина' },
+  },
+  {
+    id: 'corrosion',
+    label: { de: 'Rost', en: 'Corrosion', ru: 'Коррозия / ржавчина' },
+  },
+  {
+    id: 'broken',
+    label: { de: 'Beschädigt / kaputt', en: 'Broken', ru: 'Разбито' },
+  },
+  {
+    id: 'missing',
+    label: { de: 'Fehlt', en: 'Missing', ru: 'Отсутствует' },
+  },
+  {
+    id: 'paint-peeling',
+    label: {
+      de: 'Lack abgeplatzt',
+      en: 'Paint peeling',
+      ru: 'Облупилась краска',
+    },
+  },
+  {
+    id: 'deformation',
+    label: { de: 'Verformung', en: 'Deformation', ru: 'Деформация' },
+  },
+  {
+    id: 'dirt',
+    label: {
+      de: 'Verschmutzung',
+      en: 'Dirt / soiling',
+      ru: 'Загрязнение / следы',
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
+// K / S / T codes (§2.1–2.3, mapping logic §4.5)
+// ---------------------------------------------------------------------------
+
+const KST_CODES: KstCodeDef[] = [
+  // --- K group: body & paint (36) ---
+  {
+    code: 'K01',
+    group: 'K',
+    partId: 'trunk_lid',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Heckklappe verkratzt',
+      en: 'Trunk lid scratched',
+      ru: 'Крышка багажника / 5-я дверь — царапины ЛКП',
+    },
+  },
+  {
+    code: 'K02',
+    group: 'K',
+    partId: 'fender_front_left',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Kotflügel vorne links verkratzt',
+      en: 'Front left fender scratched',
+      ru: 'Переднее левое крыло — царапины',
+    },
+  },
+  {
+    code: 'K03',
+    group: 'K',
+    partId: 'fender_front_right',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Kotflügel vorne rechts verkratzt',
+      en: 'Front right fender scratched',
+      ru: 'Переднее правое крыло — царапины',
+    },
+  },
+  {
+    code: 'K04',
+    group: 'K',
+    partId: 'hood',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Motorhaube verkratzt',
+      en: 'Hood scratched',
+      ru: 'Капот — царапины',
+    },
+  },
+  {
+    code: 'K05',
+    group: 'K',
+    partId: 'side_panel_rear_left',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Seitenwand hinten links verkratzt',
+      en: 'Rear left side panel scratched',
+      ru: 'Задняя боковина слева — царапины',
+    },
+  },
+  {
+    code: 'K06',
+    group: 'K',
+    partId: 'side_panel_rear_right',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Seitenwand hinten rechts verkratzt',
+      en: 'Rear right side panel scratched',
+      ru: 'Задняя боковина справа — царапины',
+    },
+  },
+  {
+    code: 'K07',
+    group: 'K',
+    partId: 'bumper_rear',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Stoßfänger hinten verkratzt',
+      en: 'Rear bumper scratched',
+      ru: 'Задний бампер — царапины',
+    },
+  },
+  {
+    code: 'K08',
+    group: 'K',
+    partId: 'bumper_front',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Stoßfänger vorne verkratzt',
+      en: 'Front bumper scratched',
+      ru: 'Передний бампер — царапины',
+    },
+  },
+  {
+    code: 'K09',
+    group: 'K',
+    partId: 'door_rear_left',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Tür hinten links verkratzt',
+      en: 'Rear left door scratched',
+      ru: 'Задняя левая дверь — царапины',
+    },
+  },
+  {
+    code: 'K10',
+    group: 'K',
+    partId: 'door_rear_right',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Tür hinten rechts verkratzt',
+      en: 'Rear right door scratched',
+      ru: 'Задняя правая дверь — царапины',
+    },
+  },
+  {
+    code: 'K11',
+    group: 'K',
+    partId: 'door_front_left',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Tür vorne links verkratzt',
+      en: 'Front left door scratched',
+      ru: 'Передняя левая дверь — царапины',
+    },
+  },
+  {
+    code: 'K12',
+    group: 'K',
+    partId: 'door_front_right',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Tür vorne rechts verkratzt',
+      en: 'Front right door scratched',
+      ru: 'Передняя правая дверь — царапины',
+    },
+  },
+  {
+    code: 'K13',
+    group: 'K',
+    partId: 'sill_left',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Schwellerverkleidung links verkratzt',
+      en: 'Left sill trim scratched',
+      ru: 'Накладка порога слева — повреждение / царапина',
+    },
+  },
+  {
+    code: 'K14',
+    group: 'K',
+    partId: 'sill_right',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Schwellerverkleidung rechts verkratzt',
+      en: 'Right sill trim scratched',
+      ru: 'Накладка порога справа — повреждение / царапина',
+    },
+  },
+  {
+    code: 'K15',
+    group: 'K',
+    partId: 'heckspoiler',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Heckspoiler verkratzt',
+      en: 'Rear spoiler scratched',
+      ru: 'Задний спойлер — царапины',
+    },
+  },
+  {
+    code: 'K16',
+    group: 'K',
+    partId: 'roof',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Dach verkratzt / beklebt',
+      en: 'Roof scratched / wrapped',
+      ru: 'Крыша — царапины / потёртости',
+    },
+  },
+  {
+    code: 'K17',
+    group: 'K',
+    partId: 'wheel_arch_front_left',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Radlauf verkratzt',
+      en: 'Wheel arch scratched',
+      ru: 'Колёсная арка — царапины / задиры',
+    },
+  },
+  {
+    code: 'K18',
+    group: 'K',
+    partId: 'windshield',
+    typeId: 'chip',
+    defaultTier: 'T2',
+    label: {
+      de: 'Frontscheibe beschädigt',
+      en: 'Windshield damaged (chip / crack)',
+      ru: 'Лобовое стекло — скол / трещина',
+    },
+  },
+  {
+    code: 'K19',
+    group: 'K',
+    partId: 'mirror_left',
+    typeId: 'scratch',
+    defaultTier: 'T1',
+    label: {
+      de: 'Spiegelkappe verkratzt',
+      en: 'Mirror cap scratched',
+      ru: 'Корпус зеркала — царапины / повреждения',
+    },
+  },
+  {
+    code: 'K20',
+    group: 'K',
+    partId: null,
+    typeId: 'dent',
+    defaultTier: 'T3',
+    label: {
+      de: 'Fahrzeug mit Hagelschaden',
+      en: 'Vehicle with hail damage',
+      ru: 'Автомобиль — градобой (Hagelschaden)',
+    },
+  },
+  {
+    code: 'K21',
+    group: 'K',
+    partId: 'trunk_lid',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Heckklappe Delle/Dellen',
+      en: 'Trunk lid dent(s)',
+      ru: 'Крышка багажника — вмятина',
+    },
+  },
+  {
+    code: 'K22',
+    group: 'K',
+    partId: 'fender_front_left',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Kotflügel vorne links Delle',
+      en: 'Front left fender dent',
+      ru: 'Переднее левое крыло — вмятина',
+    },
+  },
+  {
+    code: 'K23',
+    group: 'K',
+    partId: 'fender_front_right',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Kotflügel vorne rechts Delle',
+      en: 'Front right fender dent',
+      ru: 'Переднее правое крыло — вмятина',
+    },
+  },
+  {
+    code: 'K24',
+    group: 'K',
+    partId: 'hood',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Motorhaube Delle',
+      en: 'Hood dent',
+      ru: 'Капот — вмятина',
+    },
+  },
+  {
+    code: 'K25',
+    group: 'K',
+    partId: 'side_panel_rear_left',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Seitenwand hinten links Delle',
+      en: 'Rear left side panel dent',
+      ru: 'Задняя боковина слева — вмятина',
+    },
+  },
+  {
+    code: 'K26',
+    group: 'K',
+    partId: 'side_panel_rear_right',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Seitenwand hinten rechts Delle',
+      en: 'Rear right side panel dent',
+      ru: 'Задняя боковина справа — вмятина',
+    },
+  },
+  {
+    code: 'K27',
+    group: 'K',
+    partId: 'bumper_rear',
+    typeId: 'deformation',
+    defaultTier: 'T2',
+    label: {
+      de: 'Stoßfänger hinten Delle',
+      en: 'Rear bumper dent / deformation',
+      ru: 'Задний бампер — вмятина / деформация',
+    },
+  },
+  {
+    code: 'K28',
+    group: 'K',
+    partId: 'bumper_front',
+    typeId: 'deformation',
+    defaultTier: 'T2',
+    label: {
+      de: 'Stoßfänger vorne Delle',
+      en: 'Front bumper dent / deformation',
+      ru: 'Передний бампер — вмятина / деформация',
+    },
+  },
+  {
+    code: 'K29',
+    group: 'K',
+    partId: 'door_rear_left',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Tür hinten links Delle',
+      en: 'Rear left door dent',
+      ru: 'Задняя левая дверь — вмятина',
+    },
+  },
+  {
+    code: 'K30',
+    group: 'K',
+    partId: 'door_rear_right',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Tür hinten rechts Delle',
+      en: 'Rear right door dent',
+      ru: 'Задняя правая дверь — вмятина',
+    },
+  },
+  {
+    code: 'K31',
+    group: 'K',
+    partId: 'door_front_left',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Tür vorne links Delle',
+      en: 'Front left door dent',
+      ru: 'Передняя левая дверь — вмятина',
+    },
+  },
+  {
+    code: 'K32',
+    group: 'K',
+    partId: 'door_front_right',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Tür vorne rechts Delle',
+      en: 'Front right door dent',
+      ru: 'Передняя правая дверь — вмятина',
+    },
+  },
+  {
+    code: 'K33',
+    group: 'K',
+    partId: 'sill_left',
+    typeId: 'deformation',
+    defaultTier: 'T2',
+    label: {
+      de: 'Schwellerverkleidung links Delle',
+      en: 'Left sill trim deformation',
+      ru: 'Накладка порога слева — деформация',
+    },
+  },
+  {
+    code: 'K34',
+    group: 'K',
+    partId: 'sill_right',
+    typeId: 'deformation',
+    defaultTier: 'T2',
+    label: {
+      de: 'Schwellerverkleidung rechts Delle',
+      en: 'Right sill trim deformation',
+      ru: 'Накладка порога справа — деформация',
+    },
+  },
+  {
+    code: 'K35',
+    group: 'K',
+    partId: 'heckspoiler',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Heckspoiler Delle',
+      en: 'Rear spoiler dent',
+      ru: 'Задний спойлер — вмятина',
+    },
+  },
+  {
+    code: 'K36',
+    group: 'K',
+    partId: 'roof',
+    typeId: 'dent',
+    defaultTier: 'T2',
+    label: {
+      de: 'Dach Delle/Dellen',
+      en: 'Roof dent(s)',
+      ru: 'Крыша — вмятина',
+    },
+  },
+
+  // --- S group: service (5) ---
+  {
+    code: 'S01',
+    group: 'S',
+    partId: null,
+    typeId: null,
+    defaultTier: 'T1',
+    label: {
+      de: 'Fahrzeug-Check',
+      en: 'Scheduled vehicle check',
+      ru: 'Общий техосмотр по регламенту',
+    },
+  },
+  {
+    code: 'S02',
+    group: 'S',
+    partId: null,
+    typeId: null,
+    defaultTier: 'T1',
+    label: {
+      de: 'Ölservice fällig',
+      en: 'Oil service due',
+      ru: 'Просрочена замена моторного масла',
+    },
+  },
+  {
+    code: 'S03',
+    group: 'S',
+    partId: null,
+    typeId: null,
+    defaultTier: 'T1',
+    label: {
+      de: 'Service Bremsflüssigkeit',
+      en: 'Brake fluid service due',
+      ru: 'Просрочен сервис тормозной жидкости',
+    },
+  },
+  {
+    code: 'S04',
+    group: 'S',
+    partId: null,
+    typeId: null,
+    defaultTier: 'T1',
+    label: {
+      de: 'Service überzogen',
+      en: 'Service overdue (interval exceeded)',
+      ru: 'ТО просрочено (превышен интервал)',
+    },
+  },
+  {
+    code: 'S05',
+    group: 'S',
+    partId: null,
+    typeId: null,
+    defaultTier: 'T1',
+    label: {
+      de: 'Service (Elektrofahrzeug)',
+      en: 'EV / HV battery service',
+      ru: 'Сервис электромобиля / ВВ-батареи',
+    },
+  },
+
+  // --- T group: technical condition & equipment (27) ---
+  {
+    code: 'T01',
+    group: 'T',
+    partId: null,
+    typeId: 'broken',
+    defaultTier: 'T1',
+    label: {
+      de: 'Batterie-/Schlüsselfernbedienung',
+      en: 'Key fob / remote not working or missing',
+      ru: 'Не работает / отсутствует брелок, пульт-ключ от АКБ',
+    },
+  },
+  {
+    code: 'T02',
+    group: 'T',
+    partId: 'brake_disc',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Bremsbeläge hinten verschlissen',
+      en: 'Rear brake pads worn',
+      ru: 'Тормозные колодки сзади — износ',
+    },
+  },
+  {
+    code: 'T03',
+    group: 'T',
+    partId: 'brake_disc',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Bremsbeläge vorne verschlissen',
+      en: 'Front brake pads worn',
+      ru: 'Тормозные колодки спереди — износ',
+    },
+  },
+  {
+    code: 'T04',
+    group: 'T',
+    partId: 'brake_caliper',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Bremse hinten verschlissen',
+      en: 'Rear brake worn / faulty',
+      ru: 'Задний тормозной механизм — износ / неисправность',
+    },
+  },
+  {
+    code: 'T05',
+    group: 'T',
+    partId: 'brake_caliper',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Bremse vorne verschlissen',
+      en: 'Front brake worn / faulty',
+      ru: 'Передний тормозной механизм — износ / неисправность',
+    },
+  },
+  {
+    code: 'T06',
+    group: 'T',
+    partId: 'brake_disc',
+    typeId: 'deformation',
+    defaultTier: 'T2',
+    label: {
+      de: 'Bremsscheiben vorne',
+      en: 'Front brake discs worn / warped',
+      ru: 'Тормозные диски передние — износ / деформация',
+    },
+  },
+  {
+    code: 'T07',
+    group: 'T',
+    partId: 'brake_disc',
+    typeId: 'deformation',
+    defaultTier: 'T2',
+    label: {
+      de: 'Bremsscheiben hinten',
+      en: 'Rear brake discs worn / warped',
+      ru: 'Тормозные диски задние — износ / деформация',
+    },
+  },
+  {
+    code: 'T08',
+    group: 'T',
+    partId: 'hood',
+    typeId: 'broken',
+    defaultTier: 'T1',
+    label: {
+      de: 'Dämmmatte Motorhaube',
+      en: 'Hood insulation mat damaged / missing',
+      ru: 'Шумопоглотитель капота — повреждён / отсутствует',
+    },
+  },
+  {
+    code: 'T09',
+    group: 'T',
+    partId: 'rim',
+    typeId: 'broken',
+    defaultTier: 'T1',
+    label: {
+      de: 'Felge hinten links',
+      en: 'Rear left rim damaged / repainted',
+      ru: 'Диск задний левый — повреждён / перекрашен',
+    },
+  },
+  {
+    code: 'T10',
+    group: 'T',
+    partId: 'rim',
+    typeId: 'broken',
+    defaultTier: 'T1',
+    label: {
+      de: 'Felge hinten rechts',
+      en: 'Rear right rim damaged',
+      ru: 'Диск задний правый — повреждён',
+    },
+  },
+  {
+    code: 'T11',
+    group: 'T',
+    partId: 'rim',
+    typeId: 'broken',
+    defaultTier: 'T1',
+    label: {
+      de: 'Felge vorne links',
+      en: 'Front left rim damaged',
+      ru: 'Диск передний левый — повреждён',
+    },
+  },
+  {
+    code: 'T12',
+    group: 'T',
+    partId: 'rim',
+    typeId: 'broken',
+    defaultTier: 'T1',
+    label: {
+      de: 'Felge vorne rechts',
+      en: 'Front right rim damaged',
+      ru: 'Диск передний правый — повреждён',
+    },
+  },
+  {
+    code: 'T13',
+    group: 'T',
+    partId: 'floor_mats',
+    typeId: 'missing',
+    defaultTier: 'T1',
+    label: {
+      de: 'Fußmatte vorne',
+      en: 'Front floor mat missing / damaged',
+      ru: 'Передний коврик — отсутствует / повреждён',
+    },
+  },
+  {
+    code: 'T14',
+    group: 'T',
+    partId: 'floor_mats',
+    typeId: 'missing',
+    defaultTier: 'T1',
+    label: {
+      de: 'Fußmatten fehlen',
+      en: 'Floor mats missing',
+      ru: 'Коврики салона отсутствуют',
+    },
+  },
+  {
+    code: 'T15',
+    group: 'T',
+    partId: 'cv_joint_dust_cover',
+    typeId: 'broken',
+    defaultTier: 'T2',
+    label: {
+      de: 'Gelenkscheibe / Gummiring',
+      en: 'CV joint / flex disc damaged',
+      ru: 'ШРУС / защита шарнира — повреждение',
+    },
+  },
+  {
+    code: 'T16',
+    group: 'T',
+    partId: 'fog_light_left',
+    typeId: 'broken',
+    defaultTier: 'T1',
+    label: {
+      de: 'Nebelscheinwerfer links',
+      en: 'Left fog light damaged',
+      ru: 'Противотуманная фара левая — повреждена',
+    },
+  },
+  {
+    code: 'T17',
+    group: 'T',
+    partId: 'fog_light_right',
+    typeId: 'broken',
+    defaultTier: 'T1',
+    label: {
+      de: 'Nebelscheinwerfer rechts',
+      en: 'Right fog light damaged',
+      ru: 'Противотуманная фара правая — повреждена',
+    },
+  },
+  {
+    code: 'T18',
+    group: 'T',
+    partId: 'tire',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Reifen alle verschlissen',
+      en: 'All tires worn',
+      ru: 'Все шины изношены',
+    },
+  },
+  {
+    code: 'T19',
+    group: 'T',
+    partId: 'tire',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Reifen hinten verschlissen',
+      en: 'Rear tires worn',
+      ru: 'Задние шины изношены',
+    },
+  },
+  {
+    code: 'T20',
+    group: 'T',
+    partId: 'tire',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Reifen vorne verschlissen',
+      en: 'Front tires worn',
+      ru: 'Передние шины изношены',
+    },
+  },
+  {
+    code: 'T21',
+    group: 'T',
+    partId: null,
+    typeId: 'missing',
+    defaultTier: 'T1',
+    label: {
+      de: 'Schlüssel / Fernbedienung fehlt',
+      en: 'Key / remote missing',
+      ru: 'Отсутствует ключ / брелок-пульт',
+    },
+  },
+  {
+    code: 'T22',
+    group: 'T',
+    partId: 'tire',
+    typeId: 'missing',
+    defaultTier: 'T2',
+    label: {
+      de: 'Sommerräder fehlen',
+      en: 'Summer wheels missing',
+      ru: 'Летние колёса отсутствуют',
+    },
+  },
+  {
+    code: 'T23',
+    group: 'T',
+    partId: 'underbody_panel',
+    typeId: 'broken',
+    defaultTier: 'T2',
+    label: {
+      de: 'Unterbodenverkleidung',
+      en: 'Underbody panel / wheel liners damaged',
+      ru: 'Защита днища / подкрылки — повреждены',
+    },
+  },
+  {
+    code: 'T24',
+    group: 'T',
+    partId: 'tire',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Reifen alle Profiltiefe',
+      en: 'All tires below tread limit',
+      ru: 'Все шины ниже допустимого протектора',
+    },
+  },
+  {
+    code: 'T25',
+    group: 'T',
+    partId: 'tire',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Reifen hinten Profiltiefe',
+      en: 'Rear tires low tread',
+      ru: 'Задние шины — низкий протектор',
+    },
+  },
+  {
+    code: 'T26',
+    group: 'T',
+    partId: 'tire',
+    typeId: null,
+    defaultTier: 'T2',
+    label: {
+      de: 'Reifen vorne Profiltiefe',
+      en: 'Front tires low tread',
+      ru: 'Передние шины — низкий протектор',
+    },
+  },
+  {
+    code: 'T27',
+    group: 'T',
+    partId: 'tire',
+    typeId: null,
+    defaultTier: 'T1',
+    label: {
+      de: 'Reifen ohne Erstausrüstung',
+      en: 'Tires not OEM-marked',
+      ru: 'Шины без заводской маркировки (не OEM)',
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Expert checklist (§3.1–3.8) — 98 items
+// ---------------------------------------------------------------------------
+
+const CHECKLIST: ChecklistItemDef[] = [
+  // §3.1 Body & paint (1–15)
+  {
+    number: 1,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Durchrostung von Karosserieblechen (Rost)',
+      en: 'Through-corrosion of body panels (rust)',
+      ru: 'Сквозная коррозия кузовных панелей (ржавчина)',
+    },
+  },
+  {
+    number: 2,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Oberflächenrost an Türkanten, Schwellern, Radläufen',
+      en: 'Surface rust on door edges, sills, wheel arches',
+      ru: 'Поверхностная коррозия на кромках дверей, порогов, колёсных арок',
+    },
+  },
+  {
+    number: 3,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Rost an der Heckklappe im Bereich Emblem / Kennzeichen',
+      en: 'Rust on tailgate near emblem / license plate',
+      ru: 'Коррозия крышки багажника в районе эмблемы / номерного знака',
+    },
+  },
+  {
+    number: 4,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Verformung von Längsträger / tragender Struktur',
+      en: 'Deformation of frame rail / structural member',
+      ru: 'Деформация лонжерона / силовой структуры',
+    },
+  },
+  {
+    number: 5,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Blasenbildung im Lack (Lackblasen)',
+      en: 'Paint blistering / bubbling',
+      ru: 'Вздутие / пузыри на ЛКП (пузырение краски)',
+    },
+  },
+  {
+    number: 6,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Abplatzender Klarlack (Abblättern, Delamination)',
+      en: 'Clear-coat peeling (flaking, delamination)',
+      ru: 'Отслоение лака (шелушение, ламинация)',
+    },
+  },
+  {
+    number: 7,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Trübung und Ausbleichen des Lacks an Dach / Motorhaube',
+      en: 'Clouding and fading of paint on roof / hood',
+      ru: 'Помутнение и выгорание лака на крыше / капоте',
+    },
+  },
+  {
+    number: 8,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Durchpolierter / übermäßig polierter Lack',
+      en: 'Burned-through / over-polished paint',
+      ru: 'Следы полировки «под воронку» / перетёртый лак',
+    },
+  },
+  {
+    number: 9,
+    category: 'body',
+    frequent: true,
+    label: {
+      de: 'Farbtonabweichung benachbarter Teile (Nachlackierung)',
+      en: 'Color mismatch of adjacent panels (respray)',
+      ru: 'Несоответствие оттенков соседних элементов (перекрас)',
+    },
+  },
+  {
+    number: 10,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Verzogener Türrahmen / Türöffnung',
+      en: 'Misaligned door frame / opening',
+      ru: 'Перекошенный дверной проём / рамка двери',
+    },
+  },
+  {
+    number: 11,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Undichter oder verzogener Tankdeckel',
+      en: 'Leaking or misaligned fuel filler flap',
+      ru: 'Негерметичная или перекошенная крышка лючка бензобака',
+    },
+  },
+  {
+    number: 12,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Karosserieschaden im Bereich der Abschleppöse',
+      en: 'Body damage near the tow hook',
+      ru: 'Повреждение кузова в районе буксировочной петли',
+    },
+  },
+  {
+    number: 13,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Schwellerschaden an der Wagenheberaufnahme',
+      en: 'Sill damage at the jack point',
+      ru: 'Повреждение порога в месте установки домкрата',
+    },
+  },
+  {
+    number: 14,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Dachverzug / Falten an den Panelübergängen',
+      en: 'Roof distortion / creases at panel joints',
+      ru: 'Перекос крыши / заломы на стыках панелей',
+    },
+  },
+  {
+    number: 15,
+    category: 'body',
+    frequent: false,
+    label: {
+      de: 'Ungleichmäßige Spaltmaße (Karosserie nach Reparatur)',
+      en: 'Uneven panel gaps (body after repair)',
+      ru: 'Невыставленные зазоры (кузов после ремонта)',
+    },
+  },
+
+  // §3.2 Glass, mirrors, lighting (16–28)
+  {
+    number: 16,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Steinschlag / Riss in der Heckscheibe',
+      en: 'Chip / crack in the rear window',
+      ru: 'Скол / трещина на заднем стекле',
+    },
+  },
+  {
+    number: 17,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Steinschlag / Riss in der Seitenscheibe (versenkbar oder fest)',
+      en: 'Chip / crack in a side window (drop or fixed)',
+      ru: 'Скол / трещина на боковом стекле (опускном или глухом)',
+    },
+  },
+  {
+    number: 18,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Beschädigung der Glasfläche des Panoramadachs',
+      en: 'Damage to the panoramic roof glass panel',
+      ru: 'Повреждение стеклянной панели панорамной крыши',
+    },
+  },
+  {
+    number: 19,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Wischerkratzer auf der Frontscheibe',
+      en: 'Wiper scratches on the windshield',
+      ru: 'Царапины от стеклоочистителей на ветровом стекле',
+    },
+  },
+  {
+    number: 20,
+    category: 'glass',
+    frequent: true,
+    label: {
+      de: 'Trübung / Mattierung der Scheinwerfer (Polycarbonat)',
+      en: 'Clouded / hazy headlights (polycarbonate)',
+      ru: 'Помутнение / «матовость» фар (поликарбонат)',
+    },
+  },
+  {
+    number: 21,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Riss im Glas von Scheinwerfer, Blinker, Bremslicht',
+      en: 'Cracked lens of headlight, indicator, brake light',
+      ru: 'Трещина стекла фары, поворотника, стопа',
+    },
+  },
+  {
+    number: 22,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Beschlagen von Scheinwerfer oder Rückleuchte von innen',
+      en: 'Condensation inside headlight or tail light',
+      ru: 'Запотевание фары или заднего фонаря изнутри',
+    },
+  },
+  {
+    number: 23,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Riss / Absplitterung im Spiegelglas',
+      en: 'Crack / chip in the mirror glass',
+      ru: 'Трещина / скол на стекле зеркала',
+    },
+  },
+  {
+    number: 24,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Spiegelverstellung / -heizung ohne Funktion',
+      en: 'Mirror adjustment / heating not working',
+      ru: 'Не работает электропривод / обогрев зеркала',
+    },
+  },
+  {
+    number: 25,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Seitenblinker am Kotflügel oder Spiegel fehlt / defekt',
+      en: 'Side turn-signal repeater on fender or mirror missing / broken',
+      ru: 'Отсутствует / сломан повторитель поворота на крыле или зеркале',
+    },
+  },
+  {
+    number: 26,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Parksensor (PDC) fehlt / beschädigt',
+      en: 'Parking sensor missing / damaged',
+      ru: 'Отсутствует / повреждён датчик парктроника',
+    },
+  },
+  {
+    number: 27,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Rückfahr- oder Rundumkamera fehlt / beschädigt',
+      en: 'Rear-view or surround camera missing / damaged',
+      ru: 'Отсутствует / повреждена камера заднего или кругового обзора',
+    },
+  },
+  {
+    number: 28,
+    category: 'glass',
+    frequent: false,
+    label: {
+      de: 'Antenne (Dachantenne) beschädigt / ohne Funktion',
+      en: 'Antenna (shark fin) damaged / not working',
+      ru: 'Повреждённая / нерабочая антенна («плавник»)',
+    },
+  },
+
+  // §3.3 Interior (29–42)
+  {
+    number: 29,
+    category: 'interior',
+    frequent: true,
+    label: {
+      de: 'Schnitte, Brandlöcher, Flecken auf den Sitzbezügen',
+      en: 'Cuts, burn holes, stains on seat upholstery',
+      ru: 'Порезы, прожоги, пятна на обивке сидений',
+    },
+  },
+  {
+    number: 30,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Abnutzung von Lenkradleder und Schaltknauf',
+      en: 'Wear of steering-wheel leather and gear knob',
+      ru: 'Износ кожи руля, рукоятки КПП',
+    },
+  },
+  {
+    number: 31,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Abgenutzte / verblasste Symbole auf den Tasten',
+      en: 'Worn / faded pictograms on buttons',
+      ru: 'Потёртости / стёртые пиктограммы на кнопках',
+    },
+  },
+  {
+    number: 32,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Defekte Armlehne / defekter Becherhalter',
+      en: 'Broken armrest / cup holder',
+      ru: 'Сломанный подлокотник / подстаканник',
+    },
+  },
+  {
+    number: 33,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Klemmender oder defekter Sitzverstellmechanismus',
+      en: 'Sticking or broken seat adjustment mechanism',
+      ru: 'Заедающий или сломанный механизм регулировки сиденья',
+    },
+  },
+  {
+    number: 34,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Sitzheizung / Sitzbelüftung ohne Funktion',
+      en: 'Seat heating / ventilation not working',
+      ru: 'Не работает подогрев / вентиляция сидений',
+    },
+  },
+  {
+    number: 35,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Beschädigter Dachhimmel (Durchhängen, Flecken)',
+      en: 'Damaged headliner (sagging, stains)',
+      ru: 'Повреждённая обшивка потолка (провисание, пятна)',
+    },
+  },
+  {
+    number: 36,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Defekte Sonnenblende / Spiegel in der Sonnenblende',
+      en: 'Broken sun visor / vanity mirror',
+      ru: 'Поломка солнцезащитного козырька / зеркала в козырьке',
+    },
+  },
+  {
+    number: 37,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Risse / Kratzer im Armaturenbrett-Kunststoff',
+      en: 'Cracks / scratches in dashboard plastic',
+      ru: 'Трещины / царапины на пластике торпедо',
+    },
+  },
+  {
+    number: 38,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Gebrochenes oder gerissenes Display von Infotainment / Kombiinstrument',
+      en: 'Broken or cracked infotainment / cluster display',
+      ru: 'Разбитый или треснувший дисплей мультимедиа / приборки',
+    },
+  },
+  {
+    number: 39,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Handschuhfachklappe gebrochen oder fehlend',
+      en: 'Glovebox lid broken or missing',
+      ru: 'Сломан или отсутствует лючок бардачка',
+    },
+  },
+  {
+    number: 40,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Pedalauflagen fehlen',
+      en: 'Pedal pads missing',
+      ru: 'Отсутствуют накладки на педали',
+    },
+  },
+  {
+    number: 41,
+    category: 'interior',
+    frequent: true,
+    label: {
+      de: 'Flecken und Geruch im Innenraum (Tiere, Tabak, Schimmel)',
+      en: 'Stains and odor in the cabin (pets, tobacco, mold)',
+      ru: 'Пятна и запах в салоне (животные, табак, плесень)',
+    },
+  },
+  {
+    number: 42,
+    category: 'interior',
+    frequent: false,
+    label: {
+      de: 'Zigarettenanzünder / USB-Anschluss defekt oder fehlend',
+      en: 'Cigarette lighter / USB port faulty or missing',
+      ru: 'Неисправный / отсутствующий прикуриватель, USB-порт',
+    },
+  },
+
+  // §3.4 Engine, transmission, suspension (43–60)
+  {
+    number: 43,
+    category: 'engine',
+    frequent: true,
+    label: {
+      de: 'Batterie hält keine Ladung / Tiefentladung, Korrosion an Polen',
+      en: 'Battery not holding charge / deeply discharged, terminal corrosion',
+      ru: 'Не держит заряд / глубокий разряд АКБ, коррозия клемм',
+    },
+  },
+  {
+    number: 44,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Riss / Verformung des Unterfahrschutzes (Ölwanne)',
+      en: 'Crack / deformation of the skid plate (oil pan guard)',
+      ru: 'Трещина / деформация защиты картера',
+    },
+  },
+  {
+    number: 45,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Beschädigtes oder abgerissenes Abgasanlagenteil',
+      en: 'Damaged or detached exhaust-system part',
+      ru: 'Повреждённая или оторванная часть выхлопной системы',
+    },
+  },
+  {
+    number: 46,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Herausgeschnittener oder fehlender Katalysator (DPF/SCR)',
+      en: 'Cut-out or missing catalytic converter (DPF/SCR)',
+      ru: 'Вырезанный или отсутствующий катализатор (DPF/SCR)',
+    },
+  },
+  {
+    number: 47,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Kühlmittelleckage (Schläuche, Ausgleichsbehälter)',
+      en: 'Coolant leak (hoses, expansion tank)',
+      ru: 'Подтёки охлаждающей жидкости (патрубки, расширительный бачок)',
+    },
+  },
+  {
+    number: 48,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Leckage der Servolenkung',
+      en: 'Power-steering leak',
+      ru: 'Течь гидроусилителя руля',
+    },
+  },
+  {
+    number: 49,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Leckage / Verschmutzung der Waschdüsen, Scheinwerferwaschanlage defekt',
+      en: 'Washer-jet leak / clogging, headlight washer not working',
+      ru: 'Течь / загрязнение форсунок омывателя, неработающий омыватель фар',
+    },
+  },
+  {
+    number: 50,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Defekter Generator oder Anlasser (Geräusch, keine Ladung)',
+      en: 'Faulty alternator or starter (noise, no charging)',
+      ru: 'Неисправный генератор или стартер (шум, нет зарядки)',
+    },
+  },
+  {
+    number: 51,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Öleinfülldeckel fehlt / beschädigt',
+      en: 'Oil filler cap missing / damaged',
+      ru: 'Отсутствующая / повреждённая крышка заливной горловины масла',
+    },
+  },
+  {
+    number: 52,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Tankdeckel beschädigt / fehlend',
+      en: 'Fuel cap damaged / missing',
+      ru: 'Повреждённая / отсутствующая крышка топливного бака',
+    },
+  },
+  {
+    number: 53,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Verschmutzter Luft- oder Innenraumfilter',
+      en: 'Dirty air or cabin filter',
+      ru: 'Загрязнённый воздушный или салонный фильтр',
+    },
+  },
+  {
+    number: 54,
+    category: 'engine',
+    frequent: true,
+    label: {
+      de: 'Wischerblätter verschlissen / beschädigt',
+      en: 'Wiper blades worn / damaged',
+      ru: 'Щётки стеклоочистителей изношены / повреждены',
+    },
+  },
+  {
+    number: 55,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Geräusch der Radlager',
+      en: 'Wheel-bearing noise',
+      ru: 'Шум ступичных подшипников',
+    },
+  },
+  {
+    number: 56,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Spiel in Spurstangen / Spurstangenköpfen',
+      en: 'Play in tie rods / tie-rod ends',
+      ru: 'Люфт рулевых тяг / наконечников',
+    },
+  },
+  {
+    number: 57,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Verschleiß von Silentblöcken / Stabilisatorstreben',
+      en: 'Wear of bushings / stabilizer links',
+      ru: 'Износ сайлент-блоков / стоек стабилизатора',
+    },
+  },
+  {
+    number: 58,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Leckage oder Defekt der Stoßdämpfer',
+      en: 'Shock-absorber leak or fault',
+      ru: 'Течь или неисправность амортизаторов',
+    },
+  },
+  {
+    number: 59,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Fremdgeräusche im Fahrwerk',
+      en: 'Knocking noises in the suspension',
+      ru: 'Посторонние стуки в подвеске',
+    },
+  },
+  {
+    number: 60,
+    category: 'engine',
+    frequent: false,
+    label: {
+      de: 'Defekte / gerissene Motor- und Getriebelager',
+      en: 'Broken / cracked engine and transmission mounts',
+      ru: 'Разбитые / треснувшие опоры двигателя, подушки КПП',
+    },
+  },
+
+  // §3.5 Chassis, tires, wheels, brakes (61–70)
+  {
+    number: 61,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Unterschiedliche oder gegenläufige Reifen auf einer Achse',
+      en: 'Mismatched or differently-directed tires on one axle',
+      ru: 'Разноразмерные или разнонаправленные шины на одной оси',
+    },
+  },
+  {
+    number: 62,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Reifen mit abgelaufenem DOT (älter als 6 Jahre)',
+      en: 'Tires with expired DOT (older than 6 years)',
+      ru: 'Шины с просроченным DOT (старше 6 лет)',
+    },
+  },
+  {
+    number: 63,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Beulen (seitliche Wölbungen), Schnitte an den Reifen',
+      en: 'Bulges (sidewall blisters), cuts on the tires',
+      ru: '«Грыжи» (боковые вздутия), порезы на шинах',
+    },
+  },
+  {
+    number: 64,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Ungleichmäßiger Reifenverschleiß (Anzeichen für Spur / Sturz)',
+      en: 'Uneven tire wear (sign of toe / camber issue)',
+      ru: 'Неравномерный износ шин (признак схождения / развала)',
+    },
+  },
+  {
+    number: 65,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Reserverad / Notrad / Reparaturset / Kompressor fehlt',
+      en: 'Spare wheel / space-saver / repair kit / compressor missing',
+      ru: 'Отсутствует запасное колесо / докатка / ремкомплект / компрессор',
+    },
+  },
+  {
+    number: 66,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Felgenschloss / Sicherungsschraube fehlt oder beschädigt',
+      en: 'Locking wheel bolt missing or damaged',
+      ru: 'Отсутствует или повреждён секретный болт («секретка»)',
+    },
+  },
+  {
+    number: 67,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Festsitzender / defekter Bremssattel, Beläge klemmen',
+      en: 'Seized / faulty brake caliper, pads sticking',
+      ru: '«Закисший» / сломанный суппорт, клинит колодки',
+    },
+  },
+  {
+    number: 68,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Überhitzte / verformte Bremsscheiben (Blaufärbung, Schlag)',
+      en: 'Overheated / warped brake discs (bluing, runout)',
+      ru: 'Перегретые / деформированные тормозные диски (посинение, биение)',
+    },
+  },
+  {
+    number: 69,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Beschädigter Bremsschlauch, schwitzender Schlauch',
+      en: 'Damaged brake hose, weeping hose',
+      ru: 'Повреждение тормозного шланга, «потеющий» шланг',
+    },
+  },
+  {
+    number: 70,
+    category: 'chassis',
+    frequent: false,
+    label: {
+      de: 'Rost / Riefen an Achsmanschetten, Bremskolben',
+      en: 'Rust / scoring on CV boots, brake pistons',
+      ru: 'Ржавчина / задиры на пыльниках ШРУС, тормозных поршнях',
+    },
+  },
+
+  // §3.6 Completeness & documentation (71–78)
+  {
+    number: 71,
+    category: 'completeness',
+    frequent: true,
+    label: {
+      de: 'Fehlendes Serviceheft / fehlende Servicestempel',
+      en: 'Missing service booklet / service stamps',
+      ru: 'Отсутствие сервисной книжки / штампов ТО',
+    },
+  },
+  {
+    number: 72,
+    category: 'completeness',
+    frequent: true,
+    label: {
+      de: 'Fehlender Zweitschlüssel / fehlende Keyless-Karte',
+      en: 'Missing second key / Keyless card',
+      ru: 'Отсутствие второго ключа / карточки Keyless',
+    },
+  },
+  {
+    number: 73,
+    category: 'completeness',
+    frequent: false,
+    label: {
+      de: 'Fehlendes Warndreieck, Verbandskasten, Feuerlöscher, Warnweste',
+      en: 'Missing warning triangle, first-aid kit, fire extinguisher, hi-vis vest',
+      ru: 'Отсутствие знака аварийной остановки, аптечки, огнетушителя, жилета',
+    },
+  },
+  {
+    number: 74,
+    category: 'completeness',
+    frequent: false,
+    label: {
+      de: 'Fehlender Wagenheber, Radmutternschlüssel, Abschleppöse',
+      en: 'Missing jack, wheel wrench, tow hook',
+      ru: 'Отсутствие домкрата, баллонного ключа, буксировочной петли',
+    },
+  },
+  {
+    number: 75,
+    category: 'completeness',
+    frequent: false,
+    label: {
+      de: 'Fehlende Betriebsanleitung / FIN-Aufkleber an der Säule',
+      en: 'Missing owner manual / VIN sticker on the pillar',
+      ru: 'Отсутствие инструкции / VIN-наклейки на стойке',
+    },
+  },
+  {
+    number: 76,
+    category: 'completeness',
+    frequent: false,
+    label: {
+      de: 'Unleserliche / beschädigte FIN an Karosserie oder Typenschild',
+      en: 'Illegible / damaged VIN on body or plate',
+      ru: 'Нечитаемый / повреждённый номер VIN на кузове или табличке',
+    },
+  },
+  {
+    number: 77,
+    category: 'completeness',
+    frequent: false,
+    label: {
+      de: 'FIN in den Papieren stimmt nicht mit der Karosserie überein',
+      en: 'VIN in documents does not match the body',
+      ru: 'Несоответствие VIN в ПТС и на кузове',
+    },
+  },
+  {
+    number: 78,
+    category: 'completeness',
+    frequent: false,
+    label: {
+      de: 'Nicht eingetragene / nicht zertifizierte Umbauten (Tuning, Lift, Chip)',
+      en: 'Non-certified / unregistered modifications (tuning, lift, chip)',
+      ru: 'Нестандартные / несертифицированные доработки (тюнинг, лифт, чип)',
+    },
+  },
+
+  // §3.7 Electronics & electronic systems (79–87)
+  {
+    number: 79,
+    category: 'electronics',
+    frequent: true,
+    label: {
+      de: 'Check-Engine / ABS / ESP / Airbag / EPC leuchtet',
+      en: 'Check Engine / ABS / ESP / Airbag / EPC light on',
+      ru: 'Горит Check Engine / ABS / ESP / Airbag / EPC',
+    },
+  },
+  {
+    number: 80,
+    category: 'electronics',
+    frequent: false,
+    label: {
+      de: 'Klimaanlage ohne Funktion, kein Kältemittel',
+      en: 'Air conditioning not working, no refrigerant',
+      ru: 'Не работает кондиционер, нет хладагента',
+    },
+  },
+  {
+    number: 81,
+    category: 'electronics',
+    frequent: false,
+    label: {
+      de: 'Schiebedach öffnet / schließt nicht',
+      en: 'Sunroof does not open / close',
+      ru: 'Не открывается / не закрывается люк',
+    },
+  },
+  {
+    number: 82,
+    category: 'electronics',
+    frequent: false,
+    label: {
+      de: 'Elektrischer Fensterheber ohne Funktion',
+      en: 'Power window not working',
+      ru: 'Не работает электроподъёмник стекла',
+    },
+  },
+  {
+    number: 83,
+    category: 'electronics',
+    frequent: false,
+    label: {
+      de: 'Zentralverriegelung reagiert nicht / mit Fehlfunktion',
+      en: 'Central locking not responding / malfunctioning',
+      ru: 'Не срабатывает / глючит центральный замок',
+    },
+  },
+  {
+    number: 84,
+    category: 'electronics',
+    frequent: false,
+    label: {
+      de: 'Defekter Regen- / Lichtsensor',
+      en: 'Faulty rain / light sensor',
+      ru: 'Неисправный датчик дождя / света',
+    },
+  },
+  {
+    number: 85,
+    category: 'electronics',
+    frequent: false,
+    label: {
+      de: 'Parkassistent, adaptiver Tempomat, Lane Assist ohne Funktion',
+      en: 'Park assist, adaptive cruise, Lane Assist not working',
+      ru: 'Не работает система помощи парковки, адаптивный круиз, Lane Assist',
+    },
+  },
+  {
+    number: 86,
+    category: 'electronics',
+    frequent: false,
+    label: {
+      de: 'Fehler im eCall- / Telematiksystem',
+      en: 'eCall / telematics system errors',
+      ru: 'Ошибки системы eCall / телематики',
+    },
+  },
+  {
+    number: 87,
+    category: 'electronics',
+    frequent: false,
+    label: {
+      de: 'Keine Verbindung zum Schlüssel (toter Chip)',
+      en: 'No connection to the key (dead chip)',
+      ru: 'Нет связи с ключом (мёртвый чип)',
+    },
+  },
+
+  // §3.8 Other operational signs (88–98)
+  {
+    number: 88,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Kraftstoff- / Abgasgeruch im Innenraum',
+      en: 'Fuel / exhaust smell in the cabin',
+      ru: 'Запах топлива / выхлопа в салоне',
+    },
+  },
+  {
+    number: 89,
+    category: 'operational',
+    frequent: true,
+    label: {
+      de: 'Feuchtigkeit, Wasser, Schimmel unter Matten oder im Kofferraum',
+      en: 'Damp, water, mold under mats or in the boot',
+      ru: 'Сырость, вода, плесень под ковриками или в багажнике',
+    },
+  },
+  {
+    number: 90,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Öl- / ATF-Flecken unter dem Fahrzeug nach dem Parken',
+      en: 'Oil / ATF stains under the vehicle after parking',
+      ru: 'Пятна масла / ATF под автомобилем после стоянки',
+    },
+  },
+  {
+    number: 91,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Hupe ohne Funktion',
+      en: 'Horn not working',
+      ru: 'Не работает звуковой сигнал',
+    },
+  },
+  {
+    number: 92,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Beschädigter Schalthebel, Wählhebel AT / CVT / DSG',
+      en: 'Damaged gear lever, AT / CVT / DSG selector',
+      ru: 'Повреждённый рычаг КПП, селектор AT / CVT / DSG',
+    },
+  },
+  {
+    number: 93,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Beschädigte AdBlue-Klappe / leerer AdBlue-Tank (Diesel)',
+      en: 'Damaged AdBlue flap / empty AdBlue tank (diesel)',
+      ru: 'Повреждение лючка AdBlue / пустой бак AdBlue (дизель)',
+    },
+  },
+  {
+    number: 94,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Verrotteter / beschädigter Kofferraummatte',
+      en: 'Rotted / damaged boot mat',
+      ru: 'Сгнивший / повреждённый коврик в багажнике',
+    },
+  },
+  {
+    number: 95,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Kältemittelaustritt, Geruch aus der Klimaanlage',
+      en: 'Refrigerant leak, smell from the AC system',
+      ru: 'Утечка фреона, запах из климатической системы',
+    },
+  },
+  {
+    number: 96,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Nicht zugelassene Werbung / Aufkleber an Karosserie und Scheiben',
+      en: 'Non-permitted advertising / stickers on body and glass',
+      ru: 'Нерегламентная реклама / наклейки на кузове и стёклах',
+    },
+  },
+  {
+    number: 97,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Defekte / fehlende Kennzeichenhalterung, Rahmen',
+      en: 'Broken / missing license-plate mount, frame',
+      ru: 'Сломанный / отсутствующий крепёж номерного знака, рамка',
+    },
+  },
+  {
+    number: 98,
+    category: 'operational',
+    frequent: false,
+    label: {
+      de: 'Abweichung von der Werksausstattung (Felgen, Scheinwerfer, Grill)',
+      en: 'Deviation from factory equipment (rims, headlights, grille)',
+      ru: 'Несоответствие элементов заводской комплектации (диски, фары, решётка)',
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Assembled catalog
+// ---------------------------------------------------------------------------
+
+export const CATALOG_V1: CatalogV1 = {
+  version: CATALOG_VERSION,
+  angles: ANGLES,
+  parts: PARTS,
+  damageTypes: DAMAGE_TYPES,
+  kstCodes: KST_CODES,
+  checklist: CHECKLIST,
+};

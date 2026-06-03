@@ -48,6 +48,8 @@ async function bootstrap(): Promise<void> {
     .addTag('quota', 'FREE-tier reports counter and PRO upgrade')
     .addTag('reports', 'Cloud backup of inspection PDFs')
     .addTag('me', 'Per-device account operations (GDPR erasure)')
+    .addTag('legal', 'Privacy Policy and Terms of Use (localized HTML)')
+    .addTag('catalog', 'Reference data: inspection angles, parts, damage types, K/S/T codes, checklist')
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('docs', app, document, {

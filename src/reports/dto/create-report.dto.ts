@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsInt,
+  IsISO8601,
   IsOptional,
   IsString,
   Length,
@@ -48,4 +49,24 @@ export class CreateReportDto {
   @IsString()
   @MaxLength(64)
   contentType?: string;
+
+  @ApiPropertyOptional({ example: 'BMW', description: 'Vehicle make (display metadata for report history).' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  make?: string;
+
+  @ApiPropertyOptional({ example: '320d', description: 'Vehicle model (display metadata for report history).' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  model?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-06-03T10:00:00.000Z',
+    description: 'When the inspection was performed (ISO 8601), distinct from upload time.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  inspectedAt?: string;
 }

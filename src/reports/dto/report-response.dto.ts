@@ -30,6 +30,15 @@ export class ReportItemDto {
   @ApiPropertyOptional({ example: '1HGBH41JXMN109186' })
   vin?: string | null;
 
+  @ApiPropertyOptional({ example: 'BMW' })
+  make?: string | null;
+
+  @ApiPropertyOptional({ example: '320d' })
+  model?: string | null;
+
+  @ApiPropertyOptional({ example: '2026-06-03T10:00:00.000Z' })
+  inspectedAt?: string | null;
+
   @ApiProperty({ enum: ['free', 'pro'], example: 'free' })
   tier!: 'free' | 'pro';
 
