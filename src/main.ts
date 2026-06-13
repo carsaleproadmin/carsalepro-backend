@@ -9,7 +9,9 @@ import { initSentry } from './common/sentry/sentry.bootstrap';
 import { AppConfig } from './config/configuration';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { bufferLogs: false });
+  // rawBody:true keeps the JSON body parser AND exposes req.rawBody, which the
+  // Stripe webhook controller needs for signature verification.
+  const app = await NestFactory.create(AppModule, { bufferLogs: false, rawBody: true });
 
   const config = app.get(ConfigService<AppConfig, true>);
   const port = config.get('port', { infer: true });

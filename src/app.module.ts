@@ -20,6 +20,7 @@ import { envValidationSchema } from './config/env.validation';
 import { HealthModule } from './health/health.module';
 import { LegalModule } from './legal/legal.module';
 import { MeModule } from './me/me.module';
+import { PaymentsModule } from './payments/payments.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QuotaModule } from './quota/quota.module';
 import { R2Module } from './r2/r2.module';
@@ -50,6 +51,7 @@ import { VinModule } from './vin/vin.module';
     ReportsModule,
     MeModule,
     MeReportsModule,
+    PaymentsModule,
     LinkCodesModule,
     PublicModule,
     AdminModule,
