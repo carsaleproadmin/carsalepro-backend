@@ -1,6 +1,12 @@
-// CarSalePro Backend — Prisma schema
-// Three tables only in MVP: VinCache, DeviceQuota, Report.
-// No users / no auth — identity is X-Device-Id header (UUID v4).
+// CarSalePro Backend — Prisma schema.
+//
+// Mobile MVP core (VinCache, DeviceQuota, Report) is preserved unchanged in
+// shape; Report gains OPTIONAL website fields only (old mobile clients keep
+// working). Website (Phase 2+) models follow doc 07 §10.
+//
+// PostGIS geography columns use the managed `postgis` extension. GIST indexes
+// on those columns are added via raw SQL in the migration (Prisma cannot model
+// indexes on Unsupported() columns).
 
 generator client {
   provider = "prisma-client-js"
@@ -10,6 +16,10 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ============================================================
+// Mobile MVP core (existing — do not break)
+// ============================================================
 
 /// Cache of NHTSA vPIC VIN-decode responses. Keyed by 17-char VIN.
 model VinCache {
@@ -37,9 +47,10 @@ model DeviceQuota {
 }
 
 /// One row per inspection report PDF uploaded to R2. Soft-deletable.
+/// Website fields are all optional so legacy mobile uploads stay valid.
 model Report {
-  id        String    @id @default(cuid())
-  deviceId  String    @map("device_id")
+  id          String    @id @default(cuid())
+  deviceId    String    @map("device_id")
   code        String
   vin         String?   @db.VarChar(17)
   make        String?
@@ -53,7 +64,492 @@ model Report {
   createdAt   DateTime  @default(now()) @map("created_at")
   deletedAt   DateTime? @map("deleted_at")
 
+  // --- website extension (all optional) ---
+  userId         String? @map("user_id")
+  orderId        String? @unique @map("order_id")
+  qualityScore   Int?    @map("quality_score") // 0–100
+  year           Int?
+  mileageKm      Int?    @map("mileage_km")
+  color          String?
+  bodyType       String? @map("body_type")
+  driveType      String? @map("drive_type")
+  reportData     Json?   @map("report_data")
+  photosManifest Json?   @map("photos_manifest")
+
+  user    User?    @relation(fields: [userId], references: [id])
+  order   Order?   @relation(fields: [orderId], references: [id])
+  listing Listing?
+
   @@index([deviceId, createdAt])
   @@index([vin])
+  @@index([userId])
+  @@index([code])
   @@map("report")
+}
+
+// ============================================================
+// Auth / Users
+// ============================================================
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  passwordHash  String?
+  name          String?
+  phone         String?
+  locale        String    @default("de")
+  countryCode   String    @default("DE")
+  role          Role      @default(USER)
+  kycVerified   Boolean   @default(false)
+  bannedAt      DateTime?
+  totpSecret    String?
+  notificationPrefs Json?
+  gdprConsentAt DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  deletedAt     DateTime?
+
+  inspector        InspectorProfile?
+  deviceLinks      DeviceLink[]
+  ordersAsCustomer Order[]           @relation("CustomerOrders")
+  listings         Listing[]
+  reportPurchases  ReportPurchase[]
+  notifications    Notification[]
+  reports          Report[]
+  payments         Payment[]
+  kycApplications  KycApplication[]
+  authAccounts     AuthAccount[]
+  verificationTokens VerificationToken[]
+
+  @@index([role])
+  @@map("user")
+}
+
+/// OAuth / external identity links for NextAuth (Google, etc.).
+model AuthAccount {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  type              String
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("auth_account")
+}
+
+/// Email verification / magic-link / password-reset tokens (hashed).
+model VerificationToken {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  identifier String
+  tokenHash String   @unique @map("token_hash")
+  purpose   String // verify_email | magic_link | password_reset
+  expiresAt DateTime @map("expires_at")
+  consumedAt DateTime? @map("consumed_at")
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([identifier])
+  @@map("verification_token")
+}
+
+model InspectorProfile {
+  userId          String  @id @map("user_id")
+  companyName     String? @map("company_name")
+  taxId           String? @map("tax_id")
+  vatId           String? @map("vat_id")
+  baseAddress     String  @map("base_address")
+  location        Unsupported("geography(Point, 4326)")?
+  searchRadiusKm  Int     @default(50) @map("search_radius_km")
+  available       Boolean @default(true)
+  stripeAccountId String? @unique @map("stripe_account_id")
+  stripeOnboarded Boolean @default(false) @map("stripe_onboarded")
+  fcmToken        String? @map("fcm_token")
+  cancelCount     Int     @default(0) @map("cancel_count")
+  createdAt       DateTime @default(now())
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders  Order[]      @relation("InspectorOrders")
+  offers  OrderOffer[]
+  payouts Payout[]
+
+  @@map("inspector_profile")
+}
+
+/// userId ↔ deviceId link (mobile archive in the web cabinet).
+model DeviceLink {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  deviceId  String   @unique @map("device_id")
+  linkedVia String   @map("linked_via") // code | admin
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("device_link")
+}
+
+// ============================================================
+// KYC
+// ============================================================
+
+enum KycStatus {
+  DRAFT
+  SUBMITTED
+  IN_REVIEW
+  APPROVED
+  REJECTED
+}
+
+model KycApplication {
+  id           String    @id @default(cuid())
+  userId       String    @map("user_id")
+  status       KycStatus @default(DRAFT)
+  rejectReason String?   @map("reject_reason")
+  reviewedBy   String?   @map("reviewed_by")
+  reviewedAt   DateTime? @map("reviewed_at")
+  submittedAt  DateTime? @map("submitted_at")
+  createdAt    DateTime  @default(now())
+
+  documents KycDocument[]
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([userId])
+  @@map("kyc_application")
+}
+
+model KycDocument {
+  id            String    @id @default(cuid())
+  applicationId String    @map("application_id")
+  kind          String // id_front | id_back | selfie | gewerbeschein | insurance
+  s3Key         String    @map("s3_key")
+  uploadedAt    DateTime  @default(now())
+  purgedAt      DateTime? @map("purged_at")
+
+  application KycApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@map("kyc_document")
+}
+
+// ============================================================
+// Orders / Geo
+// ============================================================
+
+enum OrderStatus {
+  CREATED
+  PAID
+  UNASSIGNED
+  ASSIGNED
+  EN_ROUTE
+  IN_PROGRESS
+  SUBMITTED
+  APPROVED
+  COMPLETED
+  CANCELLED
+  DISPUTED
+  REFUNDED
+}
+
+model Order {
+  id          String      @id @default(cuid())
+  number      String      @unique // ORD-#### autogen
+  customerId  String      @map("customer_id")
+  inspectorId String?     @map("inspector_id")
+  status      OrderStatus @default(CREATED)
+  vin         String?     @db.VarChar(17)
+  make        String
+  model       String
+  listingUrl  String?     @map("listing_url")
+  address     String
+  location    Unsupported("geography(Point, 4326)")
+  scheduledAt DateTime    @map("scheduled_at")
+  countryCode String      @default("DE") @map("country_code")
+
+  // money (integer cents)
+  baseFeeCents        Int    @map("base_fee_cents")
+  distanceKm          Decimal @map("distance_km")
+  distanceFeeCents    Int    @map("distance_fee_cents")
+  totalCents          Int    @map("total_cents")
+  platformFeeCents    Int    @map("platform_fee_cents")
+  inspectorShareCents Int    @map("inspector_share_cents")
+  currency            String @default("EUR")
+
+  contractId    String?   @unique @map("contract_id")
+  autoApproveAt DateTime? @map("auto_approve_at")
+  submittedAt   DateTime? @map("submitted_at")
+  createdAt     DateTime  @default(now())
+
+  customer User              @relation("CustomerOrders", fields: [customerId], references: [id])
+  inspector InspectorProfile? @relation("InspectorOrders", fields: [inspectorId], references: [userId])
+  report   Report?
+  payment  Payment?
+  payout   Payout?
+  refunds  Refund[]
+  dispute  Dispute?
+  offers   OrderOffer[]
+  events   OrderEvent[]
+  contract OrderContract?    @relation(fields: [contractId], references: [id])
+
+  @@index([status])
+  @@index([customerId])
+  @@index([inspectorId])
+  @@map("order")
+}
+
+model OrderOffer {
+  id          String   @id @default(cuid())
+  orderId     String   @map("order_id")
+  inspectorId String   @map("inspector_id")
+  status      String   @default("PENDING") // PENDING|ACCEPTED|DECLINED|EXPIRED
+  expiresAt   DateTime @map("expires_at")
+  createdAt   DateTime @default(now())
+
+  order     Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  inspector InspectorProfile @relation(fields: [inspectorId], references: [userId])
+
+  @@index([orderId])
+  @@index([inspectorId, status])
+  @@map("order_offer")
+}
+
+model OrderEvent {
+  id         String   @id @default(cuid())
+  orderId    String   @map("order_id")
+  actor      String // userId | system | admin:userId
+  type       String // status_change | offer_sent | note | ...
+  fromStatus String?  @map("from_status")
+  toStatus   String?  @map("to_status")
+  payload    Json?
+  createdAt  DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_event")
+}
+
+// ============================================================
+// Payments (ledger, amounts in integer cents)
+// ============================================================
+
+model Payment {
+  id                      String   @id @default(cuid())
+  orderId                 String?  @unique @map("order_id")
+  purpose                 String // order | ppv | gold
+  userId                  String   @map("user_id")
+  amountCents             Int      @map("amount_cents")
+  currency                String   @default("EUR")
+  status                  String // pending|succeeded|failed
+  stripePaymentIntentId   String?  @unique @map("stripe_payment_intent_id")
+  stripeCheckoutSessionId String?  @unique @map("stripe_checkout_session_id")
+  createdAt               DateTime @default(now())
+
+  order          Order?          @relation(fields: [orderId], references: [id])
+  user           User            @relation(fields: [userId], references: [id])
+  reportPurchase ReportPurchase?
+
+  @@index([userId])
+  @@map("payment")
+}
+
+model Refund {
+  id             String   @id @default(cuid())
+  orderId        String   @map("order_id")
+  amountCents    Int      @map("amount_cents")
+  reason         String // cancel_before_assign|cancel_after_assign|dispute|admin
+  stripeRefundId String   @unique @map("stripe_refund_id")
+  createdAt      DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@map("refund")
+}
+
+model Payout {
+  id               String   @id @default(cuid())
+  orderId          String   @unique @map("order_id")
+  inspectorId      String   @map("inspector_id")
+  amountCents      Int      @map("amount_cents")
+  stripeTransferId String?  @unique @map("stripe_transfer_id")
+  status           String // pending|paid|failed
+  createdAt        DateTime @default(now())
+
+  order     Order            @relation(fields: [orderId], references: [id])
+  inspector InspectorProfile @relation(fields: [inspectorId], references: [userId])
+
+  @@index([inspectorId])
+  @@map("payout")
+}
+
+model StripeWebhookEvent {
+  id          String   @id // stripe event id
+  type        String
+  processedAt DateTime @default(now())
+
+  @@map("stripe_webhook_event")
+}
+
+// ============================================================
+// Listings / Reports Store
+// ============================================================
+
+enum ListingStatus {
+  DRAFT
+  ACTIVE
+  EXPIRED
+  SOLD
+  HIDDEN
+  DELETED
+}
+
+model Listing {
+  id           String        @id @default(cuid())
+  sellerId     String        @map("seller_id")
+  reportId     String        @unique @map("report_id")
+  status       ListingStatus @default(DRAFT)
+  package      String        @default("standard") // standard | gold
+  priceCents   Int           @map("price_cents")
+  city         String
+  plz          String?
+  description  String?
+  contactPhone String?       @map("contact_phone")
+  contactEmail String?       @map("contact_email")
+  // denormalized from the report at import (card + filters)
+  color     String?
+  bodyType  String? @map("body_type")
+  driveType String? @map("drive_type")
+  viewsCount Int    @default(0) @map("views_count")
+  publishedAt DateTime? @map("published_at")
+  expiresAt   DateTime? @map("expires_at")
+  createdAt   DateTime  @default(now())
+
+  seller User   @relation(fields: [sellerId], references: [id])
+  report Report @relation(fields: [reportId], references: [id])
+
+  @@index([status, package, publishedAt])
+  @@index([sellerId])
+  @@map("listing")
+}
+
+model ReportPurchase {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  reportId  String   @map("report_id")
+  paymentId String   @unique @map("payment_id")
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id])
+  payment Payment @relation(fields: [paymentId], references: [id])
+
+  @@unique([userId, reportId])
+  @@map("report_purchase")
+}
+
+// ============================================================
+// Legal / Notifications / Admin / Settings
+// ============================================================
+
+model LegalTemplate {
+  id        String   @id @default(cuid())
+  key       String // contract_de | contract_eu | contract_en
+  version   Int
+  locale    String
+  title     String
+  bodyMd    String   @map("body_md")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@unique([key, version])
+  @@map("legal_template")
+}
+
+model OrderContract {
+  id              String   @id @default(cuid())
+  templateKey     String   @map("template_key")
+  templateVersion Int      @map("template_version")
+  renderedHtml    String   @map("rendered_html")
+  pdfS3Key        String?  @map("pdf_s3_key")
+  createdAt       DateTime @default(now())
+
+  order Order?
+
+  @@map("order_contract")
+}
+
+model Dispute {
+  id         String    @id @default(cuid())
+  orderId    String    @unique @map("order_id")
+  openedBy   String    @map("opened_by")
+  reason     String
+  status     String    @default("OPEN") // OPEN|RESOLVED_CUSTOMER|RESOLVED_INSPECTOR
+  resolution String?
+  resolvedBy String?   @map("resolved_by")
+  resolvedAt DateTime? @map("resolved_at")
+  createdAt  DateTime  @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@map("dispute")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  type      String
+  channel   String // email|sms|push|inapp
+  payload   Json
+  status    String   @default("queued") // queued|sent|failed
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("notification")
+}
+
+model AdminAuditLog {
+  id        String   @id @default(cuid())
+  adminId   String   @map("admin_id")
+  action    String
+  entity    String
+  entityId  String   @map("entity_id")
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@map("admin_audit_log")
+}
+
+model PlatformSetting {
+  key       String   @id // orderBaseFeeEur, platformFeePercent, ...
+  value     Json
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt
+
+  @@map("platform_setting")
+}
+
+model WaitlistEntry {
+  id        String   @id @default(cuid())
+  email     String
+  city      String?
+  location  Unsupported("geography(Point, 4326)")?
+  createdAt DateTime @default(now())
+
+  @@map("waitlist_entry")
 }

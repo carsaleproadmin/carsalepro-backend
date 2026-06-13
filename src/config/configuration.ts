@@ -40,6 +40,44 @@ export interface AppConfig {
     dsn?: string;
     environment: string;
   };
+  web: {
+    origin: string;
+    appEnv: 'development' | 'staging' | 'production';
+  };
+  redis: {
+    url: string;
+  };
+  auth: {
+    jwtSecret: string;
+    jwtExpiresIn: string;
+  };
+  signedUrlTtlMinutes: number;
+  r2Kyc: {
+    accessKeyId: string;
+    secretAccessKey: string;
+  };
+  stripe: {
+    secretKey: string;
+    publishableKey: string;
+    webhookSecret: string;
+    connectRefreshUrl: string;
+    connectReturnUrl: string;
+  };
+  mapbox: {
+    token: string;
+  };
+  email: {
+    sendgridApiKey: string;
+    from: string;
+  };
+  sms: {
+    twilioAccountSid: string;
+    twilioAuthToken: string;
+    twilioFrom: string;
+  };
+  push: {
+    fcmServiceAccountJson: string;
+  };
 }
 
 export default (): AppConfig => ({
@@ -86,5 +124,43 @@ export default (): AppConfig => ({
   sentry: {
     dsn: process.env.SENTRY_DSN || undefined,
     environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'development',
+  },
+  web: {
+    origin: process.env.WEB_ORIGIN ?? 'http://localhost:3000',
+    appEnv: (process.env.APP_ENV as AppConfig['web']['appEnv']) || 'development',
+  },
+  redis: {
+    url: process.env.REDIS_URL ?? '',
+  },
+  auth: {
+    jwtSecret: process.env.JWT_SECRET ?? 'dev-shared-secret-change-me',
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '30d',
+  },
+  signedUrlTtlMinutes: parseInt(process.env.SIGNED_URL_TTL_MINUTES ?? '15', 10),
+  r2Kyc: {
+    accessKeyId: process.env.R2_KYC_ACCESS_KEY_ID ?? '',
+    secretAccessKey: process.env.R2_KYC_SECRET_ACCESS_KEY ?? '',
+  },
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY ?? '',
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? '',
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? '',
+    connectRefreshUrl: process.env.STRIPE_CONNECT_REFRESH_URL ?? '',
+    connectReturnUrl: process.env.STRIPE_CONNECT_RETURN_URL ?? '',
+  },
+  mapbox: {
+    token: process.env.MAPBOX_TOKEN ?? '',
+  },
+  email: {
+    sendgridApiKey: process.env.SENDGRID_API_KEY ?? '',
+    from: process.env.EMAIL_FROM ?? 'no-reply@carsalepro.com',
+  },
+  sms: {
+    twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ?? '',
+    twilioAuthToken: process.env.TWILIO_AUTH_TOKEN ?? '',
+    twilioFrom: process.env.TWILIO_FROM ?? '',
+  },
+  push: {
+    fcmServiceAccountJson: process.env.FCM_SERVICE_ACCOUNT_JSON ?? '',
   },
 });

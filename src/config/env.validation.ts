@@ -7,13 +7,43 @@ export const envValidationSchema = Joi.object({
     .valid('fatal', 'error', 'warn', 'info', 'debug', 'trace')
     .default('info'),
 
+  WEB_ORIGIN: Joi.string().uri().allow('').default('http://localhost:3000'),
+  APP_ENV: Joi.string().valid('development', 'staging', 'production').default('development'),
+
   DATABASE_URL: Joi.string().uri({ scheme: ['postgresql', 'postgres'] }).required(),
+
+  REDIS_URL: Joi.string().allow('').default(''),
 
   R2_ACCOUNT_ID: Joi.string().allow('').default(''),
   R2_ACCESS_KEY_ID: Joi.string().allow('').default(''),
   R2_SECRET_ACCESS_KEY: Joi.string().allow('').default(''),
   R2_BUCKET: Joi.string().default('carsalepro-reports'),
   R2_PUBLIC_URL: Joi.string().uri().allow('').default(''),
+  R2_KYC_ACCESS_KEY_ID: Joi.string().allow('').default(''),
+  R2_KYC_SECRET_ACCESS_KEY: Joi.string().allow('').default(''),
+  SIGNED_URL_TTL_MINUTES: Joi.number().integer().min(1).max(1440).default(15),
+
+  // Auth (shared HS256 secret with the website NextAuth)
+  JWT_SECRET: Joi.string().allow('').default('dev-shared-secret-change-me'),
+  JWT_EXPIRES_IN: Joi.string().default('30d'),
+
+  // Stripe
+  STRIPE_SECRET_KEY: Joi.string().allow('').default(''),
+  STRIPE_PUBLISHABLE_KEY: Joi.string().allow('').default(''),
+  STRIPE_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+  STRIPE_CONNECT_REFRESH_URL: Joi.string().uri().allow('').default(''),
+  STRIPE_CONNECT_RETURN_URL: Joi.string().uri().allow('').default(''),
+
+  // Mapbox (server-side geocoding)
+  MAPBOX_TOKEN: Joi.string().allow('').default(''),
+
+  // Notifications
+  SENDGRID_API_KEY: Joi.string().allow('').default(''),
+  EMAIL_FROM: Joi.string().allow('').default('no-reply@carsalepro.com'),
+  TWILIO_ACCOUNT_SID: Joi.string().allow('').default(''),
+  TWILIO_AUTH_TOKEN: Joi.string().allow('').default(''),
+  TWILIO_FROM: Joi.string().allow('').default(''),
+  FCM_SERVICE_ACCOUNT_JSON: Joi.string().allow('').default(''),
 
   FREE_REPORTS_LIMIT: Joi.number().integer().min(0).default(3),
   PRESIGNED_UPLOAD_TTL: Joi.number().integer().min(60).max(86400).default(900),
