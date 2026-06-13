@@ -136,6 +136,14 @@ describe('Auth + users (e2e)', () => {
     await request(app.getHttpServer()).get('/catalog').expect(200);
   });
 
+  it('12b. exposes GET /api/v1/settings/public without a token', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/settings/public')
+      .expect(200);
+    expect(res.body.payPerViewPriceEur).toBe(14.99);
+    expect(res.body.platformFeePercent).toBeUndefined(); // not in public subset
+  });
+
   it('13. erases the account (GDPR) and blocks subsequent login', async () => {
     const email = uniqueEmail();
     const reg = await request(app.getHttpServer())
