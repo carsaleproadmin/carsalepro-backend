@@ -8,6 +8,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ModuleRef } from '@nestjs/core';
 import { Prisma, Report } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
 import { PrismaService } from '../prisma/prisma.service';
@@ -28,6 +29,7 @@ export class ReportsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly r2: R2Service,
+    private readonly moduleRef: ModuleRef,
     config: ConfigService<AppConfig, true>,
   ) {
     this.defaultLimit = config.get('quota', { infer: true }).freeReportsLimit;
@@ -86,6 +88,14 @@ export class ReportsService {
       dto.contentType ?? 'application/pdf',
     );
 
+    // Marketplace integration: when a report is filed against an order, advance
+    // that order to SUBMITTED (set submittedAt + autoApproveAt). The mobile
+    // response/quota/402 contract above is unchanged — this is an additive side
+    // effect that never affects the returned shape or status code.
+    if (dto.orderId) {
+      await this.submitOrderForReport(dto.orderId);
+    }
+
     this.logger.log(
       `Reserved report ${report.id} for device=${this.mask(deviceId)} tier=${tier} ` +
         `freeUsed=${quota.freeReportsUsed}/${quota.freeReportsLimit}`,
@@ -98,6 +108,22 @@ export class ReportsService {
       expiresAt: expiresAt.toISOString(),
       tier,
     };
+  }
+
+  /**
+   * Advance the linked order to SUBMITTED via OrdersService (the single place
+   * for order transitions). Resolved lazily through ModuleRef to avoid a
+   * circular module dependency. Best-effort: a failure here must never break the
+   * report-create contract, so errors are swallowed (logged).
+   */
+  private async submitOrderForReport(orderId: string): Promise<void> {
+    try {
+      const { OrdersService } = await import('../orders/orders.service');
+      const orders = this.moduleRef.get(OrdersService, { strict: false });
+      await orders.submitReportForOrder(orderId);
+    } catch (err) {
+      this.logger.warn(`Could not submit order ${orderId} for report: ${(err as Error).message}`);
+    }
   }
 
   async complete(deviceId: string, reportId: string): Promise<CompleteReportResponseDto> {

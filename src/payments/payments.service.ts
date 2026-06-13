@@ -5,12 +5,19 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, Report } from '@prisma/client';
+import { ModuleRef } from '@nestjs/core';
+import { OrderStatus, Prisma, Report } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { PpvCheckoutResponseDto, ReportPurchaseListDto } from './dto/ppv-response.dto';
-import { StripeCheckoutSession, StripeEvent, StripeService } from './stripe.service';
+import {
+  StripeCharge,
+  StripeCheckoutSession,
+  StripeEvent,
+  StripePaymentIntent,
+  StripeService,
+} from './stripe.service';
 
 @Injectable()
 export class PaymentsService {
@@ -21,6 +28,7 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly stripe: StripeService,
     private readonly settings: SettingsService,
+    private readonly moduleRef: ModuleRef,
     config: ConfigService<AppConfig, true>,
   ) {
     this.webOrigin = config.get('web', { infer: true }).origin.replace(/\/$/, '');
@@ -116,9 +124,74 @@ export class PaymentsService {
         }
         break;
       }
+      case 'payment_intent.succeeded': {
+        const pi = event.data.object as StripePaymentIntent;
+        const meta = pi.metadata ?? {};
+        if (meta.purpose === 'order' && meta.orderId && meta.paymentId) {
+          await this.settleOrderPayment(meta.paymentId, meta.orderId, meta.userId);
+          this.logger.log(`Order ${meta.orderId} paid via payment ${meta.paymentId}`);
+        }
+        break;
+      }
+      case 'charge.refunded': {
+        const charge = event.data.object as StripeCharge;
+        const piId = typeof charge.payment_intent === 'string' ? charge.payment_intent : null;
+        if (piId) {
+          const payment = await this.prisma.payment.findUnique({
+            where: { stripePaymentIntentId: piId },
+          });
+          if (payment) {
+            await this.markPaymentRefunded(payment.id);
+            this.logger.log(`Payment ${payment.id} marked refunded (charge.refunded)`);
+          }
+        }
+        break;
+      }
       default:
         // Other event types are intentionally a no-op for now.
         break;
+    }
+  }
+
+  /**
+   * Idempotently settle an order payment: mark the Payment succeeded, transition
+   * the order CREATED → PAID and run dispatch. Safe to call multiple times — the
+   * transition is a no-op once the order has left CREATED. OrdersService is
+   * resolved lazily (ModuleRef) to avoid a circular module dependency.
+   */
+  async settleOrderPayment(paymentId: string, orderId: string, _userId?: string): Promise<void> {
+    await this.prisma.payment
+      .update({ where: { id: paymentId }, data: { status: 'succeeded' } })
+      .catch(() => undefined);
+
+    const orders = await this.resolveOrdersService();
+    if (!orders) return;
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!order || order.status !== OrderStatus.CREATED) return;
+    await orders.transition(orderId, OrderStatus.PAID, 'system');
+    await orders.dispatch(orderId);
+  }
+
+  /** Mark a Payment as refunded. Idempotent. */
+  async markPaymentRefunded(paymentId: string): Promise<void> {
+    await this.prisma.payment
+      .update({ where: { id: paymentId }, data: { status: 'refunded' } })
+      .catch(() => undefined);
+  }
+
+  /**
+   * Lazily resolve OrdersService. Returns null if the orders module isn't loaded
+   * (keeps PaymentsModule usable standalone, e.g. in narrow tests).
+   */
+  private async resolveOrdersService(): Promise<{
+    transition: (orderId: string, to: OrderStatus, actor: string) => Promise<unknown>;
+    dispatch: (orderId: string) => Promise<unknown>;
+  } | null> {
+    try {
+      const { OrdersService } = await import('../orders/orders.service');
+      return this.moduleRef.get(OrdersService, { strict: false });
+    } catch {
+      return null;
     }
   }
 

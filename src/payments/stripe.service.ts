@@ -10,6 +10,16 @@ import { AppConfig } from '../config/configuration';
 
 export type StripeEvent = StripeNamespace.Event;
 export type StripeCheckoutSession = StripeNamespace.Checkout.Session;
+export type StripePaymentIntent = StripeNamespace.PaymentIntent;
+export type StripeRefund = StripeNamespace.Refund;
+export type StripeCharge = StripeNamespace.Charge;
+
+export interface CreateOrderPaymentIntentParams {
+  amountCents: number;
+  orderId: string;
+  paymentId: string;
+  userId: string;
+}
 
 export interface CreatePpvCheckoutParams {
   paymentId: string;
@@ -47,8 +57,10 @@ export class StripeService implements OnModuleInit {
   onModuleInit(): void {
     const stripe = this.config.get('stripe', { infer: true });
     this.webhookSecret = stripe.webhookSecret;
-    if (!stripe.secretKey) {
-      this.logger.warn('STRIPE_SECRET_KEY not set — Stripe runs in mock mode');
+    // Force mock mode under tests so e2e is deterministic and offline even when
+    // a real key is present in the environment.
+    if (!stripe.secretKey || process.env.NODE_ENV === 'test') {
+      this.logger.warn('Stripe runs in mock mode (no key or NODE_ENV=test)');
       return;
     }
     this.client = new Stripe(stripe.secretKey);
@@ -117,6 +129,40 @@ export class StripeService implements OnModuleInit {
     });
     if (!session.url) throw new Error('Stripe did not return a Checkout URL');
     return { checkoutUrl: session.url };
+  }
+
+  /**
+   * Create a PaymentIntent for an inspection order. Automatic payment methods
+   * are enabled; the order/payment ids ride along in metadata so the
+   * `payment_intent.succeeded` webhook can settle the order.
+   */
+  async createOrderPaymentIntent(
+    params: CreateOrderPaymentIntentParams,
+  ): Promise<StripePaymentIntent> {
+    return this.requireClient().paymentIntents.create({
+      amount: params.amountCents,
+      currency: 'eur',
+      automatic_payment_methods: { enabled: true },
+      metadata: {
+        orderId: params.orderId,
+        paymentId: params.paymentId,
+        userId: params.userId,
+        purpose: 'order',
+      },
+    });
+  }
+
+  /** Refund (full or partial) a captured PaymentIntent. */
+  async createRefund(
+    paymentIntentId: string,
+    amountCents: number,
+    reason: string,
+  ): Promise<StripeRefund> {
+    return this.requireClient().refunds.create({
+      payment_intent: paymentIntentId,
+      amount: amountCents,
+      metadata: { reason },
+    });
   }
 
   /** Verify and parse a Stripe webhook payload from its raw body + signature. */
