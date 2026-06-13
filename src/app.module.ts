@@ -17,10 +17,13 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { DeviceIdMiddleware } from './common/middleware/device-id.middleware';
 import configuration from './config/configuration';
 import { envValidationSchema } from './config/env.validation';
+import { GeoModule } from './geo/geo.module';
 import { HealthModule } from './health/health.module';
+import { InspectorModule } from './inspector/inspector.module';
 import { LegalModule } from './legal/legal.module';
 import { ListingsModule } from './listings/listings.module';
 import { MeModule } from './me/me.module';
+import { OrdersModule } from './orders/orders.module';
 import { PaymentsModule } from './payments/payments.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QuotaModule } from './quota/quota.module';
@@ -43,6 +46,7 @@ import { VinModule } from './vin/vin.module';
     }),
     PrismaModule,
     RedisModule,
+    GeoModule,
     AuthModule,
     UsersModule,
     R2Module,
@@ -53,6 +57,8 @@ import { VinModule } from './vin/vin.module';
     MeModule,
     MeReportsModule,
     PaymentsModule,
+    InspectorModule,
+    OrdersModule,
     ListingsModule,
     LinkCodesModule,
     PublicModule,
