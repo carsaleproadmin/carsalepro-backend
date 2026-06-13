@@ -19,6 +19,7 @@ import configuration from './config/configuration';
 import { envValidationSchema } from './config/env.validation';
 import { HealthModule } from './health/health.module';
 import { LegalModule } from './legal/legal.module';
+import { ListingsModule } from './listings/listings.module';
 import { MeModule } from './me/me.module';
 import { PaymentsModule } from './payments/payments.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -52,6 +53,7 @@ import { VinModule } from './vin/vin.module';
     MeModule,
     MeReportsModule,
     PaymentsModule,
+    ListingsModule,
     LinkCodesModule,
     PublicModule,
     AdminModule,

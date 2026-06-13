@@ -23,6 +23,9 @@ export async function createTestApp(): Promise<INestApplication> {
 
 export async function cleanDb(app: INestApplication): Promise<void> {
   const prisma = app.get(PrismaService);
+  // Delete in FK-dependency order: rows referencing Report first, then Report.
+  await prisma.reportPurchase.deleteMany();
+  await prisma.listing.deleteMany();
   await prisma.report.deleteMany();
   await prisma.deviceQuota.deleteMany();
   await prisma.vinCache.deleteMany();
