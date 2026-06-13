@@ -14,6 +14,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { QuotaModule } from './quota/quota.module';
 import { R2Module } from './r2/r2.module';
 import { ReportsModule } from './reports/reports.module';
+import { SettingsModule } from './settings/settings.module';
 import { VinModule } from './vin/vin.module';
 
 @Module({
@@ -33,6 +34,7 @@ import { VinModule } from './vin/vin.module';
     MeModule,
     LegalModule,
     CatalogModule,
+    SettingsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

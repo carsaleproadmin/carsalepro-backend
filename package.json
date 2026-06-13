@@ -24,7 +24,11 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "docs:api": "node scripts/generate-api-md.js",
-    "verify:deployed": "node scripts/verify-deployed.mjs"
+    "verify:deployed": "node scripts/verify-deployed.mjs",
+    "prisma:seed": "ts-node prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.658.0",
