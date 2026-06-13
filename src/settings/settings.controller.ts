@@ -1,5 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Public } from '../auth/auth.decorators';
 import { SettingsService } from './settings.service';
 
 @ApiTags('settings')
@@ -7,6 +8,7 @@ import { SettingsService } from './settings.service';
 export class SettingsController {
   constructor(private readonly settings: SettingsService) {}
 
+  @Public()
   @Get('public')
   @ApiOperation({ summary: 'Public platform settings (prices, fees, radius)' })
   @ApiOkResponse({ description: 'Public subset of PlatformSetting values' })
