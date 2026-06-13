@@ -13,6 +13,9 @@ export type StripeCheckoutSession = StripeNamespace.Checkout.Session;
 export type StripePaymentIntent = StripeNamespace.PaymentIntent;
 export type StripeRefund = StripeNamespace.Refund;
 export type StripeCharge = StripeNamespace.Charge;
+export type StripeAccount = StripeNamespace.Account;
+export type StripeAccountLink = StripeNamespace.AccountLink;
+export type StripeTransfer = StripeNamespace.Transfer;
 
 export interface CreateOrderPaymentIntentParams {
   amountCents: number;
@@ -38,6 +41,14 @@ export interface CreateGoldCheckoutParams {
   amountCents: number;
   successUrl: string;
   cancelUrl: string;
+}
+
+export interface CreateTransferParams {
+  amountCents: number;
+  destinationAccountId: string;
+  /** The source charge id so the transfer draws from that specific charge. */
+  sourceChargeId: string;
+  transferGroup: string;
 }
 
 /**
@@ -162,6 +173,65 @@ export class StripeService implements OnModuleInit {
       payment_intent: paymentIntentId,
       amount: amountCents,
       metadata: { reason },
+    });
+  }
+
+  // ============================================================
+  // Connect Express (E7)
+  // ============================================================
+
+  /**
+   * Create an Express connected account for an inspector. `transfers` is the
+   * only requested capability — the platform charges the customer and transfers
+   * the inspector's share via separate charges-and-transfers.
+   */
+  async createConnectedAccount(email: string): Promise<StripeAccount> {
+    return this.requireClient().accounts.create({
+      type: 'express',
+      country: 'DE',
+      email,
+      capabilities: { transfers: { requested: true } },
+      business_type: 'individual',
+    });
+  }
+
+  /** Create an onboarding account link the inspector follows to finish KYC. */
+  async createAccountLink(
+    accountId: string,
+    refreshUrl: string,
+    returnUrl: string,
+  ): Promise<StripeAccountLink> {
+    return this.requireClient().accountLinks.create({
+      account: accountId,
+      refresh_url: refreshUrl,
+      return_url: returnUrl,
+      type: 'account_onboarding',
+    });
+  }
+
+  /** Retrieve a connected account (charges_enabled / payouts_enabled / details_submitted). */
+  async retrieveAccount(accountId: string): Promise<StripeAccount> {
+    return this.requireClient().accounts.retrieve(accountId);
+  }
+
+  /** Retrieve a PaymentIntent (used to read `latest_charge` for transfers). */
+  async retrievePaymentIntent(paymentIntentId: string): Promise<StripePaymentIntent> {
+    return this.requireClient().paymentIntents.retrieve(paymentIntentId);
+  }
+
+  /**
+   * Transfer the inspector's share to their connected account. Uses
+   * `source_transaction` = the originating charge id so the transfer draws from
+   * that specific charge (separate charges-and-transfers) — this avoids
+   * test-mode available-balance issues.
+   */
+  async createTransfer(params: CreateTransferParams): Promise<StripeTransfer> {
+    return this.requireClient().transfers.create({
+      amount: params.amountCents,
+      currency: 'eur',
+      destination: params.destinationAccountId,
+      source_transaction: params.sourceChargeId,
+      transfer_group: params.transferGroup,
     });
   }
 

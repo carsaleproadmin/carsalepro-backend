@@ -406,9 +406,11 @@ export class OrdersService {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
     }
     await this.transition(orderId, OrderStatus.APPROVED, userId);
-    // TODO E7: transfer inspectorShare to the inspector's connected account,
-    // create the Payout row, then optionally transition APPROVED → COMPLETED.
-    return { orderId, status: OrderStatus.APPROVED };
+    // E7: release the escrowed inspector share. Idempotent + non-throwing — a
+    // failure here must not undo the approval.
+    await this.releasePayout(orderId);
+    const after = await this.requireOrder(orderId);
+    return { orderId, status: after.status };
   }
 
   async dispute(
@@ -579,9 +581,142 @@ export class OrdersService {
     });
     for (const order of overdue) {
       await this.transition(order.id, OrderStatus.APPROVED, 'system');
-      // TODO E7: transfer inspectorShare on auto-approve too.
+      // E7: release the escrowed inspector share on auto-approve too.
+      await this.releasePayout(order.id);
     }
     return { approved: overdue.length };
+  }
+
+  // ============================================================
+  // Payout / escrow release (E7)
+  // ============================================================
+
+  /**
+   * Release the escrowed inspector share for an APPROVED order (escrow → 80% to
+   * the inspector's connected account). Idempotent: a Payout already on the
+   * order short-circuits. Non-throwing — wired into approve() / autoApprove(),
+   * a failure here must never undo the approval.
+   *
+   * - Stripe configured: retrieve the PaymentIntent → latest_charge, transfer
+   *   the inspector share via source_transaction, record a 'paid' Payout, then
+   *   transition APPROVED → COMPLETED.
+   * - MOCK mode: record a 'paid' Payout with a synthetic transfer id + COMPLETE.
+   * - Inspector not onboarded / no connected account: record a 'pending' Payout,
+   *   leave the order APPROVED, log a warning.
+   */
+  async releasePayout(orderId: string): Promise<void> {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) return;
+    if (order.status !== OrderStatus.APPROVED) return;
+    if (!order.inspectorId) {
+      this.logger.warn(`releasePayout: order ${orderId} has no inspector — skipping`);
+      return;
+    }
+
+    // Idempotency: a payout already exists for this order → no-op.
+    const existing = await this.prisma.payout.findUnique({ where: { orderId } });
+    if (existing) return;
+
+    const amountCents = order.inspectorShareCents;
+    const profile = await this.prisma.inspectorProfile.findUnique({
+      where: { userId: order.inspectorId },
+    });
+
+    // Not eligible to receive funds yet → park a pending payout, stay APPROVED.
+    if (!profile?.stripeOnboarded || !profile.stripeAccountId) {
+      await this.createPayoutSafe({
+        orderId,
+        inspectorId: order.inspectorId,
+        amountCents,
+        status: 'pending',
+        stripeTransferId: null,
+      });
+      this.logger.warn(
+        `releasePayout: inspector ${order.inspectorId} not onboarded for order ${orderId} — payout pending`,
+      );
+      return;
+    }
+
+    let stripeTransferId: string | null = `tr_mock_${orderId}`;
+    if (this.stripe.configured) {
+      const payment = await this.prisma.payment.findUnique({ where: { orderId } });
+      if (!payment?.stripePaymentIntentId) {
+        await this.createPayoutSafe({
+          orderId,
+          inspectorId: order.inspectorId,
+          amountCents,
+          status: 'pending',
+          stripeTransferId: null,
+        });
+        this.logger.warn(
+          `releasePayout: order ${orderId} has no PaymentIntent — payout pending`,
+        );
+        return;
+      }
+      try {
+        const pi = await this.stripe.retrievePaymentIntent(payment.stripePaymentIntentId);
+        const chargeId =
+          typeof pi.latest_charge === 'string' ? pi.latest_charge : pi.latest_charge?.id;
+        if (!chargeId) throw new Error('PaymentIntent has no latest_charge');
+        const transfer = await this.stripe.createTransfer({
+          amountCents,
+          destinationAccountId: profile.stripeAccountId,
+          sourceChargeId: chargeId,
+          transferGroup: order.number,
+        });
+        stripeTransferId = transfer.id;
+      } catch (err) {
+        // Transfer failed → park a pending payout for retry, stay APPROVED.
+        await this.createPayoutSafe({
+          orderId,
+          inspectorId: order.inspectorId,
+          amountCents,
+          status: 'pending',
+          stripeTransferId: null,
+        });
+        this.logger.warn(
+          `releasePayout: transfer failed for order ${orderId}: ${(err as Error).message} — payout pending`,
+        );
+        return;
+      }
+    }
+
+    const created = await this.createPayoutSafe({
+      orderId,
+      inspectorId: order.inspectorId,
+      amountCents,
+      status: 'paid',
+      stripeTransferId,
+    });
+    // If a concurrent caller already created the payout, don't double-complete.
+    if (created) {
+      await this.transition(orderId, OrderStatus.COMPLETED, 'system');
+    }
+  }
+
+  /**
+   * Create a Payout, swallowing the unique-violation race (another caller beat
+   * us to the order's single Payout). Returns true only when this call inserted.
+   */
+  private async createPayoutSafe(data: {
+    orderId: string;
+    inspectorId: string;
+    amountCents: number;
+    status: string;
+    stripeTransferId: string | null;
+  }): Promise<boolean> {
+    try {
+      await this.prisma.payout.create({ data });
+      return true;
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        return false;
+      }
+      throw err;
+    }
   }
 
   // ============================================================
