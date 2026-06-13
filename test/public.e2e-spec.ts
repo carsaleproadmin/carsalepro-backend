@@ -133,4 +133,35 @@ describe('Public showroom + report check (e2e)', () => {
   it('10. preview 404s for an unknown code', async () => {
     await request(app.getHttpServer()).get('/api/v1/public/reports/CSP-000002/preview').expect(404);
   });
+
+  it('11. gold listings rank before standard (W.1.9)', async () => {
+    const stdReport = await prisma.report.create({
+      data: {
+        deviceId: did, code: `CSP-${Math.floor(Math.random() * 900000 + 100000)}`,
+        s3Key: `free/${did}/std.pdf`, tier: 'free', uploaded: true,
+        make: 'BMW', model: '318i', year: 2017,
+      },
+    });
+    const stdListing = await prisma.listing.create({
+      data: {
+        sellerId, reportId: stdReport.id, status: 'ACTIVE', package: 'standard',
+        priceCents: 1000000, city: 'Berlin', publishedAt: new Date(),
+        expiresAt: new Date(Date.now() + 30 * 86400000),
+      },
+    });
+    try {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/public/listings?make=BMW')
+        .expect(200);
+      const ids: string[] = res.body.items.map((i: { id: string }) => i.id);
+      const goldIdx = ids.indexOf(listingId); // seeded gold listing
+      const stdIdx = ids.indexOf(stdListing.id);
+      expect(goldIdx).toBeGreaterThanOrEqual(0);
+      expect(stdIdx).toBeGreaterThanOrEqual(0);
+      expect(goldIdx).toBeLessThan(stdIdx);
+    } finally {
+      await prisma.listing.delete({ where: { id: stdListing.id } });
+      await prisma.report.delete({ where: { id: stdReport.id } });
+    }
+  });
 });

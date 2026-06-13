@@ -36,12 +36,14 @@ export class PublicService {
       ...(Object.keys(reportFilter).length ? { report: reportFilter } : {}),
     };
 
+    // Gold listings rank first. 'gold' < 'standard' lexically, so ascending
+    // order on `package` puts Gold ahead of Standard.
     const orderBy: Prisma.ListingOrderByWithRelationInput[] =
       q.sort === 'price_asc'
-        ? [{ package: 'desc' }, { priceCents: 'asc' }]
+        ? [{ package: 'asc' }, { priceCents: 'asc' }]
         : q.sort === 'price_desc'
-          ? [{ package: 'desc' }, { priceCents: 'desc' }]
-          : [{ package: 'desc' }, { publishedAt: 'desc' }];
+          ? [{ package: 'asc' }, { priceCents: 'desc' }]
+          : [{ package: 'asc' }, { publishedAt: 'desc' }];
 
     const [rows, total] = await Promise.all([
       this.prisma.listing.findMany({
