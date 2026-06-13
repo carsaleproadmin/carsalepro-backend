@@ -20,6 +20,7 @@ import { envValidationSchema } from './config/env.validation';
 import { GeoModule } from './geo/geo.module';
 import { HealthModule } from './health/health.module';
 import { InspectorModule } from './inspector/inspector.module';
+import { KycModule } from './kyc/kyc.module';
 import { LegalModule } from './legal/legal.module';
 import { ListingsModule } from './listings/listings.module';
 import { MeModule } from './me/me.module';
@@ -58,6 +59,7 @@ import { VinModule } from './vin/vin.module';
     MeReportsModule,
     PaymentsModule,
     InspectorModule,
+    KycModule,
     OrdersModule,
     ListingsModule,
     LinkCodesModule,
