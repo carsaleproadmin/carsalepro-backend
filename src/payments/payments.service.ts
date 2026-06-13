@@ -12,11 +12,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { PpvCheckoutResponseDto, ReportPurchaseListDto } from './dto/ppv-response.dto';
 import {
+  StripeAccount,
   StripeCharge,
   StripeCheckoutSession,
   StripeEvent,
   StripePaymentIntent,
   StripeService,
+  StripeTransfer,
 } from './stripe.service';
 
 @Injectable()
@@ -147,8 +149,40 @@ export class PaymentsService {
         }
         break;
       }
+      case 'account.updated': {
+        // Connect account onboarding progressed → recompute the inspector's flag.
+        const acct = event.data.object as StripeAccount;
+        const accountId = acct.id ?? (typeof event.account === 'string' ? event.account : null);
+        if (accountId) {
+          await this.syncConnectedAccount(accountId, acct);
+        }
+        break;
+      }
+      case 'transfer.created': {
+        // Confirm the payout is paid (idempotent no-op if already recorded).
+        await this.confirmTransfer(event.data.object as StripeTransfer);
+        break;
+      }
+      case 'charge.dispute.created': {
+        // A customer filed a chargeback → flag the order so an admin (E9) handles it.
+        const dispute = event.data.object as { payment_intent?: string | { id: string } | null };
+        const piId =
+          typeof dispute.payment_intent === 'string'
+            ? dispute.payment_intent
+            : (dispute.payment_intent?.id ?? null);
+        if (piId) {
+          await this.flagChargeback(piId);
+        }
+        break;
+      }
       default:
-        // Other event types are intentionally a no-op for now.
+        // `transfer.failed` (and the API-typed `transfer.reversed`) signal a payout
+        // that did not land → mark the Payout failed. Matched on the raw string so
+        // we stay compatible across Stripe API event-union versions.
+        if ((event.type as string) === 'transfer.failed' || event.type === 'transfer.reversed') {
+          await this.failTransfer(event.data.object as StripeTransfer);
+        }
+        // All other event types are intentionally a no-op.
         break;
     }
   }
@@ -177,6 +211,85 @@ export class PaymentsService {
     await this.prisma.payment
       .update({ where: { id: paymentId }, data: { status: 'refunded' } })
       .catch(() => undefined);
+  }
+
+  /**
+   * Recompute an inspector's `stripeOnboarded` flag from a connected account.
+   * Onboarded = (charges_enabled OR payouts_enabled) AND details_submitted.
+   * Idempotent: looks the profile up by stripeAccountId; no-op if unknown.
+   */
+  async syncConnectedAccount(
+    accountId: string,
+    acct?: StripeAccount,
+  ): Promise<void> {
+    const profile = await this.prisma.inspectorProfile.findUnique({
+      where: { stripeAccountId: accountId },
+    });
+    if (!profile) return;
+
+    const account = acct ?? (await this.stripe.retrieveAccount(accountId));
+    const onboarded =
+      (account.charges_enabled === true || account.payouts_enabled === true) &&
+      account.details_submitted === true;
+
+    if (profile.stripeOnboarded === onboarded) return; // idempotent
+    await this.prisma.inspectorProfile.update({
+      where: { stripeAccountId: accountId },
+      data: { stripeOnboarded: onboarded },
+    });
+    this.logger.log(
+      `Inspector ${profile.userId} stripeOnboarded → ${onboarded} (account.updated)`,
+    );
+  }
+
+  /** Confirm a transfer landed → mark its Payout 'paid'. Idempotent. */
+  async confirmTransfer(transfer: StripeTransfer): Promise<void> {
+    const payout = await this.prisma.payout.findUnique({
+      where: { stripeTransferId: transfer.id },
+    });
+    if (payout && payout.status !== 'paid') {
+      await this.prisma.payout
+        .update({ where: { id: payout.id }, data: { status: 'paid' } })
+        .catch(() => undefined);
+    }
+  }
+
+  /** Mark the Payout behind a failed/reversed transfer 'failed'. Idempotent. */
+  async failTransfer(transfer: StripeTransfer): Promise<void> {
+    const payout = await this.prisma.payout.findUnique({
+      where: { stripeTransferId: transfer.id },
+    });
+    if (payout) {
+      await this.prisma.payout
+        .update({ where: { id: payout.id }, data: { status: 'failed' } })
+        .catch(() => undefined);
+      this.logger.warn(`Payout ${payout.id} marked failed (transfer failed/reversed)`);
+      // E11: alert ops + retry path.
+    }
+  }
+
+  /**
+   * Flag an order as charged-back. Records an OrderEvent of type 'chargeback'
+   * against the order behind the disputed PaymentIntent. Admin handling is E9.
+   * Idempotent: writing a second event is harmless (events are append-only).
+   */
+  async flagChargeback(paymentIntentId: string): Promise<void> {
+    const payment = await this.prisma.payment.findUnique({
+      where: { stripePaymentIntentId: paymentIntentId },
+    });
+    if (!payment?.orderId) {
+      this.logger.warn(`charge.dispute.created: no order for PI ${paymentIntentId}`);
+      return;
+    }
+    await this.prisma.orderEvent.create({
+      data: {
+        orderId: payment.orderId,
+        actor: 'system',
+        type: 'chargeback',
+        payload: { paymentIntentId },
+      },
+    });
+    this.logger.warn(`Chargeback flagged on order ${payment.orderId} (PI ${paymentIntentId})`);
   }
 
   /**

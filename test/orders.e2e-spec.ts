@@ -53,6 +53,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     if (orderIds.length) {
       await prisma.orderEvent.deleteMany({ where: { orderId: { in: orderIds } } });
       await prisma.orderOffer.deleteMany({ where: { orderId: { in: orderIds } } });
+      await prisma.payout.deleteMany({ where: { orderId: { in: orderIds } } });
       await prisma.refund.deleteMany({ where: { orderId: { in: orderIds } } });
       await prisma.dispute.deleteMany({ where: { orderId: { in: orderIds } } });
       await prisma.report.deleteMany({ where: { orderId: { in: orderIds } } });
@@ -66,6 +67,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     }
     const userIds = [...createdUserIds];
     if (userIds.length) {
+      await prisma.payout.deleteMany({ where: { inspectorId: { in: userIds } } });
       await prisma.orderOffer.deleteMany({ where: { inspectorId: { in: userIds } } });
       await prisma.inspectorProfile.deleteMany({ where: { userId: { in: userIds } } });
       await prisma.verificationToken.deleteMany({ where: { userId: { in: userIds } } });
