@@ -110,6 +110,9 @@ export class PaymentsService {
         if (meta.purpose === 'ppv' && meta.paymentId && meta.reportId && meta.userId) {
           await this.fulfillPurchase(meta.paymentId, meta.reportId, meta.userId);
           this.logger.log(`PPV purchase fulfilled for payment ${meta.paymentId}`);
+        } else if (meta.purpose === 'gold' && meta.paymentId && meta.listingId) {
+          await this.activateGoldListing(meta.paymentId, meta.listingId);
+          this.logger.log(`Gold listing ${meta.listingId} activated for payment ${meta.paymentId}`);
         }
         break;
       }
@@ -117,6 +120,33 @@ export class PaymentsService {
         // Other event types are intentionally a no-op for now.
         break;
     }
+  }
+
+  /**
+   * Idempotently mark a Gold payment succeeded and activate its listing
+   * (ACTIVE, package 'gold', publishedAt now, expiresAt now + duration). Safe to
+   * call from both the mock path and the Stripe webhook.
+   */
+  async activateGoldListing(paymentId: string, listingId: string): Promise<void> {
+    await this.prisma.payment
+      .update({ where: { id: paymentId }, data: { status: 'succeeded' } })
+      .catch(() => undefined);
+
+    const durationDays = await this.settings.getNumber('listingDurationDays');
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + durationDays * 86_400_000);
+
+    await this.prisma.listing
+      .update({
+        where: { id: listingId },
+        data: {
+          status: 'ACTIVE',
+          package: 'gold',
+          publishedAt: now,
+          expiresAt,
+        },
+      })
+      .catch(() => undefined);
   }
 
   /** List the reports a user has purchased (pay-per-view), newest first. */

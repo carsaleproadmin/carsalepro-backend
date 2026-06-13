@@ -10,6 +10,6 @@ import { WebhookController } from './webhook.controller';
 @Module({
   controllers: [PaymentsController, MeReportPurchasesController, WebhookController],
   providers: [StripeService, PaymentsService],
-  exports: [PaymentsService],
+  exports: [PaymentsService, StripeService],
 })
 export class PaymentsModule {}

@@ -27,6 +27,8 @@ export class PublicService {
 
     const where: Prisma.ListingWhereInput = {
       status: 'ACTIVE',
+      // Exclude expired-but-not-yet-swept listings (null expiry = never expires).
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       ...(q.city ? { city: { contains: q.city, mode: 'insensitive' } } : {}),
       ...(q.bodyType ? { bodyType: q.bodyType } : {}),
       ...(q.driveType ? { driveType: q.driveType } : {}),
@@ -62,7 +64,11 @@ export class PublicService {
 
   async getListing(id: string) {
     const listing = await this.prisma.listing.findFirst({
-      where: { id, status: 'ACTIVE' },
+      where: {
+        id,
+        status: 'ACTIVE',
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
       include: { report: true },
     });
     if (!listing) throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
