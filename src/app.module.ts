@@ -2,11 +2,15 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
 import { UsersModule } from './users/users.module';
 import { CatalogModule } from './catalog/catalog.module';
+import { LinkCodesModule } from './link-codes/link-codes.module';
+import { MeReportsModule } from './me-reports/me-reports.module';
+import { RedisModule } from './redis/redis.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { DeviceIdMiddleware } from './common/middleware/device-id.middleware';
@@ -35,6 +39,7 @@ import { VinModule } from './vin/vin.module';
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
     PrismaModule,
+    RedisModule,
     AuthModule,
     UsersModule,
     R2Module,
@@ -43,6 +48,9 @@ import { VinModule } from './vin/vin.module';
     QuotaModule,
     ReportsModule,
     MeModule,
+    MeReportsModule,
+    LinkCodesModule,
+    AdminModule,
     LegalModule,
     CatalogModule,
     SettingsModule,

@@ -17,6 +17,10 @@ import {
 } from '@nestjs/swagger';
 import { DeviceId } from '../common/decorators/device-id.decorator';
 import { ErrorResponseDto } from '../common/dto/error-response.dto';
+import {
+  CreatePhotoUploadDto,
+  CreatePhotoUploadResponseDto,
+} from './dto/create-photo-upload.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import {
   CompleteReportResponseDto,
@@ -66,6 +70,24 @@ export class ReportsController {
     @Param('id') id: string,
   ): Promise<CompleteReportResponseDto> {
     return this.reportsService.complete(deviceId, id);
+  }
+
+  @Post(':id/photos')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Reserve a presigned R2 upload URL for a report photo',
+    description:
+      'Verifies the report is owned by the device and returns a presigned PUT URL for a ' +
+      'single JPEG photo stored under report-photos/<reportId>/. 503 when R2 is unconfigured.',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiOkResponse({ type: CreatePhotoUploadResponseDto })
+  async createPhotoUpload(
+    @DeviceId() deviceId: string,
+    @Param('id') id: string,
+    @Body() dto: CreatePhotoUploadDto,
+  ): Promise<CreatePhotoUploadResponseDto> {
+    return this.reportsService.createPhotoUploadUrl(deviceId, id, dto.kind);
   }
 
   @Get()

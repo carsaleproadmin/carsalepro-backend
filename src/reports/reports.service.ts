@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import {
   ForbiddenException,
   HttpException,
@@ -57,6 +58,20 @@ export class ReportsService {
         hash: dto.hash ?? null,
         tier,
         s3Key: '', // filled below
+        // --- website extension fields (all optional) ---
+        orderId: dto.orderId ?? null,
+        qualityScore: dto.qualityScore ?? null,
+        year: dto.year ?? null,
+        mileageKm: dto.mileageKm ?? null,
+        color: dto.color ?? null,
+        bodyType: dto.bodyType ?? null,
+        driveType: dto.driveType ?? null,
+        reportData:
+          dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+        photosManifest:
+          dto.photosManifest !== undefined
+            ? (dto.photosManifest as Prisma.InputJsonValue)
+            : undefined,
       },
     });
 
@@ -120,6 +135,39 @@ export class ReportsService {
       data: { deletedAt: new Date() },
     });
     return { id: reportId, deleted: true };
+  }
+
+  /**
+   * Reserve a presigned upload URL for an individual report photo. The report
+   * must be owned by the requesting device. Photo keys live under a dedicated
+   * `report-photos/<reportId>/` prefix (separate from the report PDF layout).
+   */
+  async createPhotoUploadUrl(
+    deviceId: string,
+    reportId: string,
+    kind: string,
+  ): Promise<{ presignedUploadUrl: string; s3Key: string; expiresAt: string }> {
+    await this.requireOwned(deviceId, reportId);
+
+    if (!this.r2.isConfigured()) {
+      throw new HttpException(
+        'Cloud storage is not configured on this server',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    const s3Key = `report-photos/${reportId}/${kind}-${randomUUID()}.jpg`;
+    const { url, expiresAt } = await this.r2.createPresignedUploadUrl(s3Key, 'image/jpeg');
+
+    this.logger.log(
+      `Reserved photo upload for report ${reportId} device=${this.mask(deviceId)} kind=${kind}`,
+    );
+
+    return {
+      presignedUploadUrl: url,
+      s3Key,
+      expiresAt: expiresAt.toISOString(),
+    };
   }
 
   private async rollbackQuota(deviceId: string, tier: 'free' | 'pro'): Promise<void> {

@@ -1,7 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsArray,
   IsInt,
   IsISO8601,
+  IsObject,
   IsOptional,
   IsString,
   Length,
@@ -69,4 +71,71 @@ export class CreateReportDto {
   @IsOptional()
   @IsISO8601()
   inspectedAt?: string;
+
+  // --- website extension (all optional, additive — legacy clients ignore) ---
+
+  @ApiPropertyOptional({
+    example: 'ckqz2zk5e0000a8b8h4t8j2z3',
+    description: 'Marketplace order this report fulfills (unique on Report).',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  orderId?: string;
+
+  @ApiPropertyOptional({ example: 87, minimum: 0, maximum: 100, description: 'Inspection quality score 0–100.' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  qualityScore?: number;
+
+  @ApiPropertyOptional({ example: 2018, minimum: 1900, maximum: 2100 })
+  @IsOptional()
+  @IsInt()
+  @Min(1900)
+  @Max(2100)
+  year?: number;
+
+  @ApiPropertyOptional({ example: 120000, minimum: 0, description: 'Mileage in kilometres.' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  mileageKm?: number;
+
+  @ApiPropertyOptional({ example: 'Black' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  color?: string;
+
+  @ApiPropertyOptional({ example: 'sedan' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  bodyType?: string;
+
+  @ApiPropertyOptional({ example: 'awd' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  driveType?: string;
+
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: true,
+    description: 'Structured inspection data (checklist, findings).',
+  })
+  @IsOptional()
+  @IsObject()
+  reportData?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    type: 'array',
+    items: { type: 'object' },
+    description: 'Manifest of photos attached to this report.',
+  })
+  @IsOptional()
+  @IsArray()
+  photosManifest?: unknown[];
 }

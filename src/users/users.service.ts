@@ -1,13 +1,23 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { DeviceLink, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { LinkCodesService } from '../link-codes/link-codes.service';
 import { UpdateMeDto } from './dto/users.dto';
 
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly linkCodes: LinkCodesService,
+  ) {}
 
   async getMe(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -86,5 +96,70 @@ export class UsersService {
       });
     });
     this.logger.log(`User ${userId.slice(0, 6)}… erased (GDPR)`);
+  }
+
+  /**
+   * Link a mobile device to the user via a one-time code generated on the
+   * device. Backfills existing reports so the device archive appears in the
+   * web cabinet immediately.
+   */
+  async linkDeviceByCode(userId: string, linkCode: string): Promise<DeviceLink> {
+    const deviceId = await this.linkCodes.consume(linkCode);
+    if (!deviceId) {
+      throw new BadRequestException({
+        error: { code: 'invalid_code', message: 'Link code is invalid or expired' },
+      });
+    }
+    return this.attachDevice(userId, deviceId, 'code');
+  }
+
+  /** List all devices linked to the user. */
+  async listDeviceLinks(userId: string): Promise<DeviceLink[]> {
+    return this.prisma.deviceLink.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * Idempotently attach a device to a user and backfill its reports. Throws
+   * 409 if the device is already linked to a different user. Shared by the
+   * code-based (user) and manual (admin) link paths.
+   */
+  async attachDevice(
+    userId: string,
+    deviceId: string,
+    linkedVia: 'code' | 'admin',
+  ): Promise<DeviceLink> {
+    const existing = await this.prisma.deviceLink.findUnique({ where: { deviceId } });
+    if (existing && existing.userId !== userId) {
+      throw new ConflictException({
+        error: {
+          code: 'device_already_linked',
+          message: 'This device is already linked to another account',
+        },
+      });
+    }
+
+    const link = await this.prisma.deviceLink.upsert({
+      where: { deviceId },
+      update: {},
+      create: { userId, deviceId, linkedVia },
+    });
+
+    await this.prisma.report.updateMany({
+      where: { deviceId },
+      data: { userId },
+    });
+
+    this.logger.log(
+      `Linked device=${this.maskDeviceId(deviceId)} to user ${userId.slice(0, 6)}… via ${linkedVia}`,
+    );
+    return link;
+  }
+
+  private maskDeviceId(deviceId: string): string {
+    if (deviceId.length <= 8) return '****';
+    return `${deviceId.slice(0, 4)}…${deviceId.slice(-4)}`;
   }
 }
