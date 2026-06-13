@@ -10,6 +10,7 @@ import { UsersModule } from './users/users.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { LinkCodesModule } from './link-codes/link-codes.module';
 import { MeReportsModule } from './me-reports/me-reports.module';
+import { PublicModule } from './public/public.module';
 import { RedisModule } from './redis/redis.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
@@ -50,6 +51,7 @@ import { VinModule } from './vin/vin.module';
     MeModule,
     MeReportsModule,
     LinkCodesModule,
+    PublicModule,
     AdminModule,
     LegalModule,
     CatalogModule,
