@@ -1,59 +1,54 @@
 # CLAUDE.md — CarSalePro Backend
 
-Agent-specific guidance. Human-facing docs live in `README.md` and `docs/`.
+Agent-specific guidance. Project overview, stack, endpoints, and run/deploy steps are in @README.md — read it first and don't duplicate it here.
 
-## What this project is
+## What this repo is now
 
-NestJS 11 backend that supports the CarSalePro Flutter mobile MVP. The full product concept is at `../docs/CONCEPT.md`. The MVP scope this backend covers is described at `../docs/06_Mobile_MVP_План_2_месяца.md` (Week 7 cloud sync + PRO IAP).
+One NestJS service with **two API surfaces** (see @README.md):
 
-Only **6 endpoints** are in scope for MVP: health, VIN decode, quota (get + upgrade), reports (POST/GET/complete/DELETE), me (GDPR erasure). Anything bigger (auth, orders, marketplace, KYC, Stripe) is **explicitly Phase 2+** and should not be added here without an updated spec.
-
-## Identity model
-
-There are no user accounts. Every authenticated endpoint accepts `X-Device-Id: <uuid-v4>` and stores all rows keyed by it. Do not log full device IDs at `info` level; use the `mask()` helpers (`f0a1…3c4d`).
+- **Legacy mobile MVP** — root routes (`/vin`, `/quota`, `/reports`, `/me`, `/catalog`, `/legal`, `/health`), `X-Device-Id` auth, **frozen contract** (the shipped Flutter app depends on it byte-for-byte).
+- **Website (Phase 2+)** — `/api/v1/*`, Bearer-JWT auth. The full marketplace / inspection-exchange / payments / KYC / LegalSync / admin / notifications platform was **built in this repo** (extending it in place was a deliberate decision — do NOT suggest moving it to a separate repo).
 
 ## Hard rules
 
-- **Never log secrets or full receipts.** IAP receipt bytes flow through `/quota/upgrade` but are intentionally not persisted in MVP.
-- **Never put R2 credentials in source.** Always read from `ConfigService`.
-- **402 is part of the contract.** The mobile app interprets `POST /reports` returning 402 as "show paywall." Don't change the status code or message shape without coordinating with the mobile team.
-- **Prisma over raw SQL.** The only exception so far is the transactional quota gate in `ReportsService.consumeQuota`, which uses `prisma.$transaction` for atomicity.
-- **R2 keys follow `<tier>/<deviceId>/<reportId>.pdf`.** GDPR erasure relies on this prefix layout — don't change it without updating `MeService.erase` and `R2Service.deletePrefix`.
-- **Tests must run without R2 creds.** The `Reports (e2e)` suite has both an R2-on path and an R2-off path; keep both green.
+- **Never break the mobile contract.** Don't change root routes, their `X-Device-Id` behavior, the `POST /reports` → **402 `free_limit_reached`** paywall shape, or the R2 key layout `<tier>/<deviceId>/<reportId>.pdf` (GDPR erasure in `MeService.erase` + `R2Service.deletePrefix` depend on it). Legacy mobile e2e (`mobile-link`, `vin`, `quota`, `reports`, `me`) must stay green.
+- **Money is integer cents.** No floats. All fees/tariffs come from `PlatformSetting` via `SettingsService.getCents`/`getNumber` — never hardcode amounts.
+- **Order lifecycle goes through the state machine** (`src/orders/order-state-machine.ts` `canTransition` + `OrdersService.transition`). Refunds/transfers/payouts fire only from legal transitions. The per-order contract auto-renders on the `ASSIGNED` transition (wrapped so it can't break assignment).
+- **Auth surface:** website routes live under `@Controller('api/v1/...')`; the global `JwtAuthGuard` enforces JWT only for `/api/v1` and re-loads the user from the DB each request (ban/erasure/role/KYC are authoritative from the DB). Use `@Public()` to opt out, `@Roles(Role.ADMIN)` for admin routes (every `api/v1/admin/*` controller must carry it), `@CurrentUser('id')` for the caller.
+- **Prisma over raw SQL — except PostGIS.** Geography columns are `Unsupported`; do geo I/O with parameterized `$queryRaw`/`$executeRaw` (`Prisma.sql`/`Prisma.join`) — never string-interpolate user input.
+- **Stripe** runs MOCK when no key OR `NODE_ENV==='test'`. The webhook (`/webhooks/stripe`, `@Public`, raw body) verifies the signature and records its idempotency row only after successful handling.
+- **Notifications are non-fatal** — `NotificationService.notify` must never throw into a domain flow; in `NODE_ENV==='test'` it dispatches inline so e2e can assert rows. The scheduler (`src/scheduler`) is gated off when `NODE_ENV==='test'` or `SCHEDULER_ENABLED='false'`.
+- **Secrets** come from `ConfigService`, never source or logs. KYC documents are served only via short-lived **signed** URLs (`R2Service.createPrivateSignedUrl`) — never a public URL. Mask device/user ids in logs (`mask()` helpers).
+- **No schema edits without a migration.** Migrations under `prisma/migrations/` are part of the contract — never edit a committed one.
 
-## Where things live
+## Migrations
 
-| Concept | File |
-|---|---|
-| Bootstrap, Swagger, helmet | `src/main.ts` |
-| Wiring & global filters | `src/app.module.ts` |
-| Env validation (Joi) | `src/config/env.validation.ts` |
-| Device-id parsing | `src/common/middleware/device-id.middleware.ts` + `src/common/decorators/device-id.decorator.ts` |
-| Quota gate | `src/reports/reports.service.ts` → `consumeQuota` |
-| GDPR erasure | `src/me/me.service.ts` + `src/r2/r2.service.ts:deletePrefix` |
-| Presigned URLs | `src/r2/r2.service.ts:createPresignedUploadUrl` / `createPresignedDownloadUrl` |
-| VIN cache | `src/vin/vin.service.ts` |
+Use `npx prisma migrate deploy` (non-interactive) to apply, and `prisma migrate diff --from-url … --to-schema-datamodel … --script` to author new migrations. `migrate dev`/`reset` hit interactive prompts / an AI-consent guard in this environment and the PostGIS image pre-creates the extension — avoid them. After changing `schema.prisma`, regenerate the client, add a migration, and re-seed with `npm run prisma:seed`.
 
-## Common dev loop
+## Verify before pushing
 
 ```bash
-docker compose up -d postgres           # Postgres on :5433
-npm run start:dev                       # auto-reload Nest
-npm test && npm run test:e2e            # 20 tests, all must stay green
-node scripts/verify-deployed.mjs http://localhost:3000   # full smoke
+npx tsc --noEmit -p tsconfig.build.json
+npm run test:e2e -- --forceExit            # 185 e2e / 18 suites must stay green; ONE jest at a time
 ```
 
-Run `npx prisma migrate dev --name <slug>` for any schema change. Migrations under `prisma/migrations/` are part of the contract — never edit a committed migration.
+Always pass `--forceExit` (Redis/handles keep Jest alive otherwise). Render auto-deploys on push to `main` (runs `prisma migrate deploy` on start; Joi env validation can fail the boot — e.g. a weak prod `JWT_SECRET`). If a deploy fails, check `mcp__render__list_logs` for `srv-d83o7j1kh4rs73cgjfng` first. **Commit messages must not mention Claude/AI or include a Co-Authored-By trailer.**
 
-## Verification before pushing
+## Where agent-relevant things live
 
-1. `npm test` — unit
-2. `npm run test:e2e` — supertest
-3. `node scripts/verify-deployed.mjs http://localhost:3000` — full local smoke
-4. `npx tsc --noEmit -p tsconfig.build.json` — strict typecheck
+| Concern | Location |
+|---|---|
+| Bootstrap (helmet, CORS allowlist, raw-body webhook, Swagger) | `src/main.ts` |
+| Wiring + global guards (Throttler → Jwt → Roles) | `src/app.module.ts`, `src/auth/` |
+| Env schema + config | `src/config/env.validation.ts`, `configuration.ts` |
+| Order state machine + exchange | `src/orders/` (`order-state-machine.ts`, `orders.service.ts`) |
+| Stripe escrow / webhooks | `src/payments/` (`stripe.service.ts`, `payments.service.ts`, `webhook.controller.ts`) |
+| Geo (PostGIS KNN) | `src/geo/` |
+| Tariffs (PlatformSetting) | `src/settings/` |
+| LegalSync contracts | `src/legal/legal-contract.service.ts`, `legal-contracts.content.ts` |
+| Notifications + cron | `src/notifications/`, `src/scheduler/`, `src/worker/main.ts` |
+| Outstanding security items | [SECURITY.md](./SECURITY.md) |
 
-Render auto-deploys on push to `main`. If a deploy fails, check `mcp__render__list_logs` with `resource=srv-d83o7j1kh4rs73cgjfng` before doing anything else.
+## Adding a website feature
 
-## When asked to add a Phase 2 feature
-
-Pause and confirm scope with the user — Phase 2 work generally belongs in a separate repo (the web frontend / marketplace) and adding modules here drags the MVP backend out of its minimal contract. The `docs/CONCEPT.md` "Phase 2+" section is the authoritative scope boundary.
+It belongs here, under `/api/v1`. Add a module (controller `@Controller('api/v1/<feature>')` + service + DTOs with class-validator), wire it in `app.module.ts`, reuse `SettingsService` / `OrdersService.transition` / `StripeService` rather than duplicating money/state logic, add a `*.e2e-spec.ts` (≥ the coverage of sibling suites), and keep the mobile contract untouched.
