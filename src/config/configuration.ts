@@ -50,6 +50,7 @@ export interface AppConfig {
   auth: {
     jwtSecret: string;
     jwtExpiresIn: string;
+    internalApiKey: string;
   };
   signedUrlTtlMinutes: number;
   r2Kyc: {
@@ -135,6 +136,7 @@ export default (): AppConfig => ({
   auth: {
     jwtSecret: process.env.JWT_SECRET ?? 'dev-shared-secret-change-me',
     jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '30d',
+    internalApiKey: process.env.INTERNAL_API_KEY ?? '',
   },
   signedUrlTtlMinutes: parseInt(process.env.SIGNED_URL_TTL_MINUTES ?? '15', 10),
   r2Kyc: {

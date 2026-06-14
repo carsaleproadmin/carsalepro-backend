@@ -244,7 +244,10 @@ export class KycService {
         let viewUrl: string | null = null;
         let viewUrlExpiresAt: string | null = null;
         if (!d.purgedAt && this.r2.isConfigured()) {
-          const signed = await this.r2.createPresignedDownloadUrl(d.s3Key);
+          // KYC docs are sensitive — always serve via a short-lived SIGNED URL,
+          // never the public-URL shortcut (which createPresignedDownloadUrl would
+          // use for the public reports bucket when R2_PUBLIC_URL is set).
+          const signed = await this.r2.createPrivateSignedUrl(d.s3Key);
           viewUrl = signed.url;
           viewUrlExpiresAt = signed.expiresAt.toISOString();
         }

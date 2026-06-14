@@ -10,6 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { timingSafeEqual } from 'crypto';
 import { AppConfig } from '../config/configuration';
 import { Public } from './auth.decorators';
 import { AuthService } from './auth.service';
@@ -93,13 +94,24 @@ export class AuthController {
     @Headers('x-internal-key') internalKey: string | undefined,
     @Body() dto: OAuthUpsertDto,
   ) {
-    const expected = this.config.get('auth', { infer: true }).jwtSecret;
-    if (!internalKey || internalKey !== expected) {
+    const auth = this.config.get('auth', { infer: true });
+    // Prefer the dedicated INTERNAL_API_KEY when configured; otherwise fall back
+    // to JWT_SECRET so existing deployments (no new var) keep working.
+    const expected = auth.internalApiKey || auth.jwtSecret;
+    if (!internalKey || !this.constantTimeEquals(internalKey, expected)) {
       throw new ForbiddenException({
         error: { code: 'forbidden', message: 'Invalid internal key' },
       });
     }
     const { token, user } = await this.auth.oauthUpsert(dto);
     return { token, user };
+  }
+
+  /** Constant-time string comparison with a length guard (avoids timing leaks). */
+  private constantTimeEquals(a: string, b: string): boolean {
+    const bufA = Buffer.from(a);
+    const bufB = Buffer.from(b);
+    if (bufA.length !== bufB.length) return false;
+    return timingSafeEqual(bufA, bufB);
   }
 }

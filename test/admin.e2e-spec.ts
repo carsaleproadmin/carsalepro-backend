@@ -303,6 +303,14 @@ describe('Admin panel (E9) (e2e)', () => {
       const banned = await prisma.user.findUnique({ where: { id: target.userId } });
       expect(banned!.bannedAt).toBeTruthy();
 
+      // H3: the target's existing (pre-ban) token must be rejected at request
+      // time immediately — the ban takes effect without waiting for token expiry.
+      const reused = await bearer(
+        request(app.getHttpServer()).get('/api/v1/users/me'),
+        target.token,
+      ).expect(401);
+      expect(reused.body.error.code).toBe('unauthorized');
+
       const loginRes = await request(app.getHttpServer())
         .post('/api/v1/auth/login')
         .send({ email: target.email, password: PASSWORD })

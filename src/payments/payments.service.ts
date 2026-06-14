@@ -113,8 +113,31 @@ export class PaymentsService {
       this.logger.log(`Stripe event ${event.id} already processed — skipping`);
       return;
     }
-    await this.prisma.stripeWebhookEvent.create({ data: { id: event.id, type: event.type } });
 
+    // Process FIRST, record the dedupe row only AFTER handling succeeds. If
+    // processing throws, the event is NOT marked processed, so a Stripe retry
+    // will re-run it instead of being permanently dropped. Per-entity handlers
+    // below remain idempotent (e.g. reportPurchase/payout P2002 swallow), so a
+    // successful redelivery of an already-fulfilled event is still a no-op.
+    await this.processWebhook(event);
+
+    // Mark processed. A concurrent redelivery may race us here — swallow the
+    // unique-violation so the second insert is a harmless no-op.
+    try {
+      await this.prisma.stripeWebhookEvent.create({ data: { id: event.id, type: event.type } });
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        return;
+      }
+      throw err;
+    }
+  }
+
+  /** Dispatch a verified, not-yet-processed Stripe event to its handler. */
+  private async processWebhook(event: StripeEvent): Promise<void> {
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object as StripeCheckoutSession;
