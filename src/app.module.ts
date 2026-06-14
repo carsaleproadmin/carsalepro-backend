@@ -1,6 +1,7 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
@@ -24,12 +25,14 @@ import { KycModule } from './kyc/kyc.module';
 import { LegalModule } from './legal/legal.module';
 import { ListingsModule } from './listings/listings.module';
 import { MeModule } from './me/me.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentsModule } from './payments/payments.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QuotaModule } from './quota/quota.module';
 import { R2Module } from './r2/r2.module';
 import { ReportsModule } from './reports/reports.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
 import { SettingsModule } from './settings/settings.module';
 import { VinModule } from './vin/vin.module';
 
@@ -45,6 +48,7 @@ import { VinModule } from './vin/vin.module';
       throttlers: [{ ttl: 60_000, limit: 120 }],
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
+    ScheduleModule.forRoot(),
     PrismaModule,
     RedisModule,
     GeoModule,
@@ -57,6 +61,7 @@ import { VinModule } from './vin/vin.module';
     ReportsModule,
     MeModule,
     MeReportsModule,
+    NotificationsModule,
     PaymentsModule,
     InspectorModule,
     KycModule,
@@ -68,6 +73,7 @@ import { VinModule } from './vin/vin.module';
     LegalModule,
     CatalogModule,
     SettingsModule,
+    SchedulerModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

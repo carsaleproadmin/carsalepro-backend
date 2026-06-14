@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Listing } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { StripeService } from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -29,6 +30,7 @@ export class ListingsService {
     private readonly settings: SettingsService,
     private readonly stripe: StripeService,
     private readonly payments: PaymentsService,
+    private readonly notifications: NotificationsService,
     config: ConfigService<AppConfig, true>,
   ) {
     this.webOrigin = config.get('web', { infer: true }).origin.replace(/\/$/, '');
@@ -259,16 +261,48 @@ export class ListingsService {
   }
 
   /**
-   * Flip ACTIVE listings whose expiry has passed to EXPIRED. Exposed for a
-   * future cron/worker. Returns the number of listings swept.
+   * Flip ACTIVE listings whose expiry has passed to EXPIRED. Exposed for the
+   * cron/worker. Returns the number of listings swept. Emits a
+   * `listing.expiring` notification to each affected seller (non-throwing).
    */
   async expireOverdue(): Promise<number> {
-    const { count } = await this.prisma.listing.updateMany({
+    const overdue = await this.prisma.listing.findMany({
       where: { status: 'ACTIVE', expiresAt: { lt: new Date() } },
+      include: { report: true },
+    });
+    if (overdue.length === 0) return 0;
+
+    const { count } = await this.prisma.listing.updateMany({
+      where: { id: { in: overdue.map((l) => l.id) } },
       data: { status: 'EXPIRED' },
     });
+
+    for (const l of overdue) {
+      await this.notifications.notify(l.sellerId, 'listing.expiring', {
+        listingId: l.id,
+        make: l.report.make,
+        model: l.report.model,
+      });
+    }
     if (count > 0) this.logger.log(`Expired ${count} overdue listing(s)`);
     return count;
+  }
+
+  /**
+   * Emit a `listing.published` notification to the seller (non-throwing).
+   * Public so the Gold activation path in PaymentsService can reuse it.
+   */
+  async notifyListingPublished(listingId: string): Promise<void> {
+    const listing = await this.prisma.listing.findUnique({
+      where: { id: listingId },
+      include: { report: true },
+    });
+    if (!listing) return;
+    await this.notifications.notify(listing.sellerId, 'listing.published', {
+      listingId: listing.id,
+      make: listing.report.make,
+      model: listing.report.model,
+    });
   }
 
   private async activateStandard(id: string): Promise<{ expiresAt: Date }> {
@@ -279,6 +313,7 @@ export class ListingsService {
       where: { id },
       data: { status: 'ACTIVE', package: 'standard', publishedAt: now, expiresAt },
     });
+    await this.notifyListingPublished(id);
     return { expiresAt };
   }
 

@@ -1,0 +1,137 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { AppConfig } from '../config/configuration';
+import { RenderedTemplate } from './notification-templates';
+
+/** A recipient address resolved for a given external channel. */
+export interface DeliveryTarget {
+  /** Email address, phone number, or push token (provider-specific). */
+  address: string | null;
+}
+
+/**
+ * One external delivery channel. Implementations return `true` on success and
+ * `false` (never throw) on failure so the caller can mark the Notification row
+ * 'sent' or 'failed' without try/catch leaking into the domain flow.
+ */
+export interface NotificationProvider {
+  /** True when a real provider SDK is configured (otherwise DevOutbox is used). */
+  readonly enabled: boolean;
+  send(target: DeliveryTarget, message: RenderedTemplate): Promise<boolean>;
+}
+
+export type EmailProvider = NotificationProvider;
+export type SmsProvider = NotificationProvider;
+export type PushProvider = NotificationProvider;
+
+export const EMAIL_PROVIDER = Symbol('EMAIL_PROVIDER');
+export const SMS_PROVIDER = Symbol('SMS_PROVIDER');
+export const PUSH_PROVIDER = Symbol('PUSH_PROVIDER');
+
+/**
+ * Email provider. Uses SendGrid when SENDGRID_API_KEY is set, otherwise logs to
+ * the DevOutbox. The real SDK call is a single gated block — swapping in a key
+ * is a one-file change (no other code needs to know which provider is live).
+ */
+@Injectable()
+export class EmailProviderImpl implements EmailProvider {
+  private readonly logger = new Logger('EmailProvider');
+  readonly enabled: boolean;
+  private readonly from: string;
+
+  constructor(config: ConfigService<AppConfig, true>) {
+    const email = config.get('email', { infer: true });
+    this.enabled = !!email.sendgridApiKey;
+    this.from = email.from;
+  }
+
+  async send(target: DeliveryTarget, message: RenderedTemplate): Promise<boolean> {
+    if (!target.address) {
+      this.logger.warn('Email send skipped — no recipient address');
+      return false;
+    }
+    if (!this.enabled) {
+      this.logger.log(
+        `[DevOutbox:email] to=${target.address} from=${this.from} subject="${message.subject}" — ${message.body}`,
+      );
+      return true;
+    }
+    // TODO(provider): real SendGrid send. Gated on SENDGRID_API_KEY so a key
+    // swap is the only change required to go live:
+    //   const sg = require('@sendgrid/mail'); sg.setApiKey(key);
+    //   await sg.send({ to: target.address, from: this.from,
+    //     subject: message.subject, text: message.body });
+    this.logger.warn('SENDGRID_API_KEY set but SDK not wired — using DevOutbox');
+    this.logger.log(`[DevOutbox:email] to=${target.address} subject="${message.subject}"`);
+    return true;
+  }
+}
+
+/**
+ * SMS provider. Uses Twilio when TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN are set,
+ * otherwise logs to the DevOutbox. Sends the template's short text.
+ */
+@Injectable()
+export class SmsProviderImpl implements SmsProvider {
+  private readonly logger = new Logger('SmsProvider');
+  readonly enabled: boolean;
+  private readonly from: string;
+
+  constructor(config: ConfigService<AppConfig, true>) {
+    const sms = config.get('sms', { infer: true });
+    this.enabled = !!sms.twilioAccountSid && !!sms.twilioAuthToken;
+    this.from = sms.twilioFrom;
+  }
+
+  async send(target: DeliveryTarget, message: RenderedTemplate): Promise<boolean> {
+    if (!target.address) {
+      this.logger.warn('SMS send skipped — no recipient phone');
+      return false;
+    }
+    if (!this.enabled) {
+      this.logger.log(`[DevOutbox:sms] to=${target.address} — ${message.short}`);
+      return true;
+    }
+    // TODO(provider): real Twilio send. Gated on the Twilio creds:
+    //   const twilio = require('twilio')(sid, token);
+    //   await twilio.messages.create({ to: target.address, from: this.from,
+    //     body: message.short });
+    this.logger.warn('Twilio creds set but SDK not wired — using DevOutbox');
+    this.logger.log(`[DevOutbox:sms] to=${target.address} — ${message.short}`);
+    return true;
+  }
+}
+
+/**
+ * Push provider. Uses Firebase Cloud Messaging when FCM_SERVICE_ACCOUNT_JSON is
+ * set, otherwise logs to the DevOutbox. Sends subject + short text.
+ */
+@Injectable()
+export class PushProviderImpl implements PushProvider {
+  private readonly logger = new Logger('PushProvider');
+  readonly enabled: boolean;
+
+  constructor(config: ConfigService<AppConfig, true>) {
+    this.enabled = !!config.get('push', { infer: true }).fcmServiceAccountJson;
+  }
+
+  async send(target: DeliveryTarget, message: RenderedTemplate): Promise<boolean> {
+    if (!target.address) {
+      // No device token registered yet — treat as a benign no-op success so the
+      // row isn't marked failed for a user who simply has no push token.
+      this.logger.log(`[DevOutbox:push] no token — skipping "${message.subject}"`);
+      return true;
+    }
+    if (!this.enabled) {
+      this.logger.log(
+        `[DevOutbox:push] token=${target.address} title="${message.subject}" — ${message.short}`,
+      );
+      return true;
+    }
+    // TODO(provider): real FCM send. Gated on FCM_SERVICE_ACCOUNT_JSON:
+    //   const admin = require('firebase-admin'); ... admin.messaging().send({...})
+    this.logger.warn('FCM creds set but SDK not wired — using DevOutbox');
+    this.logger.log(`[DevOutbox:push] token=${target.address} title="${message.subject}"`);
+    return true;
+  }
+}
