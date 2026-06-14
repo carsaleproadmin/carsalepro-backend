@@ -182,6 +182,51 @@ export class ListingsService {
     });
   }
 
+  // ============================================================
+  // Admin overrides (E9) — skip seller-ownership checks
+  // ============================================================
+
+  /** Admin: hide any listing from the showroom. */
+  async adminHide(id: string): Promise<Listing> {
+    await this.requireListing(id);
+    return this.prisma.listing.update({ where: { id }, data: { status: 'HIDDEN' } });
+  }
+
+  /**
+   * Admin: restore a hidden/expired listing. Returns it to ACTIVE if its
+   * expiry is still in the future, otherwise EXPIRED.
+   */
+  async adminUnhide(id: string): Promise<Listing> {
+    const listing = await this.requireListing(id);
+    const stillValid = listing.expiresAt ? listing.expiresAt.getTime() > Date.now() : false;
+    return this.prisma.listing.update({
+      where: { id },
+      data: { status: stillValid ? 'ACTIVE' : 'EXPIRED' },
+    });
+  }
+
+  /** Admin: extend a listing's expiry by listingDurationDays and set it ACTIVE. */
+  async adminRenew(id: string): Promise<Listing> {
+    const listing = await this.requireListing(id);
+    const durationDays = await this.settings.getNumber('listingDurationDays');
+    const expiresAt = new Date(Date.now() + durationDays * 86_400_000);
+    return this.prisma.listing.update({
+      where: { id },
+      data: { status: 'ACTIVE', expiresAt, publishedAt: listing.publishedAt ?? new Date() },
+    });
+  }
+
+  /** Load a listing by id (no ownership check), or throw 404. */
+  private async requireListing(id: string): Promise<Listing> {
+    const listing = await this.prisma.listing.findUnique({ where: { id } });
+    if (!listing) {
+      throw new NotFoundException({
+        error: { code: 'not_found', message: 'Listing not found' },
+      });
+    }
+    return listing;
+  }
+
   /** List the current user's listings (any status except DELETED). */
   async listMine(userId: string): Promise<MyListingsListDto> {
     const listings = await this.prisma.listing.findMany({

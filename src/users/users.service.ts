@@ -121,6 +121,21 @@ export class UsersService {
     });
   }
 
+  /** Remove a device link for the user (admin unlink). Throws 404 if not found. */
+  async unlinkDevice(userId: string, deviceId: string): Promise<DeviceLink> {
+    const link = await this.prisma.deviceLink.findUnique({ where: { deviceId } });
+    if (!link || link.userId !== userId) {
+      throw new NotFoundException({
+        error: { code: 'not_found', message: 'Device link not found for this user' },
+      });
+    }
+    await this.prisma.deviceLink.delete({ where: { deviceId } });
+    this.logger.log(
+      `Unlinked device=${this.maskDeviceId(deviceId)} from user ${userId.slice(0, 6)}…`,
+    );
+    return link;
+  }
+
   /**
    * Idempotently attach a device to a user and backfill its reports. Throws
    * 409 if the device is already linked to a different user. Shared by the

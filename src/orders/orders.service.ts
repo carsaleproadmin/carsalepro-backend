@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -429,6 +430,163 @@ export class OrdersService {
       update: {},
     });
     return { orderId, status: OrderStatus.DISPUTED };
+  }
+
+  // ============================================================
+  // Admin overrides (E9) — money logic stays centralized here
+  // ============================================================
+
+  /**
+   * Admin manually assigns an eligible inspector to a PAID/UNASSIGNED order.
+   * The target must have an InspectorProfile and a kycVerified user. Reconciles
+   * OrderOffer rows (the chosen inspector's → ACCEPTED, any other PENDING →
+   * EXPIRED) so the dispatch state stays consistent.
+   */
+  async adminAssign(orderId: string, inspectorId: string, adminId: string): Promise<Order> {
+    const order = await this.requireOrder(orderId);
+
+    const profile = await this.prisma.inspectorProfile.findUnique({
+      where: { userId: inspectorId },
+      include: { user: { select: { kycVerified: true } } },
+    });
+    if (!profile || !profile.user.kycVerified) {
+      throw new BadRequestException({
+        error: { code: 'inspector_not_eligible', message: 'Inspector is not eligible for assignment' },
+      });
+    }
+
+    if (!canTransition(order.status, OrderStatus.ASSIGNED)) {
+      throw new ConflictException({
+        error: {
+          code: 'illegal_transition',
+          message: `Cannot assign an order in status ${order.status}`,
+        },
+      });
+    }
+
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data: { inspectorId },
+    });
+
+    // Reconcile offers: accept the chosen inspector's (creating one if absent),
+    // expire any other still-pending offer for this order.
+    await this.prisma.orderOffer.updateMany({
+      where: { orderId, inspectorId: { not: inspectorId }, status: 'PENDING' },
+      data: { status: 'EXPIRED' },
+    });
+    const chosen = await this.prisma.orderOffer.findFirst({ where: { orderId, inspectorId } });
+    if (chosen) {
+      await this.prisma.orderOffer.update({ where: { id: chosen.id }, data: { status: 'ACCEPTED' } });
+    } else {
+      await this.prisma.orderOffer.create({
+        data: {
+          orderId,
+          inspectorId,
+          status: 'ACCEPTED',
+          expiresAt: new Date(),
+        },
+      });
+    }
+
+    return this.transition(orderId, OrderStatus.ASSIGNED, `admin:${adminId}`);
+  }
+
+  /**
+   * Admin cancels an order with an explicit refund percent (0–100). If a
+   * succeeded order Payment exists and the percent is > 0, a Refund of
+   * round(totalCents * percent/100) is issued via the shared refund path with
+   * reason 'admin'.
+   */
+  async adminCancel(
+    orderId: string,
+    refundPercent: number,
+    adminId: string,
+  ): Promise<{ orderId: string; status: OrderStatus; refundCents: number }> {
+    const order = await this.requireOrder(orderId);
+    if (!canTransition(order.status, OrderStatus.CANCELLED)) {
+      throw new ConflictException({
+        error: {
+          code: 'illegal_transition',
+          message: `Cannot cancel an order in status ${order.status}`,
+        },
+      });
+    }
+
+    const pct = Math.max(0, Math.min(100, refundPercent));
+    let refundCents = 0;
+    const payment = await this.prisma.payment.findUnique({ where: { orderId } });
+    if (pct > 0 && payment?.status === 'succeeded') {
+      refundCents = Math.round((order.totalCents * pct) / 100);
+    }
+
+    await this.transition(orderId, OrderStatus.CANCELLED, `admin:${adminId}`);
+    if (refundCents > 0) {
+      await this.refundOrder(order, refundCents, 'admin');
+    }
+    return { orderId, status: OrderStatus.CANCELLED, refundCents };
+  }
+
+  /**
+   * Admin resolves a DISPUTED order in favour of the customer or the inspector.
+   * - customer: refund round(totalCents * pct/100) (pct default 100, reason
+   *   'dispute'), Dispute → RESOLVED_CUSTOMER, order DISPUTED → REFUNDED.
+   * - inspector: order DISPUTED → APPROVED then releasePayout (pays the
+   *   inspector share and completes the order), Dispute → RESOLVED_INSPECTOR.
+   */
+  async resolveDispute(
+    orderId: string,
+    resolution: 'customer' | 'inspector',
+    adminId: string,
+    refundPercent?: number,
+  ): Promise<{ orderId: string; status: OrderStatus; refundCents: number; payoutCents: number }> {
+    const order = await this.requireOrder(orderId);
+    if (order.status !== OrderStatus.DISPUTED) {
+      throw new ConflictException({
+        error: { code: 'not_disputed', message: 'Order is not in dispute' },
+      });
+    }
+
+    const now = new Date();
+    if (resolution === 'customer') {
+      const pct = Math.max(0, Math.min(100, refundPercent ?? 100));
+      const refundCents = Math.round((order.totalCents * pct) / 100);
+      await this.transition(orderId, OrderStatus.REFUNDED, `admin:${adminId}`);
+      if (refundCents > 0) {
+        await this.refundOrder(order, refundCents, 'dispute');
+      }
+      await this.prisma.dispute.update({
+        where: { orderId },
+        data: {
+          status: 'RESOLVED_CUSTOMER',
+          resolution: `Resolved in favour of the customer (${pct}% refund)`,
+          resolvedBy: adminId,
+          resolvedAt: now,
+        },
+      });
+      return { orderId, status: OrderStatus.REFUNDED, refundCents, payoutCents: 0 };
+    }
+
+    // inspector wins → APPROVED then release the escrowed share.
+    await this.transition(orderId, OrderStatus.APPROVED, `admin:${adminId}`);
+    await this.releasePayout(orderId);
+    await this.prisma.dispute.update({
+      where: { orderId },
+      data: {
+        status: 'RESOLVED_INSPECTOR',
+        resolution: 'Resolved in favour of the inspector',
+        resolvedBy: adminId,
+        resolvedAt: now,
+      },
+    });
+    const after = await this.requireOrder(orderId);
+    const payout = await this.prisma.payout.findUnique({ where: { orderId } });
+    return {
+      orderId,
+      status: after.status,
+      refundCents: 0,
+      payoutCents: payout?.amountCents ?? order.inspectorShareCents,
+    };
   }
 
   // ============================================================
