@@ -76,6 +76,14 @@ export const envValidationSchema = Joi.object({
         return helpers.error('any.custom', { message: `${key} is required in production` });
       }
     }
+    // The HS256 signing secret (shared with the website NextAuth) must be strong
+    // and never the development default in production.
+    const secret = envVars.JWT_SECRET;
+    if (!secret || secret === 'dev-shared-secret-change-me' || secret.length < 32) {
+      return helpers.error('any.custom', {
+        message: 'JWT_SECRET must be set to a strong value (>= 32 chars, not the default) in production',
+      });
+    }
   }
   return envVars;
 });

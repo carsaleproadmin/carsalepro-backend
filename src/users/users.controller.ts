@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Patch, Post } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/auth.decorators';
 import { CreateDeviceLinkDto, DeviceLinkDto } from './dto/device-link.dto';
@@ -32,6 +33,7 @@ export class UsersController {
 
   @Post('me/device-links')
   @HttpCode(201)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @ApiOperation({ summary: 'Link a mobile device to the account via a 6-digit code' })
   @ApiOkResponse({ type: DeviceLinkDto })
   async linkDevice(
