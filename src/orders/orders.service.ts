@@ -9,6 +9,8 @@ import {
 import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
 import { GeoService, NearestInspector } from '../geo/geo.service';
 import { LegalContractService } from '../legal/legal-contract.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/notification-types';
 import { PaymentsService } from '../payments/payments.service';
 import { StripeService } from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -54,6 +56,7 @@ export class OrdersService {
     private readonly stripe: StripeService,
     private readonly payments: PaymentsService,
     private readonly legalContract: LegalContractService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ============================================================
@@ -175,6 +178,15 @@ export class OrdersService {
       },
     });
 
+    // E11: confirm the order was placed (non-throwing).
+    await this.notifications.notify(userId, 'order.created', {
+      orderId,
+      orderNumber: number,
+      make: dto.make,
+      model: dto.model,
+      totalCents: priced.totalCents,
+    });
+
     if (this.stripe.configured) {
       const pi = await this.stripe.createOrderPaymentIntent({
         amountCents: priced.totalCents,
@@ -293,7 +305,15 @@ export class OrdersService {
       inspectorId: nearest.userId,
       expiresAt: expiresAt.toISOString(),
     });
-    // TODO E11: notify(nearest.userId, 'new_offer', orderId)
+    // E11: notify the inspector an offer was sent to them (non-throwing).
+    await this.notifications.notify(nearest.userId, 'offer.received', {
+      orderId,
+      orderNumber: order.number,
+      make: order.make,
+      model: order.model,
+      inspectorShareCents: order.inspectorShareCents,
+      expiresAt: expiresAt.toISOString(),
+    });
   }
 
   // ============================================================
@@ -850,6 +870,13 @@ export class OrdersService {
     });
     // If a concurrent caller already created the payout, don't double-complete.
     if (created) {
+      // E11: notify the inspector their payout was sent (non-throwing). Emitted
+      // before COMPLETED so it reflects the payout event specifically.
+      await this.notifications.notify(order.inspectorId, 'payout.sent', {
+        orderId,
+        orderNumber: order.number,
+        amountCents,
+      });
       await this.transition(orderId, OrderStatus.COMPLETED, 'system');
     }
   }
@@ -965,7 +992,74 @@ export class OrdersService {
       }
     }
 
+    // E11 notifications: map the new status → per-status notification(s). notify()
+    // is internally non-throwing, but the whole block is also guarded so a failure
+    // can never break the transition.
+    try {
+      await this.notifyStatusChange(updated, from);
+    } catch (err) {
+      this.logger.warn(
+        `Status notification failed for order ${orderId} (${to}): ${(err as Error).message}`,
+      );
+    }
+
     return updated;
+  }
+
+  /**
+   * Emit the per-status notifications for a successful transition (E11 matrix).
+   * Recipients are derived from the order's customer/inspector. Each entry is
+   * fired through notify(), which is itself non-throwing.
+   */
+  private async notifyStatusChange(order: Order, _from: OrderStatus): Promise<void> {
+    const payload = {
+      orderId: order.id,
+      orderNumber: order.number,
+      make: order.make,
+      model: order.model,
+      totalCents: order.totalCents,
+      inspectorShareCents: order.inspectorShareCents,
+    };
+    const customer = order.customerId;
+    const inspector = order.inspectorId;
+
+    const emit = (userId: string | null, type: NotificationType): Promise<void> =>
+      userId ? this.notifications.notify(userId, type, payload) : Promise.resolve();
+
+    switch (order.status) {
+      case OrderStatus.ASSIGNED:
+        await emit(customer, 'order.assigned');
+        break;
+      case OrderStatus.EN_ROUTE:
+        await emit(customer, 'order.en_route');
+        break;
+      case OrderStatus.IN_PROGRESS:
+        await emit(customer, 'order.in_progress');
+        break;
+      case OrderStatus.SUBMITTED:
+        await emit(customer, 'order.submitted');
+        break;
+      case OrderStatus.APPROVED:
+        // The report's author (inspector) is notified their report was approved.
+        await emit(inspector, 'order.approved');
+        break;
+      case OrderStatus.COMPLETED:
+        await emit(customer, 'order.completed');
+        await emit(inspector, 'order.completed');
+        break;
+      case OrderStatus.CANCELLED:
+        // Notify the "other party" — whoever did not initiate. We don't have the
+        // actor's role here cheaply, so notify both known parties; each only gets
+        // an in-app row plus their enabled channels.
+        await emit(customer, 'order.cancelled');
+        await emit(inspector, 'order.cancelled');
+        break;
+      case OrderStatus.DISPUTED:
+        await emit(inspector, 'order.disputed');
+        break;
+      default:
+        break;
+    }
   }
 
   // ============================================================

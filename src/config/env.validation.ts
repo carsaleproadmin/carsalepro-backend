@@ -45,6 +45,9 @@ export const envValidationSchema = Joi.object({
   TWILIO_FROM: Joi.string().allow('').default(''),
   FCM_SERVICE_ACCOUNT_JSON: Joi.string().allow('').default(''),
 
+  // Scheduler (E11) — 'false' disables the in-process cron jobs.
+  SCHEDULER_ENABLED: Joi.string().valid('true', 'false').default('true'),
+
   FREE_REPORTS_LIMIT: Joi.number().integer().min(0).default(3),
   PRESIGNED_UPLOAD_TTL: Joi.number().integer().min(60).max(86400).default(900),
   PRESIGNED_DOWNLOAD_TTL: Joi.number().integer().min(60).max(86400).default(3600),

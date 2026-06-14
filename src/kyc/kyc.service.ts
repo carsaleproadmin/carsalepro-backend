@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { KycApplication, KycDocument, KycStatus, Prisma } from '@prisma/client';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import {
@@ -42,6 +43,7 @@ export class KycService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly r2: R2Service,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ============================================================
@@ -290,7 +292,10 @@ export class KycService {
       }),
     ]);
 
-    // TODO E11 notify — send "KYC approved" notification + trigger E7 onboarding redirect.
+    // E11: notify the inspector their KYC was approved (non-throwing).
+    await this.notifications.notify(application.userId, 'kyc.approved', {
+      applicationId,
+    });
     this.logger.log(
       `KYC application ${applicationId} APPROVED by admin=${this.mask(adminId)} ` +
         `user=${this.mask(application.userId)}`,
@@ -319,7 +324,11 @@ export class KycService {
       },
     });
 
-    // TODO E11 notify — send "KYC rejected" notification with the reason.
+    // E11: notify the inspector their KYC was rejected, with the reason (non-throwing).
+    await this.notifications.notify(application.userId, 'kyc.rejected', {
+      applicationId,
+      reason,
+    });
     this.logger.log(
       `KYC application ${applicationId} REJECTED by admin=${this.mask(adminId)} ` +
         `user=${this.mask(application.userId)}`,

@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { OrderStatus, Prisma, Report } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { PpvCheckoutResponseDto, ReportPurchaseListDto } from './dto/ppv-response.dto';
@@ -31,6 +32,7 @@ export class PaymentsService {
     private readonly stripe: StripeService,
     private readonly settings: SettingsService,
     private readonly moduleRef: ModuleRef,
+    private readonly notifications: NotificationsService,
     config: ConfigService<AppConfig, true>,
   ) {
     this.webOrigin = config.get('web', { infer: true }).origin.replace(/\/$/, '');
@@ -322,7 +324,7 @@ export class PaymentsService {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + durationDays * 86_400_000);
 
-    await this.prisma.listing
+    const listing = await this.prisma.listing
       .update({
         where: { id: listingId },
         data: {
@@ -331,8 +333,18 @@ export class PaymentsService {
           publishedAt: now,
           expiresAt,
         },
+        include: { report: true },
       })
-      .catch(() => undefined);
+      .catch(() => null);
+
+    // E11: notify the seller their Gold listing is live (non-throwing).
+    if (listing) {
+      await this.notifications.notify(listing.sellerId, 'listing.published', {
+        listingId: listing.id,
+        make: listing.report.make,
+        model: listing.report.model,
+      });
+    }
   }
 
   /** List the reports a user has purchased (pay-per-view), newest first. */
@@ -423,5 +435,17 @@ export class PaymentsService {
       }
       throw err;
     }
+
+    // E11: notify the buyer their PPV report is unlocked (only on a fresh
+    // purchase — the idempotent replay above returns before reaching here).
+    const report = await this.prisma.report.findUnique({ where: { id: reportId } });
+    const amountCents = await this.prisma.payment
+      .findUnique({ where: { id: paymentId }, select: { amountCents: true } })
+      .then((p) => p?.amountCents ?? 0);
+    await this.notifications.notify(userId, 'ppv.purchased', {
+      reportId,
+      reportCode: report?.code,
+      amountCents,
+    });
   }
 }
