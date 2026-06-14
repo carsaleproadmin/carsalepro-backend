@@ -4,6 +4,10 @@ import request from 'supertest';
 import { OrdersService } from '../src/orders/orders.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SettingsService } from '../src/settings/settings.service';
+import {
+  CONTRACT_TEMPLATES,
+  type ContractKey,
+} from '../src/legal/legal-contracts.content';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 
 const ORDER_LAT = 52.52;
@@ -71,7 +75,24 @@ describe('Admin panel (E9) (e2e)', () => {
       await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     }
     if (createdLegalKeys.size) {
-      await prisma.legalTemplate.deleteMany({ where: { key: { in: [...createdLegalKeys] } } });
+      // Remove the rows this suite created, then restore the canonical seed
+      // template so sibling suites and the dev DB keep an active version for the key.
+      for (const key of createdLegalKeys) {
+        await prisma.legalTemplate.deleteMany({ where: { key } });
+        const tpl = CONTRACT_TEMPLATES[key as ContractKey];
+        if (tpl) {
+          await prisma.legalTemplate.create({
+            data: {
+              key,
+              version: 1,
+              locale: tpl.locale,
+              title: tpl.title,
+              bodyMd: tpl.bodyMd,
+              active: true,
+            },
+          });
+        }
+      }
     }
     createdOrderIds.clear();
     createdUserIds.clear();
