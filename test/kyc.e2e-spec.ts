@@ -259,6 +259,13 @@ describe('KYC verification (e2e)', () => {
       if (r2Configured) {
         expect(typeof d.viewUrl).toBe('string');
         expect(typeof d.viewUrlExpiresAt).toBe('string');
+        // H1: KYC documents must ALWAYS be served via a short-lived SIGNED URL,
+        // never the bare public-URL shortcut. The signed URL carries an AWS
+        // SigV4 signature and points at the R2 storage endpoint, not a public
+        // CDN/path.
+        expect(d.viewUrl).toContain('X-Amz-Signature');
+        expect(d.viewUrl).toContain('X-Amz-Expires');
+        expect(d.viewUrl).toContain(`kyc/${user.userId}/`);
       } else {
         expect(d.viewUrl).toBeNull();
       }

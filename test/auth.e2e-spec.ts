@@ -158,5 +158,13 @@ describe('Auth + users (e2e)', () => {
       .post('/api/v1/auth/login')
       .send({ email, password })
       .expect(401);
+
+    // H3: the still-valid (30-day) token MUST be rejected at request time now
+    // that the account is erased — request-time enforcement, not just at login.
+    const reused = await request(app.getHttpServer())
+      .get('/api/v1/users/me')
+      .set('Authorization', `Bearer ${reg.body.token}`)
+      .expect(401);
+    expect(reused.body.error.code).toBe('unauthorized');
   });
 });

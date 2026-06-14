@@ -26,6 +26,9 @@ export const envValidationSchema = Joi.object({
   // Auth (shared HS256 secret with the website NextAuth)
   JWT_SECRET: Joi.string().allow('').default('dev-shared-secret-change-me'),
   JWT_EXPIRES_IN: Joi.string().default('30d'),
+  // Dedicated key for the internal oauth-upsert endpoint. When unset, the
+  // endpoint falls back to comparing against JWT_SECRET (legacy behavior).
+  INTERNAL_API_KEY: Joi.string().allow('').default(''),
 
   // Stripe
   STRIPE_SECRET_KEY: Joi.string().allow('').default(''),

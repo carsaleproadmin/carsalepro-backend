@@ -25,7 +25,33 @@ async function bootstrap(): Promise<void> {
       crossOriginEmbedderPolicy: false,
     }),
   );
-  app.enableCors({ origin: true, credentials: false });
+
+  // CORS. In production, reflect only the configured web origin and Vercel
+  // preview deployments (https://*.vercel.app); deny everything else. Requests
+  // with no Origin header (server-to-server, e.g. the Stripe webhook, health
+  // probes) are always allowed. Outside production we stay permissive for local
+  // dev. Bearer-token auth means no cookies, so credentials stay disabled.
+  const isProd = config.get('nodeEnv', { infer: true }) === 'production';
+  if (isProd) {
+    const webOrigin = config.get('web', { infer: true }).origin.replace(/\/$/, '');
+    const vercelPreview = /^https:\/\/[a-z0-9-]+\.vercel\.app$/i;
+    app.enableCors({
+      origin: (
+        origin: string | undefined,
+        callback: (err: Error | null, allow?: boolean) => void,
+      ) => {
+        // No Origin header → not a browser CORS request (server-to-server). Allow.
+        if (!origin) return callback(null, true);
+        if (origin === webOrigin || vercelPreview.test(origin)) {
+          return callback(null, true);
+        }
+        return callback(null, false);
+      },
+      credentials: false,
+    });
+  } else {
+    app.enableCors({ origin: true, credentials: false });
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({

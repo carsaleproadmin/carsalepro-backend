@@ -9,6 +9,7 @@ import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { AppConfig } from '../config/configuration';
+import { PrismaService } from '../prisma/prisma.service';
 import { IS_PUBLIC_KEY } from './auth.decorators';
 import { AuthUser, JwtPayload } from './jwt.types';
 
@@ -24,9 +25,10 @@ export class JwtAuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly jwt: JwtService,
     private readonly config: ConfigService<AppConfig, true>,
+    private readonly prisma: PrismaService,
   ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<Request & { user?: AuthUser }>();
 
     // Only protect the website API surface.
@@ -36,6 +38,7 @@ export class JwtAuthGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
+    // @Public() routes are fully bypassed — no token check, no DB hit.
     if (isPublic) return true;
 
     const token = this.extractToken(req);
@@ -45,24 +48,40 @@ export class JwtAuthGuard implements CanActivate {
       });
     }
 
+    let payload: JwtPayload;
     try {
       const secret = this.config.get('auth', { infer: true }).jwtSecret;
-      const payload = this.jwt.verify<JwtPayload>(token, {
+      payload = this.jwt.verify<JwtPayload>(token, {
         secret,
         algorithms: ['HS256'],
       });
-      req.user = {
-        id: payload.sub,
-        email: payload.email,
-        role: payload.role,
-        kycVerified: payload.kycVerified,
-      };
-      return true;
     } catch {
       throw new UnauthorizedException({
         error: { code: 'invalid_token', message: 'Invalid or expired token' },
       });
     }
+
+    // Request-time enforcement of ban / erasure / role / KYC. Loading the user
+    // from the DB on every /api/v1 request makes a ban, GDPR erasure, role
+    // change, or KYC approval take effect immediately rather than waiting for
+    // the 30-day token to expire. The DB row is authoritative for role + KYC.
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { id: true, email: true, role: true, kycVerified: true, bannedAt: true, deletedAt: true },
+    });
+    if (!user || user.deletedAt || user.bannedAt) {
+      throw new UnauthorizedException({
+        error: { code: 'unauthorized', message: 'Account is unavailable' },
+      });
+    }
+
+    req.user = {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      kycVerified: user.kycVerified,
+    };
+    return true;
   }
 
   private extractToken(req: Request): string | undefined {

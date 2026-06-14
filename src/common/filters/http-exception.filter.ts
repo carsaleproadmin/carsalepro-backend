@@ -11,10 +11,16 @@ import { captureExceptionIfEnabled } from '../sentry/sentry.bootstrap';
 
 interface ErrorResponseBody {
   statusCode: number;
-  error: string;
+  error: string | Record<string, unknown>;
   message: string | string[];
   path: string;
   timestamp: string;
+  requestId?: string;
+}
+
+/** Generic client-facing body for 5xx / unexpected errors — never leaks internals. */
+interface GenericErrorBody {
+  error: { code: 'internal_error'; message: 'Internal server error' };
   requestId?: string;
 }
 
@@ -31,7 +37,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 
     let message: string | string[] = 'Internal server error';
-    let errorName = 'InternalServerError';
+    let errorName: string | Record<string, unknown> = 'InternalServerError';
 
     if (exception instanceof HttpException) {
       const res = exception.getResponse();
@@ -40,17 +46,22 @@ export class AllExceptionsFilter implements ExceptionFilter {
       } else if (typeof res === 'object' && res !== null) {
         const obj = res as Record<string, unknown>;
         message = (obj.message as string | string[]) ?? exception.message;
-        errorName = (obj.error as string) ?? exception.name;
+        // Domain exceptions throw `{ error: { code, message } }` — keep that
+        // nested object so the frontend + e2e can read `body.error.code`.
+        errorName = (obj.error as string | Record<string, unknown>) ?? exception.name;
       }
     } else if (exception instanceof Error) {
       message = exception.message;
       errorName = exception.name;
     }
 
+    // Log / capture the REAL error server-side regardless of what we return.
     let sentryEventId: string | undefined;
     if (status >= 500) {
       this.logger.error(
-        `${request.method} ${request.url} -> ${status} ${errorName}`,
+        `${request.method} ${request.url} -> ${status} ${
+          typeof errorName === 'string' ? errorName : JSON.stringify(errorName)
+        }`,
         exception instanceof Error ? exception.stack : undefined,
       );
       sentryEventId = captureExceptionIfEnabled(exception, {
@@ -60,16 +71,32 @@ export class AllExceptionsFilter implements ExceptionFilter {
         status,
       });
     } else {
-      this.logger.warn(`${request.method} ${request.url} -> ${status} ${errorName}`);
+      this.logger.warn(
+        `${request.method} ${request.url} -> ${status} ${
+          typeof errorName === 'string' ? errorName : JSON.stringify(errorName)
+        }`,
+      );
     }
 
+    // 5xx (and non-HttpException errors, which map to 500) must NEVER leak the
+    // internal message/stack to the client — return a generic, normalized body.
+    if (status >= 500) {
+      const genericBody: GenericErrorBody = {
+        error: { code: 'internal_error', message: 'Internal server error' },
+        ...(sentryEventId ? { requestId: sentryEventId } : {}),
+      };
+      response.status(status).json(genericBody);
+      return;
+    }
+
+    // 4xx — preserve the existing shape (incl. the nested domain `error` object)
+    // that the frontend + e2e assertions rely on.
     const body: ErrorResponseBody = {
       statusCode: status,
       error: errorName,
       message,
       path: request.url,
       timestamp: new Date().toISOString(),
-      ...(sentryEventId ? { requestId: sentryEventId } : {}),
     };
 
     response.status(status).json(body);

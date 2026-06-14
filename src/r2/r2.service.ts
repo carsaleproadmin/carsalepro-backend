@@ -21,6 +21,7 @@ export class R2Service implements OnModuleInit {
   private accountId!: string;
   private uploadTtl!: number;
   private downloadTtl!: number;
+  private signedUrlTtl!: number;
   private publicUrl?: string;
 
   constructor(@Inject(ConfigService) private readonly config: ConfigService<AppConfig, true>) {}
@@ -33,6 +34,8 @@ export class R2Service implements OnModuleInit {
     this.publicUrl = r2.publicUrl;
     this.uploadTtl = quota.presignedUploadTtl;
     this.downloadTtl = quota.presignedDownloadTtl;
+    // Dedicated TTL for always-signed private URLs (KYC docs). Minutes → seconds.
+    this.signedUrlTtl = this.config.get('signedUrlTtlMinutes', { infer: true }) * 60;
 
     if (!r2.accountId || !r2.accessKeyId || !r2.secretAccessKey) {
       this.logger.warn(
@@ -107,6 +110,23 @@ export class R2Service implements OnModuleInit {
     const cmd = new GetObjectCommand({ Bucket: this.bucket, Key: key });
     const url = await getSignedUrl(this.requireClient(), cmd, { expiresIn: this.downloadTtl });
     const expiresAt = new Date(Date.now() + this.downloadTtl * 1000);
+    return { url, expiresAt };
+  }
+
+  /**
+   * Mint a short-lived SIGNED download URL that NEVER falls back to the public
+   * URL shortcut. Used for sensitive objects (e.g. KYC documents) which must
+   * always be served via a time-limited, signature-bearing URL regardless of
+   * whether R2_PUBLIC_URL is configured for the (public) reports bucket.
+   */
+  async createPrivateSignedUrl(
+    key: string,
+    ttlSeconds?: number,
+  ): Promise<{ url: string; expiresAt: Date }> {
+    const expiresIn = ttlSeconds ?? this.signedUrlTtl;
+    const cmd = new GetObjectCommand({ Bucket: this.bucket, Key: key });
+    const url = await getSignedUrl(this.requireClient(), cmd, { expiresIn });
+    const expiresAt = new Date(Date.now() + expiresIn * 1000);
     return { url, expiresAt };
   }
 
