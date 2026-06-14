@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
 import { GeoService, NearestInspector } from '../geo/geo.service';
+import { LegalContractService } from '../legal/legal-contract.service';
 import { PaymentsService } from '../payments/payments.service';
 import { StripeService } from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -52,6 +53,7 @@ export class OrdersService {
     private readonly settings: SettingsService,
     private readonly stripe: StripeService,
     private readonly payments: PaymentsService,
+    private readonly legalContract: LegalContractService,
   ) {}
 
   // ============================================================
@@ -949,6 +951,20 @@ export class OrdersService {
       data: { status: to },
     });
     await this.writeEvent(orderId, actor, 'status_change', from, to, null);
+
+    // E10 LegalSync: generate the per-order contract on entry to ASSIGNED. This
+    // fires for BOTH acceptOffer and adminAssign. Best-effort — a failure here must
+    // never break the assignment, so it is caught and logged.
+    if (to === OrderStatus.ASSIGNED) {
+      try {
+        await this.legalContract.renderContractForOrder(orderId);
+      } catch (err) {
+        this.logger.warn(
+          `Failed to generate contract for order ${orderId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
     return updated;
   }
 
