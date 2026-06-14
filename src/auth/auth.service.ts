@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -115,7 +116,7 @@ export class AuthService {
       });
     }
     if (user.bannedAt) {
-      throw new UnauthorizedException({
+      throw new ForbiddenException({
         error: { code: 'account_banned', message: 'Account suspended' },
       });
     }
