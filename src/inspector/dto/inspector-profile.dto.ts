@@ -25,6 +25,18 @@ export class UpdateInspectorProfileDto {
   @MaxLength(240)
   baseAddress?: string;
 
+  @ApiPropertyOptional({ example: 'DE123456789', description: 'Tax identification number (DAC7).' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  taxId?: string;
+
+  @ApiPropertyOptional({ example: 'DE999999999', description: 'VAT identification number (DAC7).' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  vatId?: string;
+
   @ApiPropertyOptional({ example: 52.52, description: 'Base latitude (WGS84).' })
   @IsOptional()
   @IsLatitude()

@@ -16,6 +16,8 @@ export interface InspectorProfileView {
   userId: string;
   companyName: string | null;
   baseAddress: string | null;
+  taxId: string | null;
+  vatId: string | null;
   searchRadiusKm: number;
   available: boolean;
   stripeOnboarded: boolean;
@@ -87,12 +89,16 @@ export class InspectorService {
         companyName: dto.companyName ?? null,
         // baseAddress is NOT NULL in the schema; default to empty when omitted.
         baseAddress: dto.baseAddress ?? '',
+        taxId: dto.taxId ?? null,
+        vatId: dto.vatId ?? null,
         searchRadiusKm: dto.searchRadiusKm ?? undefined,
         available: dto.available ?? undefined,
       },
       update: {
         companyName: dto.companyName ?? existing?.companyName ?? null,
         baseAddress: dto.baseAddress ?? existing?.baseAddress ?? '',
+        taxId: dto.taxId ?? existing?.taxId ?? null,
+        vatId: dto.vatId ?? existing?.vatId ?? null,
         searchRadiusKm: dto.searchRadiusKm ?? undefined,
         available: dto.available ?? undefined,
       },
@@ -208,6 +214,8 @@ export class InspectorService {
     profile: {
       companyName: string | null;
       baseAddress: string | null;
+      taxId: string | null;
+      vatId: string | null;
       searchRadiusKm: number;
       available: boolean;
       stripeOnboarded: boolean;
@@ -224,6 +232,8 @@ export class InspectorService {
       userId,
       companyName: profile.companyName,
       baseAddress: profile.baseAddress,
+      taxId: profile.taxId,
+      vatId: profile.vatId,
       searchRadiusKm: profile.searchRadiusKm,
       available: profile.available,
       stripeOnboarded: profile.stripeOnboarded,

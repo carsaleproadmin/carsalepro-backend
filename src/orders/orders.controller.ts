@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/com
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { CurrentUser } from '../auth/auth.decorators';
+import { LegalContractService } from '../legal/legal-contract.service';
 import {
   CreateOrderDto,
   DisputeOrderDto,
@@ -16,7 +17,10 @@ import { OrdersService } from './orders.service';
 @ApiBearerAuth()
 @Controller('api/v1/orders')
 export class OrdersController {
-  constructor(private readonly orders: OrdersService) {}
+  constructor(
+    private readonly orders: OrdersService,
+    private readonly legalContract: LegalContractService,
+  ) {}
 
   @Post('quote')
   @HttpCode(200)
@@ -45,6 +49,18 @@ export class OrdersController {
     @Param('id') id: string,
   ) {
     return this.orders.getDetail(id, userId, role);
+  }
+
+  @Get(':id/contract')
+  @ApiOperation({
+    summary: 'Get the per-order inspection brokerage contract (customer / inspector / admin)',
+  })
+  async getContract(
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: Role,
+    @Param('id') id: string,
+  ) {
+    return this.legalContract.getContractForOrder(id, userId, role);
   }
 
   @Post(':id/cancel')

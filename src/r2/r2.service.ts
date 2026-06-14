@@ -67,6 +67,22 @@ export class R2Service implements OnModuleInit {
     await this.requireClient().send(new HeadBucketCommand({ Bucket: this.bucket }));
   }
 
+  /** Store an object directly (used for rendered contract HTML — E10). */
+  async putObject(
+    key: string,
+    body: string | Uint8Array | Buffer,
+    contentType = 'application/octet-stream',
+  ): Promise<void> {
+    await this.requireClient().send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+      }),
+    );
+  }
+
   async createPresignedUploadUrl(
     key: string,
     contentType = 'application/pdf',
