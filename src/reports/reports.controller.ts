@@ -4,10 +4,20 @@ import {
   Delete,
   Get,
   HttpCode,
+  HttpException,
+  HttpStatus,
   Param,
   Post,
+  Put,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
+import { memoryStorage } from 'multer';
 import {
+  ApiBody,
+  ApiConsumes,
   ApiHeader,
   ApiOkResponse,
   ApiOperation,
@@ -27,7 +37,12 @@ import {
   CreateReportResponseDto,
   ReportListDto,
 } from './dto/report-response.dto';
+import { UpdateReportDto, UpdateReportResponseDto } from './dto/update-report.dto';
+import { ReportPhotoDto, ReportPhotoListDto, UploadPhotoDto } from './dto/upload-photo.dto';
 import { ReportsService } from './reports.service';
+
+/** Original camera JPEGs top out well below this; reject anything bigger early. */
+const MAX_PHOTO_UPLOAD_BYTES = 15 * 1024 * 1024;
 
 @ApiTags('reports')
 @ApiHeader({
@@ -70,6 +85,96 @@ export class ReportsController {
     @Param('id') id: string,
   ): Promise<CompleteReportResponseDto> {
     return this.reportsService.complete(deviceId, id);
+  }
+
+  @Put(':id')
+  @ApiOperation({
+    summary: 'Re-sync an existing report (edited after finishing)',
+    description:
+      'Idempotent update of report metadata and structured reportData. Never consumes ' +
+      'quota. Set regeneratePdfUploadUrl to also receive a fresh presigned PUT URL for ' +
+      'the (same) PDF key; the report then requires a new POST /reports/:id/complete.',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiOkResponse({ type: UpdateReportResponseDto })
+  async update(
+    @DeviceId() deviceId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateReportDto,
+  ): Promise<UpdateReportResponseDto> {
+    return this.reportsService.update(deviceId, id, dto);
+  }
+
+  @Post(':id/photos/upload')
+  @Throttle({ default: { limit: 40, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: MAX_PHOTO_UPLOAD_BYTES, files: 1 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Upload a report photo (server-side compression)',
+    description:
+      'Multipart upload of an ORIGINAL camera JPEG (≤15 MB). The backend compresses it ' +
+      '(longest edge 1920 px, mozjpeg q80, EXIF stripped) and stores it in R2, keyed by ' +
+      'the logical slot (kind, position). Re-uploading a slot replaces the photo; ' +
+      're-sending identical bytes is a no-op. Upload sequentially — rate limit 40/min.',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file', 'kind'],
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        kind: { type: 'string', example: 'exterior-front' },
+        position: { type: 'integer', example: 0 },
+        hash: { type: 'string', description: 'sha256 hex of the original bytes (optional)' },
+      },
+    },
+  })
+  @ApiResponse({ status: 201, type: ReportPhotoDto })
+  @ApiResponse({ status: 400, type: ErrorResponseDto, description: 'Undecodable image / bad hash' })
+  @ApiResponse({ status: 413, description: 'File larger than 15 MB' })
+  async uploadPhoto(
+    @DeviceId() deviceId: string,
+    @Param('id') id: string,
+    @Body() dto: UploadPhotoDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ): Promise<ReportPhotoDto> {
+    if (!file || !file.buffer || file.size === 0) {
+      throw new HttpException(
+        { error: 'missing_file', message: 'Multipart field "file" is required' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return this.reportsService.uploadPhoto(deviceId, id, dto, file);
+  }
+
+  @Get(':id/photos')
+  @ApiOperation({ summary: 'List stored (compressed) photos of a report' })
+  @ApiParam({ name: 'id' })
+  @ApiOkResponse({ type: ReportPhotoListDto })
+  async listPhotos(
+    @DeviceId() deviceId: string,
+    @Param('id') id: string,
+  ): Promise<ReportPhotoListDto> {
+    return this.reportsService.listPhotos(deviceId, id);
+  }
+
+  @Delete(':id/photos/:photoId')
+  @ApiOperation({ summary: 'Delete a stored report photo (row + R2 object)' })
+  @ApiParam({ name: 'id' })
+  @ApiParam({ name: 'photoId' })
+  @ApiOkResponse({ schema: { example: { id: 'ckxy...', deleted: true } } })
+  async deletePhoto(
+    @DeviceId() deviceId: string,
+    @Param('id') id: string,
+    @Param('photoId') photoId: string,
+  ): Promise<{ id: string; deleted: true }> {
+    return this.reportsService.deletePhoto(deviceId, id, photoId);
   }
 
   @Post(':id/photos')
