@@ -18,6 +18,14 @@ export class CreateReportResponseDto {
 
   @ApiProperty({ enum: ['free', 'pro'], example: 'free' })
   tier!: 'free' | 'pro';
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'True when this create was an idempotent hit on an existing UUID-coded report ' +
+      '(no quota consumed). Absent on a fresh create.',
+  })
+  reused?: boolean;
 }
 
 export class ReportItemDto {

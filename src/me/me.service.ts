@@ -16,14 +16,28 @@ export class MeService {
   constructor(private readonly prisma: PrismaService, private readonly r2: R2Service) {}
 
   /**
-   * GDPR right-to-erasure: deletes all reports + quota and removes every R2 object
-   * stored under `free/<deviceId>/*` and `pro/<deviceId>/*`.
+   * GDPR right-to-erasure: deletes all reports + quota and removes every R2
+   * object stored under `free/<deviceId>/*`, `pro/<deviceId>/*` and the photo
+   * prefixes — `report-photos/<deviceId>/*` (server-compressed layout) plus the
+   * legacy per-report `report-photos/<reportId>/*` keys from the old presigned
+   * flow. ReportPhoto rows cascade with `report.deleteMany`.
    */
   async erase(deviceId: string): Promise<EraseResult> {
     let objectsDeleted = 0;
     if (this.r2.isConfigured()) {
-      for (const prefix of [`free/${deviceId}/`, `pro/${deviceId}/`]) {
+      for (const prefix of [
+        `free/${deviceId}/`,
+        `pro/${deviceId}/`,
+        `report-photos/${deviceId}/`,
+      ]) {
         objectsDeleted += await this.r2.deletePrefix(prefix);
+      }
+      const reports = await this.prisma.report.findMany({
+        where: { deviceId },
+        select: { id: true },
+      });
+      for (const { id } of reports) {
+        objectsDeleted += await this.r2.deletePrefix(`report-photos/${id}/`);
       }
     }
     const { count: reportsDeleted } = await this.prisma.report.deleteMany({
