@@ -11,7 +11,9 @@ One NestJS service with **two API surfaces** (see @README.md):
 
 ## Hard rules
 
-- **Never break the mobile contract.** Don't change root routes, their `X-Device-Id` behavior, the `POST /reports` → **402 `free_limit_reached`** paywall shape, or the R2 key layout `<tier>/<deviceId>/<reportId>.pdf` (GDPR erasure in `MeService.erase` + `R2Service.deletePrefix` depend on it). Legacy mobile e2e (`mobile-link`, `vin`, `quota`, `reports`, `me`) must stay green.
+- **Never break the mobile contract.** Don't change root routes, their `X-Device-Id` behavior, the `POST /reports` → **402 `free_limit_reached`** paywall shape, or the R2 key layout `<tier>/<deviceId>/<reportId>.pdf` (GDPR erasure in `MeService.erase` + `R2Service.deletePrefix` depend on it). Extensions must be additive (like report-sync v2 was). Legacy mobile e2e (`mobile-link`, `vin`, `quota`, `reports`, `report-sync`, `report-photos`, `me`) must stay green.
+- **Report sync v2 invariants** (`src/reports/`): `CSP-<uuid v4>` codes are the create-idempotency key — re-posting the same code from the same device returns the existing report and **never consumes quota twice** (partial unique index `report_code_uuid_unique` backs the cross-device 409). `reportData` with `reportSchemaVersion: 1` is validated **before** quota is consumed (a 400 never burns a credit) via `report-data.validator.ts` — lenient, unknown keys allowed. `PUT /reports/:id` is quota-free. Photo uploads (`POST /reports/:id/photos/upload`, multipart) are compressed server-side by `photo-processing.service.ts` (sharp, 1920 px, mozjpeg q80, 2-transform semaphore) and slot-keyed `(reportId, kind, position)` with a content-hash short-circuit; `photosManifest` is mirrored from `ReportPhoto` rows so website consumers stay untouched. Photo keys live under `report-photos/<deviceId>/<reportId>/`.
+- **Money in `reportData` is plain EUR numbers** — a documented, contained deviation from the integer-cents rule (archival inspection JSON, never ledger input).
 - **Money is integer cents.** No floats. All fees/tariffs come from `PlatformSetting` via `SettingsService.getCents`/`getNumber` — never hardcode amounts.
 - **Order lifecycle goes through the state machine** (`src/orders/order-state-machine.ts` `canTransition` + `OrdersService.transition`). Refunds/transfers/payouts fire only from legal transitions. The per-order contract auto-renders on the `ASSIGNED` transition (wrapped so it can't break assignment).
 - **Auth surface:** website routes live under `@Controller('api/v1/...')`; the global `JwtAuthGuard` enforces JWT only for `/api/v1` and re-loads the user from the DB each request (ban/erasure/role/KYC are authoritative from the DB). Use `@Public()` to opt out, `@Roles(Role.ADMIN)` for admin routes (every `api/v1/admin/*` controller must carry it), `@CurrentUser('id')` for the caller.
@@ -29,7 +31,7 @@ Use `npx prisma migrate deploy` (non-interactive) to apply, and `prisma migrate 
 
 ```bash
 npx tsc --noEmit -p tsconfig.build.json
-npm run test:e2e -- --forceExit            # 185 e2e / 18 suites must stay green; ONE jest at a time
+npm run test:e2e -- --forceExit            # 205 e2e / 20 suites must stay green; ONE jest at a time
 ```
 
 Always pass `--forceExit` (Redis/handles keep Jest alive otherwise). Render auto-deploys on push to `main` (runs `prisma migrate deploy` on start; Joi env validation can fail the boot — e.g. a weak prod `JWT_SECRET`). If a deploy fails, check `mcp__render__list_logs` for `srv-d83o7j1kh4rs73cgjfng` first. **Commit messages must not mention Claude/AI or include a Co-Authored-By trailer.**
