@@ -20,7 +20,7 @@ The shared NestJS backend for the **CarSalePro** ecosystem. One service, one Pos
 | Layer | Choice |
 |---|---|
 | Runtime / framework | Node.js · NestJS 11 · TypeScript |
-| Database | PostgreSQL 16 + **PostGIS** (geo) · Prisma 6 (26 models) |
+| Database | PostgreSQL 16 + **PostGIS** (geo) · Prisma 6 (27 models) |
 | Cache / queue backing | Redis (ioredis) — link-codes; in-memory fallback when `REDIS_URL` unset |
 | Object store | Cloudflare R2 (S3-compatible, AWS SDK v3 + presigners) |
 | Auth | HS256 JWT (shared secret with the website's NextAuth) · `@node-rs/argon2` password hashing |
@@ -29,7 +29,7 @@ The shared NestJS backend for the **CarSalePro** ecosystem. One service, one Pos
 | Notifications | Channel providers (email/SMS/push) with a **dev-outbox** fallback; in-process `@nestjs/schedule` cron |
 | Validation / docs | class-validator + global `ValidationPipe` · Joi env schema · `@nestjs/swagger` |
 | Observability | helmet · pino-style logging interceptor · Sentry (optional, when `SENTRY_DSN` set) |
-| Testing | Jest unit + Supertest e2e (**185 e2e across 18 suites**) |
+| Testing | Jest unit + Supertest e2e (**205 e2e across 20 suites**) |
 | Deploy | Render (auto-deploy from `main`) |
 
 ## Run locally
@@ -51,7 +51,7 @@ $env:PORT=3001; npm run start:dev                      # website dev on :3001 (m
 
 ```bash
 npm test                                               # unit tests
-npm run test:e2e -- --forceExit                        # 185 e2e / 18 suites (needs Postgres+PostGIS on :5433)
+npm run test:e2e -- --forceExit                        # 205 e2e / 20 suites (needs Postgres+PostGIS on :5433)
 node scripts/verify-deployed.mjs https://carsalepro-backend.onrender.com   # deployed smoke
 ```
 
@@ -61,7 +61,7 @@ Always pass `--forceExit` (open Redis/handles otherwise keep Jest alive) and run
 
 Two route families share the app; the global `JwtAuthGuard` enforces a Bearer JWT **only** for paths starting with `/api/v1` (and re-checks the user in the DB on every request for ban/erasure/role), while `RolesGuard` gates `@Roles(Role.ADMIN)` routes. Legacy root routes stay on `X-Device-Id`. `@Public()` opts a route out of JWT (auth endpoints, `/api/v1/public/*`, `/api/v1/settings/public`, `/webhooks/stripe`).
 
-**Mobile (root, `X-Device-Id`, frozen):** `GET /health` · `GET /vin/:vin` · `GET|POST /quota` · `POST|GET /reports` (+`/:id/complete`, `/:id/photos`, `DELETE /:id`; `POST /reports` returns **402** when the FREE 3-report quota is exhausted) · `DELETE /me` (GDPR erasure) · `GET /catalog` · `GET /legal/:doc`.
+**Mobile (root, `X-Device-Id`, frozen — extended additively by report-sync v2):** `GET /health` · `GET /vin/:vin` · `GET|POST /quota` · `POST|GET /reports` (+`PUT /:id` quota-free re-sync, `/:id/complete`, `DELETE /:id`; `POST /reports` returns **402** when the FREE 3-report quota is exhausted; accepts globally unique `CSP-<uuid>` codes as an idempotency key and a validated **structured `reportData` payload, contract v1**) · `POST /reports/:id/photos/upload` (multipart — **server-side sharp compression** to 1920 px / mozjpeg q80, slot-keyed replace + hash short-circuit) + `GET /reports/:id/photos`, `DELETE /reports/:id/photos/:photoId` (legacy presigned `POST /reports/:id/photos` still works) · `DELETE /me` (GDPR erasure incl. photo prefixes) · `GET /catalog` · `GET /legal/:doc`.
 
 **Website (`/api/v1`, JWT):** `auth` (login/register/verify/reset/oauth-upsert) · `users` (+ device-links) · `me/reports` archive · `public` (showroom/inspectors/report-check) · `reports` (PPV access + download) · `payments` (Stripe Checkout/PPV/gold) + `/webhooks/stripe` · `listings` · `orders` (quote/create/transition/contract) + `offers` + `geo` matching · `inspector` (profile, Stripe Connect onboarding, earnings) · `kyc` · `legal-templates` + per-order contracts · `notifications` (+ preferences) · `settings/public` · `admin/*` (users, orders, listings, settings, legal, finance + DAC7 CSV, dashboard, audit, KYC queue). **Swagger at `/docs` is the authoritative endpoint reference.**
 
@@ -86,7 +86,7 @@ src/
   admin/    notifications/   scheduler/   worker/   # admin panel, notifications, cron, scale-out entrypoint
   health/   main.ts                                  # health probe + bootstrap (helmet, raw-body webhook, Swagger)
 prisma/   schema.prisma · migrations · seed.ts
-test/     *.e2e-spec.ts (18 suites) + helpers
+test/     *.e2e-spec.ts (20 suites) + fixtures + helpers
 scripts/  verify-deployed.mjs · generate-api-md.js
 ```
 
