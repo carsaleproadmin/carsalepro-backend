@@ -1,13 +1,21 @@
 import { ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AllExceptionsFilter } from '../../src/common/filters/http-exception.filter';
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/prisma/prisma.service';
 
 export async function createTestApp(): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-  const app = moduleRef.createNestApplication();
+  // Mirror src/main.ts: rawBody for the Stripe webhook + raised JSON limit for
+  // structured reportData payloads.
+  const app = moduleRef.createNestApplication<NestExpressApplication>({
+    rawBody: true,
+    bodyParser: false,
+  });
+  app.useBodyParser('json', { limit: '2mb' });
+  app.useBodyParser('urlencoded', { extended: true, limit: '1mb' });
   app.useGlobalPipes(
     new ValidationPipe({
       transform: true,

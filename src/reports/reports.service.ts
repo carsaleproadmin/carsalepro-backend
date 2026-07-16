@@ -1,5 +1,6 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import {
+  ConflictException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -9,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
-import { Prisma, Report } from '@prisma/client';
+import { Prisma, Report, ReportPhoto } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
@@ -20,6 +21,17 @@ import {
   ReportItemDto,
   ReportListDto,
 } from './dto/report-response.dto';
+import { UpdateReportDto, UpdateReportResponseDto } from './dto/update-report.dto';
+import { ReportPhotoDto, ReportPhotoListDto, UploadPhotoDto } from './dto/upload-photo.dto';
+import { PhotoProcessingService } from './photo-processing.service';
+import {
+  extractDenormalizedFields,
+  ExtractedReportFields,
+  validateReportDataV1,
+} from './report-data.validator';
+
+const UUID_CODE_RE =
+  /^CSP-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class ReportsService {
@@ -30,13 +42,30 @@ export class ReportsService {
     private readonly prisma: PrismaService,
     private readonly r2: R2Service,
     private readonly moduleRef: ModuleRef,
+    private readonly photoProcessing: PhotoProcessingService,
     config: ConfigService<AppConfig, true>,
   ) {
     this.defaultLimit = config.get('quota', { infer: true }).freeReportsLimit;
   }
 
   async create(deviceId: string, dto: CreateReportDto): Promise<CreateReportResponseDto> {
-    // Quota gate runs first so the 402 contract is testable without R2 creds.
+    // Structured-payload validation runs BEFORE any quota is consumed so a 400
+    // never burns a free credit.
+    const extracted = this.validatePayload(dto.reportSchemaVersion, dto.reportData);
+
+    // Idempotent create: a UUID code re-posted by the same device (mobile retry
+    // after a network drop, or a re-finish) returns the existing report with a
+    // fresh upload URL — no second quota charge.
+    if (UUID_CODE_RE.test(dto.code)) {
+      const existing = await this.prisma.report.findFirst({
+        where: { deviceId, code: dto.code, deletedAt: null },
+      });
+      if (existing) {
+        return this.recreate(deviceId, existing, dto, extracted);
+      }
+    }
+
+    // Quota gate runs before R2 so the 402 contract is testable without R2 creds.
     const { quota, tier } = await this.consumeQuota(deviceId);
 
     if (!this.r2.isConfigured()) {
@@ -48,34 +77,50 @@ export class ReportsService {
       );
     }
 
-    const report = await this.prisma.report.create({
-      data: {
-        deviceId,
-        code: dto.code,
-        vin: dto.vin?.toUpperCase() ?? null,
-        make: dto.make ?? null,
-        model: dto.model ?? null,
-        inspectedAt: dto.inspectedAt ? new Date(dto.inspectedAt) : null,
-        sizeBytes: dto.sizeBytes ?? null,
-        hash: dto.hash ?? null,
-        tier,
-        s3Key: '', // filled below
-        // --- website extension fields (all optional) ---
-        orderId: dto.orderId ?? null,
-        qualityScore: dto.qualityScore ?? null,
-        year: dto.year ?? null,
-        mileageKm: dto.mileageKm ?? null,
-        color: dto.color ?? null,
-        bodyType: dto.bodyType ?? null,
-        driveType: dto.driveType ?? null,
-        reportData:
-          dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
-        photosManifest:
-          dto.photosManifest !== undefined
-            ? (dto.photosManifest as Prisma.InputJsonValue)
-            : undefined,
-      },
-    });
+    let report: Report;
+    try {
+      report = await this.prisma.report.create({
+        data: {
+          deviceId,
+          code: dto.code,
+          vin: dto.vin?.toUpperCase() ?? extracted?.vin ?? null,
+          make: dto.make ?? extracted?.make ?? null,
+          model: dto.model ?? extracted?.model ?? null,
+          inspectedAt: dto.inspectedAt ? new Date(dto.inspectedAt) : null,
+          finishedAt: dto.finishedAt ? new Date(dto.finishedAt) : null,
+          sizeBytes: dto.sizeBytes ?? null,
+          hash: dto.hash ?? null,
+          tier,
+          s3Key: '', // filled below
+          reportSchemaVersion: dto.reportSchemaVersion ?? null,
+          // --- website extension fields (all optional) ---
+          orderId: dto.orderId ?? null,
+          qualityScore: dto.qualityScore ?? extracted?.qualityScore ?? null,
+          year: dto.year ?? extracted?.year ?? null,
+          mileageKm: dto.mileageKm ?? extracted?.mileageKm ?? null,
+          color: dto.color ?? extracted?.color ?? null,
+          bodyType: dto.bodyType ?? extracted?.bodyType ?? null,
+          driveType: dto.driveType ?? extracted?.driveType ?? null,
+          reportData:
+            dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+          photosManifest:
+            dto.photosManifest !== undefined
+              ? (dto.photosManifest as Prisma.InputJsonValue)
+              : undefined,
+        },
+      });
+    } catch (err) {
+      await this.rollbackQuota(deviceId, tier);
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        // Cross-device collision on the partial unique code index — practically
+        // impossible for honest UUID v4 clients, so refuse loudly.
+        throw new ConflictException({
+          error: 'code_conflict',
+          message: `Report code ${dto.code} is already registered to another device`,
+        });
+      }
+      throw err;
+    }
 
     const s3Key = this.r2.buildKey(tier, deviceId, report.id);
     const updated = await this.prisma.report.update({
@@ -108,6 +153,139 @@ export class ReportsService {
       expiresAt: expiresAt.toISOString(),
       tier,
     };
+  }
+
+  /**
+   * Idempotent-create hit: refresh metadata + mint a new PDF upload URL for an
+   * existing report. The response mirrors a fresh create (plus `reused: true`)
+   * so mobile retry logic needs no special casing. Quota untouched.
+   */
+  private async recreate(
+    deviceId: string,
+    existing: Report,
+    dto: CreateReportDto,
+    extracted: ExtractedReportFields | undefined,
+  ): Promise<CreateReportResponseDto> {
+    if (!this.r2.isConfigured()) {
+      throw new HttpException(
+        'Cloud storage is not configured on this server',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    const updated = await this.prisma.report.update({
+      where: { id: existing.id },
+      data: {
+        vin: dto.vin?.toUpperCase() ?? extracted?.vin ?? existing.vin,
+        make: dto.make ?? extracted?.make ?? existing.make,
+        model: dto.model ?? extracted?.model ?? existing.model,
+        inspectedAt: dto.inspectedAt ? new Date(dto.inspectedAt) : existing.inspectedAt,
+        finishedAt: dto.finishedAt ? new Date(dto.finishedAt) : existing.finishedAt,
+        sizeBytes: dto.sizeBytes ?? existing.sizeBytes,
+        hash: dto.hash ?? existing.hash,
+        reportSchemaVersion: dto.reportSchemaVersion ?? existing.reportSchemaVersion,
+        qualityScore: dto.qualityScore ?? extracted?.qualityScore ?? existing.qualityScore,
+        year: dto.year ?? extracted?.year ?? existing.year,
+        mileageKm: dto.mileageKm ?? extracted?.mileageKm ?? existing.mileageKm,
+        color: dto.color ?? extracted?.color ?? existing.color,
+        bodyType: dto.bodyType ?? extracted?.bodyType ?? existing.bodyType,
+        driveType: dto.driveType ?? extracted?.driveType ?? existing.driveType,
+        reportData:
+          dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+        // A new PDF is coming — require a fresh /complete verification.
+        uploaded: false,
+      },
+    });
+
+    const { url, expiresAt } = await this.r2.createPresignedUploadUrl(
+      updated.s3Key,
+      dto.contentType ?? 'application/pdf',
+    );
+
+    this.logger.log(
+      `Idempotent re-create of report ${updated.id} device=${this.mask(deviceId)} (no quota)`,
+    );
+
+    return {
+      reportId: updated.id,
+      s3Key: updated.s3Key,
+      presignedUploadUrl: url,
+      expiresAt: expiresAt.toISOString(),
+      tier: updated.tier as 'free' | 'pro',
+      reused: true,
+    };
+  }
+
+  /**
+   * Re-sync of an edited finished report. Idempotent; NEVER consumes quota.
+   */
+  async update(
+    deviceId: string,
+    reportId: string,
+    dto: UpdateReportDto,
+  ): Promise<UpdateReportResponseDto> {
+    const report = await this.requireOwned(deviceId, reportId);
+    const extracted = this.validatePayload(dto.reportSchemaVersion, dto.reportData);
+
+    const updated = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        vin: dto.vin?.toUpperCase() ?? extracted?.vin ?? report.vin,
+        make: dto.make ?? extracted?.make ?? report.make,
+        model: dto.model ?? extracted?.model ?? report.model,
+        inspectedAt: dto.inspectedAt ? new Date(dto.inspectedAt) : report.inspectedAt,
+        finishedAt: dto.finishedAt ? new Date(dto.finishedAt) : report.finishedAt,
+        sizeBytes: dto.sizeBytes ?? report.sizeBytes,
+        hash: dto.hash ?? report.hash,
+        reportSchemaVersion: dto.reportSchemaVersion ?? report.reportSchemaVersion,
+        qualityScore: dto.qualityScore ?? extracted?.qualityScore ?? report.qualityScore,
+        year: dto.year ?? extracted?.year ?? report.year,
+        mileageKm: dto.mileageKm ?? extracted?.mileageKm ?? report.mileageKm,
+        color: dto.color ?? extracted?.color ?? report.color,
+        bodyType: dto.bodyType ?? extracted?.bodyType ?? report.bodyType,
+        driveType: dto.driveType ?? extracted?.driveType ?? report.driveType,
+        reportData:
+          dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+        ...(dto.regeneratePdfUploadUrl ? { uploaded: false } : {}),
+      },
+    });
+
+    const response: UpdateReportResponseDto = {
+      reportId: updated.id,
+      code: updated.code,
+      updatedAt: updated.updatedAt.toISOString(),
+    };
+
+    if (dto.regeneratePdfUploadUrl) {
+      if (!this.r2.isConfigured()) {
+        throw new HttpException(
+          'Cloud storage is not configured on this server',
+          HttpStatus.SERVICE_UNAVAILABLE,
+        );
+      }
+      const { url, expiresAt } = await this.r2.createPresignedUploadUrl(
+        updated.s3Key,
+        'application/pdf',
+      );
+      response.presignedUploadUrl = url;
+      response.expiresAt = expiresAt.toISOString();
+    }
+
+    return response;
+  }
+
+  /**
+   * Validate the structured payload when a contract version is claimed and
+   * return the denormalized listing fields. Legacy free-form payloads (no
+   * version) pass through untouched.
+   */
+  private validatePayload(
+    schemaVersion: number | undefined,
+    reportData: Record<string, unknown> | undefined,
+  ): ExtractedReportFields | undefined {
+    if (schemaVersion !== 1) return undefined;
+    const data = validateReportDataV1(reportData);
+    return extractDenormalizedFields(data);
   }
 
   /**
@@ -155,7 +333,11 @@ export class ReportsService {
     const report = await this.requireOwned(deviceId, reportId);
     if (this.r2.isConfigured()) {
       await this.r2.deleteObject(report.s3Key);
+      // Server-compressed photos (new layout) + legacy presigned photos.
+      await this.r2.deletePrefix(`report-photos/${deviceId}/${reportId}/`);
+      await this.r2.deletePrefix(`report-photos/${reportId}/`);
     }
+    await this.prisma.reportPhoto.deleteMany({ where: { reportId } });
     await this.prisma.report.update({
       where: { id: reportId },
       data: { deletedAt: new Date() },
@@ -194,6 +376,151 @@ export class ReportsService {
       s3Key,
       expiresAt: expiresAt.toISOString(),
     };
+  }
+
+  /**
+   * Multipart photo upload: compress server-side (sharp) and store in R2 under
+   * `report-photos/<deviceId>/<reportId>/<kind>-<position>-<hash8>.jpg`.
+   * `(reportId, kind, position)` is the logical slot — re-uploading it replaces
+   * the stored photo; an identical original (same sha-256) short-circuits.
+   */
+  async uploadPhoto(
+    deviceId: string,
+    reportId: string,
+    dto: UploadPhotoDto,
+    file: Express.Multer.File,
+  ): Promise<ReportPhotoDto> {
+    const report = await this.requireOwned(deviceId, reportId);
+
+    if (!this.r2.isConfigured()) {
+      throw new HttpException(
+        'Cloud storage is not configured on this server',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    const position = dto.position ?? 0;
+    const originalHash = createHash('sha256').update(file.buffer).digest('hex');
+    if (dto.hash && dto.hash.toLowerCase() !== originalHash) {
+      throw new HttpException(
+        { error: 'hash_mismatch', message: 'Provided hash does not match the uploaded bytes' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const existing = await this.prisma.reportPhoto.findUnique({
+      where: { reportId_kind_position: { reportId, kind: dto.kind, position } },
+    });
+    if (existing && existing.hash === originalHash) {
+      // Same original re-sent (mobile retry) — nothing to do.
+      return this.toPhotoDto(existing, false);
+    }
+
+    const processed = await this.photoProcessing.compress(file.buffer);
+    const r2Key =
+      `report-photos/${deviceId}/${reportId}/` +
+      `${dto.kind}-${position}-${originalHash.slice(0, 8)}.jpg`;
+
+    await this.r2.putObject(r2Key, processed.data, 'image/jpeg');
+
+    const data = {
+      kind: dto.kind,
+      position,
+      r2Key,
+      sizeBytes: processed.sizeBytes,
+      sourceBytes: file.size,
+      width: processed.width,
+      height: processed.height,
+      format: processed.format,
+      hash: originalHash,
+    };
+
+    const row = existing
+      ? await this.prisma.reportPhoto.update({ where: { id: existing.id }, data })
+      : await this.prisma.reportPhoto.create({ data: { reportId, ...data } });
+
+    // Replaced slot: drop the superseded object (key differs via hash suffix).
+    if (existing && existing.r2Key !== r2Key) {
+      await this.r2.deleteObject(existing.r2Key).catch(() => undefined);
+    }
+
+    await this.mirrorPhotosManifest(reportId);
+
+    this.logger.log(
+      `Stored photo ${dto.kind}#${position} for report ${reportId} ` +
+        `device=${this.mask(deviceId)} ${file.size}→${processed.sizeBytes} bytes`,
+    );
+
+    return this.toPhotoDto(row, existing !== null);
+  }
+
+  async listPhotos(deviceId: string, reportId: string): Promise<ReportPhotoListDto> {
+    await this.requireOwned(deviceId, reportId);
+    const rows = await this.prisma.reportPhoto.findMany({
+      where: { reportId },
+      orderBy: [{ kind: 'asc' }, { position: 'asc' }],
+    });
+    const items = await Promise.all(rows.map((r) => this.toPhotoDto(r, false)));
+    return { items, total: items.length };
+  }
+
+  async deletePhoto(
+    deviceId: string,
+    reportId: string,
+    photoId: string,
+  ): Promise<{ id: string; deleted: true }> {
+    await this.requireOwned(deviceId, reportId);
+    const photo = await this.prisma.reportPhoto.findUnique({ where: { id: photoId } });
+    if (!photo || photo.reportId !== reportId) {
+      throw new NotFoundException(`Photo ${photoId} not found`);
+    }
+    if (this.r2.isConfigured()) {
+      await this.r2.deleteObject(photo.r2Key);
+    }
+    await this.prisma.reportPhoto.delete({ where: { id: photoId } });
+    await this.mirrorPhotosManifest(reportId);
+    return { id: photoId, deleted: true };
+  }
+
+  /**
+   * Keep `report.photosManifest` in sync with the ReportPhoto rows so existing
+   * website consumers (`signPhotos`, showroom, PPV) keep working unmodified.
+   */
+  private async mirrorPhotosManifest(reportId: string): Promise<void> {
+    const rows = await this.prisma.reportPhoto.findMany({
+      where: { reportId },
+      orderBy: [{ kind: 'asc' }, { position: 'asc' }],
+      select: { r2Key: true, kind: true },
+    });
+    await this.prisma.report.update({
+      where: { id: reportId },
+      data: {
+        photosManifest: rows.map((r) => ({ s3Key: r.r2Key, kind: r.kind })) as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  private async toPhotoDto(row: ReportPhoto, replaced: boolean): Promise<ReportPhotoDto> {
+    const dto: ReportPhotoDto = {
+      photoId: row.id,
+      kind: row.kind,
+      position: row.position,
+      r2Key: row.r2Key,
+      width: row.width,
+      height: row.height,
+      sizeBytes: row.sizeBytes,
+      replaced,
+      createdAt: row.createdAt.toISOString(),
+    };
+    if (this.r2.isConfigured()) {
+      try {
+        const { url } = await this.r2.createPresignedDownloadUrl(row.r2Key);
+        dto.url = url;
+      } catch (err) {
+        this.logger.warn(`Failed to sign photo URL for ${row.id}: ${(err as Error).message}`);
+      }
+    }
+    return dto;
   }
 
   private async rollbackQuota(deviceId: string, tier: 'free' | 'pro'): Promise<void> {
