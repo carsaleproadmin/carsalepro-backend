@@ -1,6 +1,7 @@
 import { Logger, ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import 'reflect-metadata';
@@ -9,9 +10,17 @@ import { initSentry } from './common/sentry/sentry.bootstrap';
 import { AppConfig } from './config/configuration';
 
 async function bootstrap(): Promise<void> {
-  // rawBody:true keeps the JSON body parser AND exposes req.rawBody, which the
-  // Stripe webhook controller needs for signature verification.
-  const app = await NestFactory.create(AppModule, { bufferLogs: false, rawBody: true });
+  // rawBody:true exposes req.rawBody, which the Stripe webhook controller needs
+  // for signature verification. The default parsers are disabled and re-added
+  // via useBodyParser (rawBody-aware) with a raised JSON limit — structured
+  // reportData payloads from the mobile app can exceed Express' 100 kb default.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: false,
+    rawBody: true,
+    bodyParser: false,
+  });
+  app.useBodyParser('json', { limit: '2mb' });
+  app.useBodyParser('urlencoded', { extended: true, limit: '1mb' });
 
   const config = app.get(ConfigService<AppConfig, true>);
   const port = config.get('port', { infer: true });

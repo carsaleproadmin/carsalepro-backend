@@ -62,7 +62,13 @@ model Report {
   tier        String // "free" | "pro"
   uploaded    Boolean   @default(false)
   createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at")
   deletedAt   DateTime? @map("deleted_at")
+
+  /// Structured-payload contract version (1 = validated ReportDataV1). Null = legacy free-form reportData.
+  reportSchemaVersion Int?      @map("report_schema_version")
+  /// When the inspector marked the inspection finished in the mobile app.
+  finishedAt          DateTime? @map("finished_at")
 
   // --- website extension (all optional) ---
   userId         String? @map("user_id")
@@ -76,15 +82,48 @@ model Report {
   reportData     Json?   @map("report_data")
   photosManifest Json?   @map("photos_manifest")
 
-  user    User?    @relation(fields: [userId], references: [id])
-  order   Order?   @relation(fields: [orderId], references: [id])
+  user    User?         @relation(fields: [userId], references: [id])
+  order   Order?        @relation(fields: [orderId], references: [id])
   listing Listing?
+  photos  ReportPhoto[]
 
   @@index([deviceId, createdAt])
   @@index([vin])
   @@index([userId])
   @@index([code])
   @@map("report")
+}
+
+/// One row per server-compressed report photo stored in R2.
+/// Uploaded via multipart `POST /reports/:id/photos/upload`; the backend
+/// downsizes/re-encodes before storage. `(reportId, kind, position)` is the
+/// logical slot — re-uploading the same slot replaces the photo.
+model ReportPhoto {
+  id          String   @id @default(cuid())
+  reportId    String   @map("report_id")
+  /// Mobile slot key: exterior-front, wheel-fl, interior-1, damage-<id>, odometer, vin, zeroproof, ...
+  kind        String
+  position    Int      @default(0)
+  r2Key       String   @unique @map("r2_key")
+  publicUrl   String?  @map("public_url")
+  /// Compressed size stored in R2.
+  sizeBytes   Int      @map("size_bytes")
+  /// Original upload size (diagnostics).
+  sourceBytes Int?     @map("source_bytes")
+  width       Int
+  height      Int
+  format      String   @default("jpeg")
+  /// SHA-256 of the ORIGINAL bytes — idempotent re-upload short-circuit.
+  hash        String?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@unique([reportId, kind, position])
+  @@index([reportId])
+  @@map("report_photo")
 }
 
 // ============================================================
