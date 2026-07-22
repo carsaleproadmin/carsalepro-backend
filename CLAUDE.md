@@ -9,6 +9,10 @@ One NestJS service with **two API surfaces** (see @README.md):
 - **Legacy mobile MVP** — root routes (`/vin`, `/quota`, `/reports`, `/me`, `/catalog`, `/legal`, `/health`), `X-Device-Id` auth, **frozen contract** (the shipped Flutter app depends on it byte-for-byte).
 - **Website (Phase 2+)** — `/api/v1/*`, Bearer-JWT auth. The full marketplace / inspection-exchange / payments / KYC / LegalSync / admin / notifications platform was **built in this repo** (extending it in place was a deliberate decision — do NOT suggest moving it to a separate repo).
 
+## Reference catalog (`src/catalog/catalog.data.ts`)
+
+Single source of truth for `GET /catalog`, exported to the mobile bundle via `npx ts-node scripts/export-catalog.ts` (never hand-edit `carsalepro-mobile/assets/catalog/catalog.v1.json`). Each `ChecklistItemDef` carries `defaultTier` (T1/T2/T3) and `partId?` — the mobile app turns the 98 checks into damage presets and stores them as synthetic **`C<number>` codes** (e.g. `C42`) in `ReportDamageDto.kstCode` (`@MaxLength(8)`). **The `C` prefix is reserved for that mapping — never mint real K/S/T codes starting with `C`.** `LocalizedLabel` has an optional `uk` (Ukrainian, added checklist-first 2026-07-22); other sections fall back uk→ru on the client. Fields are additive — the frozen `GET /catalog` shape is unchanged. Regenerate the client + re-run the export after any catalog edit.
+
 ## Hard rules
 
 - **Never break the mobile contract.** Don't change root routes, their `X-Device-Id` behavior, the `POST /reports` → **402 `free_limit_reached`** paywall shape, or the R2 key layout `<tier>/<deviceId>/<reportId>.pdf` (GDPR erasure in `MeService.erase` + `R2Service.deletePrefix` depend on it). Extensions must be additive (like report-sync v2 was). Legacy mobile e2e (`mobile-link`, `vin`, `quota`, `reports`, `report-sync`, `report-photos`, `me`) must stay green.
