@@ -43,6 +43,12 @@ export interface DamageTypeDef {
   label: LocalizedLabel;
 }
 
+/**
+ * NOTE on code namespaces: K/S/T codes live here; the mobile app additionally
+ * stores checklist-derived damages as synthetic `C<number>` codes (e.g. `C42`)
+ * in the same `kstCode` column/payload field. The `C` prefix is RESERVED for
+ * that mapping — never mint real KST codes starting with `C`.
+ */
 export interface KstCodeDef {
   code: string;
   group: 'K' | 'S' | 'T';
@@ -67,6 +73,15 @@ export interface ChecklistItemDef {
   category: ChecklistCategory;
   label: LocalizedLabel;
   frequent: boolean;
+  /**
+   * Severity tier pre-selected when the check is added as a damage in the
+   * mobile app's defect catalog (drives the default labour-hours cost).
+   * Category baselines (interior/completeness T1, body/glass/electronics/
+   * operational T2, engine/chassis T3) with per-item curated overrides.
+   */
+  defaultTier: 'T1' | 'T2' | 'T3';
+  /** Affected part where unambiguous, else null (cost works without it). */
+  partId: string | null;
 }
 
 export const CATALOG_VERSION = '1';
@@ -1650,6 +1665,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 1,
     category: 'body',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Durchrostung von Karosserieblechen (Rost)',
       en: 'Through-corrosion of body panels (rust)',
@@ -1660,6 +1677,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 2,
     category: 'body',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Oberflächenrost an Türkanten, Schwellern, Radläufen',
       en: 'Surface rust on door edges, sills, wheel arches',
@@ -1670,6 +1689,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 3,
     category: 'body',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'trunk_lid',
     label: {
       de: 'Rost an der Heckklappe im Bereich Emblem / Kennzeichen',
       en: 'Rust on tailgate near emblem / license plate',
@@ -1680,6 +1701,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 4,
     category: 'body',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Verformung von Längsträger / tragender Struktur',
       en: 'Deformation of frame rail / structural member',
@@ -1690,6 +1713,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 5,
     category: 'body',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Blasenbildung im Lack (Lackblasen)',
       en: 'Paint blistering / bubbling',
@@ -1700,6 +1725,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 6,
     category: 'body',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Abplatzender Klarlack (Abblättern, Delamination)',
       en: 'Clear-coat peeling (flaking, delamination)',
@@ -1710,6 +1737,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 7,
     category: 'body',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Trübung und Ausbleichen des Lacks an Dach / Motorhaube',
       en: 'Clouding and fading of paint on roof / hood',
@@ -1720,6 +1749,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 8,
     category: 'body',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Durchpolierter / übermäßig polierter Lack',
       en: 'Burned-through / over-polished paint',
@@ -1730,6 +1761,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 9,
     category: 'body',
     frequent: true,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Farbtonabweichung benachbarter Teile (Nachlackierung)',
       en: 'Color mismatch of adjacent panels (respray)',
@@ -1740,6 +1773,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 10,
     category: 'body',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Verzogener Türrahmen / Türöffnung',
       en: 'Misaligned door frame / opening',
@@ -1750,6 +1785,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 11,
     category: 'body',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Undichter oder verzogener Tankdeckel',
       en: 'Leaking or misaligned fuel filler flap',
@@ -1760,6 +1797,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 12,
     category: 'body',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Karosserieschaden im Bereich der Abschleppöse',
       en: 'Body damage near the tow hook',
@@ -1770,6 +1809,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 13,
     category: 'body',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Schwellerschaden an der Wagenheberaufnahme',
       en: 'Sill damage at the jack point',
@@ -1780,6 +1821,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 14,
     category: 'body',
     frequent: false,
+    defaultTier: 'T3',
+    partId: 'roof',
     label: {
       de: 'Dachverzug / Falten an den Panelübergängen',
       en: 'Roof distortion / creases at panel joints',
@@ -1790,6 +1833,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 15,
     category: 'body',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Ungleichmäßige Spaltmaße (Karosserie nach Reparatur)',
       en: 'Uneven panel gaps (body after repair)',
@@ -1802,6 +1847,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 16,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'rear_window',
     label: {
       de: 'Steinschlag / Riss in der Heckscheibe',
       en: 'Chip / crack in the rear window',
@@ -1812,6 +1859,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 17,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Steinschlag / Riss in der Seitenscheibe (versenkbar oder fest)',
       en: 'Chip / crack in a side window (drop or fixed)',
@@ -1822,6 +1871,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 18,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'panoramic_roof',
     label: {
       de: 'Beschädigung der Glasfläche des Panoramadachs',
       en: 'Damage to the panoramic roof glass panel',
@@ -1832,6 +1883,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 19,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'windshield',
     label: {
       de: 'Wischerkratzer auf der Frontscheibe',
       en: 'Wiper scratches on the windshield',
@@ -1842,6 +1895,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 20,
     category: 'glass',
     frequent: true,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Trübung / Mattierung der Scheinwerfer (Polycarbonat)',
       en: 'Clouded / hazy headlights (polycarbonate)',
@@ -1852,6 +1907,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 21,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Riss im Glas von Scheinwerfer, Blinker, Bremslicht',
       en: 'Cracked lens of headlight, indicator, brake light',
@@ -1862,6 +1919,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 22,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Beschlagen von Scheinwerfer oder Rückleuchte von innen',
       en: 'Condensation inside headlight or tail light',
@@ -1872,6 +1931,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 23,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Riss / Absplitterung im Spiegelglas',
       en: 'Crack / chip in the mirror glass',
@@ -1882,6 +1943,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 24,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Spiegelverstellung / -heizung ohne Funktion',
       en: 'Mirror adjustment / heating not working',
@@ -1892,6 +1955,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 25,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Seitenblinker am Kotflügel oder Spiegel fehlt / defekt',
       en: 'Side turn-signal repeater on fender or mirror missing / broken',
@@ -1902,6 +1967,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 26,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Parksensor (PDC) fehlt / beschädigt',
       en: 'Parking sensor missing / damaged',
@@ -1912,6 +1979,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 27,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Rückfahr- oder Rundumkamera fehlt / beschädigt',
       en: 'Rear-view or surround camera missing / damaged',
@@ -1922,6 +1991,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 28,
     category: 'glass',
     frequent: false,
+    defaultTier: 'T1',
+    partId: 'antenna',
     label: {
       de: 'Antenne (Dachantenne) beschädigt / ohne Funktion',
       en: 'Antenna (shark fin) damaged / not working',
@@ -1934,6 +2005,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 29,
     category: 'interior',
     frequent: true,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Schnitte, Brandlöcher, Flecken auf den Sitzbezügen',
       en: 'Cuts, burn holes, stains on seat upholstery',
@@ -1944,6 +2017,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 30,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T1',
+    partId: 'steering_wheel',
     label: {
       de: 'Abnutzung von Lenkradleder und Schaltknauf',
       en: 'Wear of steering-wheel leather and gear knob',
@@ -1954,6 +2029,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 31,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Abgenutzte / verblasste Symbole auf den Tasten',
       en: 'Worn / faded pictograms on buttons',
@@ -1964,6 +2041,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 32,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Defekte Armlehne / defekter Becherhalter',
       en: 'Broken armrest / cup holder',
@@ -1974,6 +2053,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 33,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Klemmender oder defekter Sitzverstellmechanismus',
       en: 'Sticking or broken seat adjustment mechanism',
@@ -1984,6 +2065,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 34,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Sitzheizung / Sitzbelüftung ohne Funktion',
       en: 'Seat heating / ventilation not working',
@@ -1994,6 +2077,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 35,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'headliner',
     label: {
       de: 'Beschädigter Dachhimmel (Durchhängen, Flecken)',
       en: 'Damaged headliner (sagging, stains)',
@@ -2004,6 +2089,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 36,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T1',
+    partId: 'sun_visor',
     label: {
       de: 'Defekte Sonnenblende / Spiegel in der Sonnenblende',
       en: 'Broken sun visor / vanity mirror',
@@ -2014,6 +2101,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 37,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'dashboard',
     label: {
       de: 'Risse / Kratzer im Armaturenbrett-Kunststoff',
       en: 'Cracks / scratches in dashboard plastic',
@@ -2024,6 +2113,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 38,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Gebrochenes oder gerissenes Display von Infotainment / Kombiinstrument',
       en: 'Broken or cracked infotainment / cluster display',
@@ -2034,6 +2125,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 39,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Handschuhfachklappe gebrochen oder fehlend',
       en: 'Glovebox lid broken or missing',
@@ -2044,6 +2137,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 40,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Pedalauflagen fehlen',
       en: 'Pedal pads missing',
@@ -2054,6 +2149,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 41,
     category: 'interior',
     frequent: true,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Flecken und Geruch im Innenraum (Tiere, Tabak, Schimmel)',
       en: 'Stains and odor in the cabin (pets, tobacco, mold)',
@@ -2064,6 +2161,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 42,
     category: 'interior',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Zigarettenanzünder / USB-Anschluss defekt oder fehlend',
       en: 'Cigarette lighter / USB port faulty or missing',
@@ -2076,6 +2175,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 43,
     category: 'engine',
     frequent: true,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Batterie hält keine Ladung / Tiefentladung, Korrosion an Polen',
       en: 'Battery not holding charge / deeply discharged, terminal corrosion',
@@ -2086,6 +2187,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 44,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'oil_pan_guard',
     label: {
       de: 'Riss / Verformung des Unterfahrschutzes (Ölwanne)',
       en: 'Crack / deformation of the skid plate (oil pan guard)',
@@ -2096,6 +2199,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 45,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'exhaust',
     label: {
       de: 'Beschädigtes oder abgerissenes Abgasanlagenteil',
       en: 'Damaged or detached exhaust-system part',
@@ -2106,6 +2211,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 46,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T3',
+    partId: 'catalytic_converter',
     label: {
       de: 'Herausgeschnittener oder fehlender Katalysator (DPF/SCR)',
       en: 'Cut-out or missing catalytic converter (DPF/SCR)',
@@ -2116,6 +2223,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 47,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Kühlmittelleckage (Schläuche, Ausgleichsbehälter)',
       en: 'Coolant leak (hoses, expansion tank)',
@@ -2126,6 +2235,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 48,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Leckage der Servolenkung',
       en: 'Power-steering leak',
@@ -2136,6 +2247,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 49,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Leckage / Verschmutzung der Waschdüsen, Scheinwerferwaschanlage defekt',
       en: 'Washer-jet leak / clogging, headlight washer not working',
@@ -2146,6 +2259,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 50,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Defekter Generator oder Anlasser (Geräusch, keine Ladung)',
       en: 'Faulty alternator or starter (noise, no charging)',
@@ -2156,6 +2271,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 51,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Öleinfülldeckel fehlt / beschädigt',
       en: 'Oil filler cap missing / damaged',
@@ -2166,6 +2283,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 52,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Tankdeckel beschädigt / fehlend',
       en: 'Fuel cap damaged / missing',
@@ -2176,6 +2295,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 53,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Verschmutzter Luft- oder Innenraumfilter',
       en: 'Dirty air or cabin filter',
@@ -2186,6 +2307,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 54,
     category: 'engine',
     frequent: true,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Wischerblätter verschlissen / beschädigt',
       en: 'Wiper blades worn / damaged',
@@ -2196,6 +2319,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 55,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Geräusch der Radlager',
       en: 'Wheel-bearing noise',
@@ -2206,6 +2331,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 56,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Spiel in Spurstangen / Spurstangenköpfen',
       en: 'Play in tie rods / tie-rod ends',
@@ -2216,6 +2343,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 57,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Verschleiß von Silentblöcken / Stabilisatorstreben',
       en: 'Wear of bushings / stabilizer links',
@@ -2226,6 +2355,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 58,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T3',
+    partId: 'shock_absorber',
     label: {
       de: 'Leckage oder Defekt der Stoßdämpfer',
       en: 'Shock-absorber leak or fault',
@@ -2236,6 +2367,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 59,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Fremdgeräusche im Fahrwerk',
       en: 'Knocking noises in the suspension',
@@ -2246,6 +2379,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 60,
     category: 'engine',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Defekte / gerissene Motor- und Getriebelager',
       en: 'Broken / cracked engine and transmission mounts',
@@ -2258,6 +2393,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 61,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'tire',
     label: {
       de: 'Unterschiedliche oder gegenläufige Reifen auf einer Achse',
       en: 'Mismatched or differently-directed tires on one axle',
@@ -2268,6 +2405,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 62,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'tire',
     label: {
       de: 'Reifen mit abgelaufenem DOT (älter als 6 Jahre)',
       en: 'Tires with expired DOT (older than 6 years)',
@@ -2278,6 +2417,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 63,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T3',
+    partId: 'tire',
     label: {
       de: 'Beulen (seitliche Wölbungen), Schnitte an den Reifen',
       en: 'Bulges (sidewall blisters), cuts on the tires',
@@ -2288,6 +2429,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 64,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'tire',
     label: {
       de: 'Ungleichmäßiger Reifenverschleiß (Anzeichen für Spur / Sturz)',
       en: 'Uneven tire wear (sign of toe / camber issue)',
@@ -2298,6 +2441,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 65,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Reserverad / Notrad / Reparaturset / Kompressor fehlt',
       en: 'Spare wheel / space-saver / repair kit / compressor missing',
@@ -2308,6 +2453,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 66,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Felgenschloss / Sicherungsschraube fehlt oder beschädigt',
       en: 'Locking wheel bolt missing or damaged',
@@ -2318,6 +2465,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 67,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T3',
+    partId: 'brake_caliper',
     label: {
       de: 'Festsitzender / defekter Bremssattel, Beläge klemmen',
       en: 'Seized / faulty brake caliper, pads sticking',
@@ -2328,6 +2477,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 68,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T3',
+    partId: 'brake_disc',
     label: {
       de: 'Überhitzte / verformte Bremsscheiben (Blaufärbung, Schlag)',
       en: 'Overheated / warped brake discs (bluing, runout)',
@@ -2338,6 +2489,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 69,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Beschädigter Bremsschlauch, schwitzender Schlauch',
       en: 'Damaged brake hose, weeping hose',
@@ -2348,6 +2501,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 70,
     category: 'chassis',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Rost / Riefen an Achsmanschetten, Bremskolben',
       en: 'Rust / scoring on CV boots, brake pistons',
@@ -2360,6 +2515,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 71,
     category: 'completeness',
     frequent: true,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Fehlendes Serviceheft / fehlende Servicestempel',
       en: 'Missing service booklet / service stamps',
@@ -2370,6 +2527,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 72,
     category: 'completeness',
     frequent: true,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Fehlender Zweitschlüssel / fehlende Keyless-Karte',
       en: 'Missing second key / Keyless card',
@@ -2380,6 +2539,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 73,
     category: 'completeness',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Fehlendes Warndreieck, Verbandskasten, Feuerlöscher, Warnweste',
       en: 'Missing warning triangle, first-aid kit, fire extinguisher, hi-vis vest',
@@ -2390,6 +2551,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 74,
     category: 'completeness',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Fehlender Wagenheber, Radmutternschlüssel, Abschleppöse',
       en: 'Missing jack, wheel wrench, tow hook',
@@ -2400,6 +2563,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 75,
     category: 'completeness',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Fehlende Betriebsanleitung / FIN-Aufkleber an der Säule',
       en: 'Missing owner manual / VIN sticker on the pillar',
@@ -2410,6 +2575,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 76,
     category: 'completeness',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Unleserliche / beschädigte FIN an Karosserie oder Typenschild',
       en: 'Illegible / damaged VIN on body or plate',
@@ -2420,6 +2587,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 77,
     category: 'completeness',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'FIN in den Papieren stimmt nicht mit der Karosserie überein',
       en: 'VIN in documents does not match the body',
@@ -2430,6 +2599,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 78,
     category: 'completeness',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Nicht eingetragene / nicht zertifizierte Umbauten (Tuning, Lift, Chip)',
       en: 'Non-certified / unregistered modifications (tuning, lift, chip)',
@@ -2442,6 +2613,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 79,
     category: 'electronics',
     frequent: true,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Check-Engine / ABS / ESP / Airbag / EPC leuchtet',
       en: 'Check Engine / ABS / ESP / Airbag / EPC light on',
@@ -2452,6 +2625,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 80,
     category: 'electronics',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Klimaanlage ohne Funktion, kein Kältemittel',
       en: 'Air conditioning not working, no refrigerant',
@@ -2462,6 +2637,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 81,
     category: 'electronics',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Schiebedach öffnet / schließt nicht',
       en: 'Sunroof does not open / close',
@@ -2472,6 +2649,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 82,
     category: 'electronics',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Elektrischer Fensterheber ohne Funktion',
       en: 'Power window not working',
@@ -2482,6 +2661,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 83,
     category: 'electronics',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Zentralverriegelung reagiert nicht / mit Fehlfunktion',
       en: 'Central locking not responding / malfunctioning',
@@ -2492,6 +2673,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 84,
     category: 'electronics',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Defekter Regen- / Lichtsensor',
       en: 'Faulty rain / light sensor',
@@ -2502,6 +2685,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 85,
     category: 'electronics',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Parkassistent, adaptiver Tempomat, Lane Assist ohne Funktion',
       en: 'Park assist, adaptive cruise, Lane Assist not working',
@@ -2512,6 +2697,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 86,
     category: 'electronics',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Fehler im eCall- / Telematiksystem',
       en: 'eCall / telematics system errors',
@@ -2522,6 +2709,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 87,
     category: 'electronics',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Keine Verbindung zum Schlüssel (toter Chip)',
       en: 'No connection to the key (dead chip)',
@@ -2534,6 +2723,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 88,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Kraftstoff- / Abgasgeruch im Innenraum',
       en: 'Fuel / exhaust smell in the cabin',
@@ -2544,6 +2735,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 89,
     category: 'operational',
     frequent: true,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Feuchtigkeit, Wasser, Schimmel unter Matten oder im Kofferraum',
       en: 'Damp, water, mold under mats or in the boot',
@@ -2554,6 +2747,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 90,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T3',
+    partId: null,
     label: {
       de: 'Öl- / ATF-Flecken unter dem Fahrzeug nach dem Parken',
       en: 'Oil / ATF stains under the vehicle after parking',
@@ -2564,6 +2759,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 91,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Hupe ohne Funktion',
       en: 'Horn not working',
@@ -2574,6 +2771,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 92,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T2',
+    partId: 'gear_lever',
     label: {
       de: 'Beschädigter Schalthebel, Wählhebel AT / CVT / DSG',
       en: 'Damaged gear lever, AT / CVT / DSG selector',
@@ -2584,6 +2783,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 93,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Beschädigte AdBlue-Klappe / leerer AdBlue-Tank (Diesel)',
       en: 'Damaged AdBlue flap / empty AdBlue tank (diesel)',
@@ -2594,6 +2795,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 94,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T1',
+    partId: 'trunk_mat',
     label: {
       de: 'Verrotteter / beschädigter Kofferraummatte',
       en: 'Rotted / damaged boot mat',
@@ -2604,6 +2807,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 95,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Kältemittelaustritt, Geruch aus der Klimaanlage',
       en: 'Refrigerant leak, smell from the AC system',
@@ -2614,6 +2819,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 96,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T1',
+    partId: null,
     label: {
       de: 'Nicht zugelassene Werbung / Aufkleber an Karosserie und Scheiben',
       en: 'Non-permitted advertising / stickers on body and glass',
@@ -2624,6 +2831,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 97,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T1',
+    partId: 'license_plate_holder',
     label: {
       de: 'Defekte / fehlende Kennzeichenhalterung, Rahmen',
       en: 'Broken / missing license-plate mount, frame',
@@ -2634,6 +2843,8 @@ const CHECKLIST: ChecklistItemDef[] = [
     number: 98,
     category: 'operational',
     frequent: false,
+    defaultTier: 'T2',
+    partId: null,
     label: {
       de: 'Abweichung von der Werksausstattung (Felgen, Scheinwerfer, Grill)',
       en: 'Deviation from factory equipment (rims, headlights, grille)',
