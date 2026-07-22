@@ -22,6 +22,8 @@ export interface LocalizedLabel {
   de: string;
   en: string;
   ru: string;
+  /** Ukrainian — added incrementally; checklist items carry it first. */
+  uk?: string;
 }
 
 export interface AngleDef {
@@ -1671,6 +1673,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Durchrostung von Karosserieblechen (Rost)',
       en: 'Through-corrosion of body panels (rust)',
       ru: 'Сквозная коррозия кузовных панелей (ржавчина)',
+      uk: 'Наскрізна корозія кузовних панелей (іржа)',
     },
   },
   {
@@ -1683,6 +1686,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Oberflächenrost an Türkanten, Schwellern, Radläufen',
       en: 'Surface rust on door edges, sills, wheel arches',
       ru: 'Поверхностная коррозия на кромках дверей, порогов, колёсных арок',
+      uk: 'Поверхнева корозія на кромках дверей, порогах, колісних арках',
     },
   },
   {
@@ -1695,6 +1699,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Rost an der Heckklappe im Bereich Emblem / Kennzeichen',
       en: 'Rust on tailgate near emblem / license plate',
       ru: 'Коррозия крышки багажника в районе эмблемы / номерного знака',
+      uk: 'Корозія кришки багажника в зоні емблеми / номерного знака',
     },
   },
   {
@@ -1707,6 +1712,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Verformung von Längsträger / tragender Struktur',
       en: 'Deformation of frame rail / structural member',
       ru: 'Деформация лонжерона / силовой структуры',
+      uk: 'Деформація лонжерона / силової структури',
     },
   },
   {
@@ -1719,6 +1725,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Blasenbildung im Lack (Lackblasen)',
       en: 'Paint blistering / bubbling',
       ru: 'Вздутие / пузыри на ЛКП (пузырение краски)',
+      uk: 'Здуття / бульбашки на ЛФП (спучування фарби)',
     },
   },
   {
@@ -1731,6 +1738,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Abplatzender Klarlack (Abblättern, Delamination)',
       en: 'Clear-coat peeling (flaking, delamination)',
       ru: 'Отслоение лака (шелушение, ламинация)',
+      uk: 'Відшарування лаку (лущення, деламінація)',
     },
   },
   {
@@ -1743,6 +1751,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Trübung und Ausbleichen des Lacks an Dach / Motorhaube',
       en: 'Clouding and fading of paint on roof / hood',
       ru: 'Помутнение и выгорание лака на крыше / капоте',
+      uk: 'Помутніння та вигорання лаку на даху / капоті',
     },
   },
   {
@@ -1755,6 +1764,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Durchpolierter / übermäßig polierter Lack',
       en: 'Burned-through / over-polished paint',
       ru: 'Следы полировки «под воронку» / перетёртый лак',
+      uk: 'Протертий / надмірно полірований лак',
     },
   },
   {
@@ -1767,6 +1777,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Farbtonabweichung benachbarter Teile (Nachlackierung)',
       en: 'Color mismatch of adjacent panels (respray)',
       ru: 'Несоответствие оттенков соседних элементов (перекрас)',
+      uk: 'Розбіжність відтінків сусідніх елементів (перефарбування)',
     },
   },
   {
@@ -1779,6 +1790,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Verzogener Türrahmen / Türöffnung',
       en: 'Misaligned door frame / opening',
       ru: 'Перекошенный дверной проём / рамка двери',
+      uk: 'Перекошений дверний проєм / рамка дверей',
     },
   },
   {
@@ -1791,6 +1803,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Undichter oder verzogener Tankdeckel',
       en: 'Leaking or misaligned fuel filler flap',
       ru: 'Негерметичная или перекошенная крышка лючка бензобака',
+      uk: 'Негерметична або перекошена кришка лючка бензобака',
     },
   },
   {
@@ -1803,6 +1816,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Karosserieschaden im Bereich der Abschleppöse',
       en: 'Body damage near the tow hook',
       ru: 'Повреждение кузова в районе буксировочной петли',
+      uk: 'Пошкодження кузова в зоні буксирувальної петлі',
     },
   },
   {
@@ -1815,6 +1829,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Schwellerschaden an der Wagenheberaufnahme',
       en: 'Sill damage at the jack point',
       ru: 'Повреждение порога в месте установки домкрата',
+      uk: 'Пошкодження порога в місці встановлення домкрата',
     },
   },
   {
@@ -1827,6 +1842,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Dachverzug / Falten an den Panelübergängen',
       en: 'Roof distortion / creases at panel joints',
       ru: 'Перекос крыши / заломы на стыках панелей',
+      uk: 'Перекіс даху / заломи на стиках панелей',
     },
   },
   {
@@ -1839,6 +1855,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Ungleichmäßige Spaltmaße (Karosserie nach Reparatur)',
       en: 'Uneven panel gaps (body after repair)',
       ru: 'Невыставленные зазоры (кузов после ремонта)',
+      uk: 'Нерівномірні зазори (кузов після ремонту)',
     },
   },
 
@@ -1853,6 +1870,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Steinschlag / Riss in der Heckscheibe',
       en: 'Chip / crack in the rear window',
       ru: 'Скол / трещина на заднем стекле',
+      uk: 'Скол / тріщина на задньому склі',
     },
   },
   {
@@ -1865,6 +1883,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Steinschlag / Riss in der Seitenscheibe (versenkbar oder fest)',
       en: 'Chip / crack in a side window (drop or fixed)',
       ru: 'Скол / трещина на боковом стекле (опускном или глухом)',
+      uk: 'Скол / тріщина на боковому склі (опускному або глухому)',
     },
   },
   {
@@ -1877,6 +1896,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Beschädigung der Glasfläche des Panoramadachs',
       en: 'Damage to the panoramic roof glass panel',
       ru: 'Повреждение стеклянной панели панорамной крыши',
+      uk: 'Пошкодження скляної панелі панорамного даху',
     },
   },
   {
@@ -1889,6 +1909,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Wischerkratzer auf der Frontscheibe',
       en: 'Wiper scratches on the windshield',
       ru: 'Царапины от стеклоочистителей на ветровом стекле',
+      uk: 'Подряпини від склоочисників на лобовому склі',
     },
   },
   {
@@ -1901,6 +1922,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Trübung / Mattierung der Scheinwerfer (Polycarbonat)',
       en: 'Clouded / hazy headlights (polycarbonate)',
       ru: 'Помутнение / «матовость» фар (поликарбонат)',
+      uk: 'Помутніння / «матовість» фар (полікарбонат)',
     },
   },
   {
@@ -1913,6 +1935,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Riss im Glas von Scheinwerfer, Blinker, Bremslicht',
       en: 'Cracked lens of headlight, indicator, brake light',
       ru: 'Трещина стекла фары, поворотника, стопа',
+      uk: 'Тріщина скла фари, поворотника, стоп-сигналу',
     },
   },
   {
@@ -1925,6 +1948,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Beschlagen von Scheinwerfer oder Rückleuchte von innen',
       en: 'Condensation inside headlight or tail light',
       ru: 'Запотевание фары или заднего фонаря изнутри',
+      uk: 'Запотівання фари або заднього ліхтаря зсередини',
     },
   },
   {
@@ -1937,6 +1961,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Riss / Absplitterung im Spiegelglas',
       en: 'Crack / chip in the mirror glass',
       ru: 'Трещина / скол на стекле зеркала',
+      uk: 'Тріщина / скол на склі дзеркала',
     },
   },
   {
@@ -1949,6 +1974,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Spiegelverstellung / -heizung ohne Funktion',
       en: 'Mirror adjustment / heating not working',
       ru: 'Не работает электропривод / обогрев зеркала',
+      uk: 'Не працює електропривід / обігрів дзеркала',
     },
   },
   {
@@ -1961,6 +1987,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Seitenblinker am Kotflügel oder Spiegel fehlt / defekt',
       en: 'Side turn-signal repeater on fender or mirror missing / broken',
       ru: 'Отсутствует / сломан повторитель поворота на крыле или зеркале',
+      uk: 'Відсутній / зламаний повторювач повороту на крилі або дзеркалі',
     },
   },
   {
@@ -1973,6 +2000,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Parksensor (PDC) fehlt / beschädigt',
       en: 'Parking sensor missing / damaged',
       ru: 'Отсутствует / повреждён датчик парктроника',
+      uk: 'Відсутній / пошкоджений датчик парктроніка',
     },
   },
   {
@@ -1985,6 +2013,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Rückfahr- oder Rundumkamera fehlt / beschädigt',
       en: 'Rear-view or surround camera missing / damaged',
       ru: 'Отсутствует / повреждена камера заднего или кругового обзора',
+      uk: 'Відсутня / пошкоджена камера заднього або кругового огляду',
     },
   },
   {
@@ -1997,6 +2026,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Antenne (Dachantenne) beschädigt / ohne Funktion',
       en: 'Antenna (shark fin) damaged / not working',
       ru: 'Повреждённая / нерабочая антенна («плавник»)',
+      uk: 'Пошкоджена / неробоча антена («плавник»)',
     },
   },
 
@@ -2011,6 +2041,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Schnitte, Brandlöcher, Flecken auf den Sitzbezügen',
       en: 'Cuts, burn holes, stains on seat upholstery',
       ru: 'Порезы, прожоги, пятна на обивке сидений',
+      uk: 'Порізи, пропалини, плями на оббивці сидінь',
     },
   },
   {
@@ -2023,6 +2054,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Abnutzung von Lenkradleder und Schaltknauf',
       en: 'Wear of steering-wheel leather and gear knob',
       ru: 'Износ кожи руля, рукоятки КПП',
+      uk: 'Знос шкіри керма, ручки КПП',
     },
   },
   {
@@ -2035,6 +2067,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Abgenutzte / verblasste Symbole auf den Tasten',
       en: 'Worn / faded pictograms on buttons',
       ru: 'Потёртости / стёртые пиктограммы на кнопках',
+      uk: 'Потертості / стерті піктограми на кнопках',
     },
   },
   {
@@ -2047,6 +2080,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Defekte Armlehne / defekter Becherhalter',
       en: 'Broken armrest / cup holder',
       ru: 'Сломанный подлокотник / подстаканник',
+      uk: 'Зламаний підлокітник / підсклянник',
     },
   },
   {
@@ -2059,6 +2093,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Klemmender oder defekter Sitzverstellmechanismus',
       en: 'Sticking or broken seat adjustment mechanism',
       ru: 'Заедающий или сломанный механизм регулировки сиденья',
+      uk: 'Заїдає або зламаний механізм регулювання сидіння',
     },
   },
   {
@@ -2071,6 +2106,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Sitzheizung / Sitzbelüftung ohne Funktion',
       en: 'Seat heating / ventilation not working',
       ru: 'Не работает подогрев / вентиляция сидений',
+      uk: 'Не працює підігрів / вентиляція сидінь',
     },
   },
   {
@@ -2083,6 +2119,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Beschädigter Dachhimmel (Durchhängen, Flecken)',
       en: 'Damaged headliner (sagging, stains)',
       ru: 'Повреждённая обшивка потолка (провисание, пятна)',
+      uk: 'Пошкоджена оббивка стелі (провисання, плями)',
     },
   },
   {
@@ -2095,6 +2132,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Defekte Sonnenblende / Spiegel in der Sonnenblende',
       en: 'Broken sun visor / vanity mirror',
       ru: 'Поломка солнцезащитного козырька / зеркала в козырьке',
+      uk: 'Поломка сонцезахисного козирка / дзеркала в козирку',
     },
   },
   {
@@ -2107,6 +2145,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Risse / Kratzer im Armaturenbrett-Kunststoff',
       en: 'Cracks / scratches in dashboard plastic',
       ru: 'Трещины / царапины на пластике торпедо',
+      uk: 'Тріщини / подряпини на пластику торпедо',
     },
   },
   {
@@ -2119,6 +2158,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Gebrochenes oder gerissenes Display von Infotainment / Kombiinstrument',
       en: 'Broken or cracked infotainment / cluster display',
       ru: 'Разбитый или треснувший дисплей мультимедиа / приборки',
+      uk: 'Розбитий або тріснутий дисплей мультимедіа / приладової панелі',
     },
   },
   {
@@ -2131,6 +2171,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Handschuhfachklappe gebrochen oder fehlend',
       en: 'Glovebox lid broken or missing',
       ru: 'Сломан или отсутствует лючок бардачка',
+      uk: 'Зламана або відсутня кришка бардачка',
     },
   },
   {
@@ -2143,6 +2184,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Pedalauflagen fehlen',
       en: 'Pedal pads missing',
       ru: 'Отсутствуют накладки на педали',
+      uk: 'Відсутні накладки на педалі',
     },
   },
   {
@@ -2155,6 +2197,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Flecken und Geruch im Innenraum (Tiere, Tabak, Schimmel)',
       en: 'Stains and odor in the cabin (pets, tobacco, mold)',
       ru: 'Пятна и запах в салоне (животные, табак, плесень)',
+      uk: 'Плями та запах у салоні (тварини, тютюн, пліснява)',
     },
   },
   {
@@ -2167,6 +2210,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Zigarettenanzünder / USB-Anschluss defekt oder fehlend',
       en: 'Cigarette lighter / USB port faulty or missing',
       ru: 'Неисправный / отсутствующий прикуриватель, USB-порт',
+      uk: 'Несправний / відсутній прикурювач, USB-порт',
     },
   },
 
@@ -2181,6 +2225,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Batterie hält keine Ladung / Tiefentladung, Korrosion an Polen',
       en: 'Battery not holding charge / deeply discharged, terminal corrosion',
       ru: 'Не держит заряд / глубокий разряд АКБ, коррозия клемм',
+      uk: 'Не тримає заряд / глибокий розряд АКБ, корозія клем',
     },
   },
   {
@@ -2193,6 +2238,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Riss / Verformung des Unterfahrschutzes (Ölwanne)',
       en: 'Crack / deformation of the skid plate (oil pan guard)',
       ru: 'Трещина / деформация защиты картера',
+      uk: 'Тріщина / деформація захисту картера',
     },
   },
   {
@@ -2205,6 +2251,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Beschädigtes oder abgerissenes Abgasanlagenteil',
       en: 'Damaged or detached exhaust-system part',
       ru: 'Повреждённая или оторванная часть выхлопной системы',
+      uk: 'Пошкоджена або відірвана частина вихлопної системи',
     },
   },
   {
@@ -2217,6 +2264,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Herausgeschnittener oder fehlender Katalysator (DPF/SCR)',
       en: 'Cut-out or missing catalytic converter (DPF/SCR)',
       ru: 'Вырезанный или отсутствующий катализатор (DPF/SCR)',
+      uk: 'Вирізаний або відсутній каталізатор (DPF/SCR)',
     },
   },
   {
@@ -2229,6 +2277,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Kühlmittelleckage (Schläuche, Ausgleichsbehälter)',
       en: 'Coolant leak (hoses, expansion tank)',
       ru: 'Подтёки охлаждающей жидкости (патрубки, расширительный бачок)',
+      uk: 'Підтікання охолоджувальної рідини (патрубки, розширювальний бачок)',
     },
   },
   {
@@ -2241,6 +2290,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Leckage der Servolenkung',
       en: 'Power-steering leak',
       ru: 'Течь гидроусилителя руля',
+      uk: 'Теча гідропідсилювача керма',
     },
   },
   {
@@ -2253,6 +2303,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Leckage / Verschmutzung der Waschdüsen, Scheinwerferwaschanlage defekt',
       en: 'Washer-jet leak / clogging, headlight washer not working',
       ru: 'Течь / загрязнение форсунок омывателя, неработающий омыватель фар',
+      uk: 'Теча / забруднення форсунок омивача, непрацюючий омивач фар',
     },
   },
   {
@@ -2265,6 +2316,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Defekter Generator oder Anlasser (Geräusch, keine Ladung)',
       en: 'Faulty alternator or starter (noise, no charging)',
       ru: 'Неисправный генератор или стартер (шум, нет зарядки)',
+      uk: 'Несправний генератор або стартер (шум, немає зарядки)',
     },
   },
   {
@@ -2277,6 +2329,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Öleinfülldeckel fehlt / beschädigt',
       en: 'Oil filler cap missing / damaged',
       ru: 'Отсутствующая / повреждённая крышка заливной горловины масла',
+      uk: 'Відсутня / пошкоджена кришка маслозаливної горловини',
     },
   },
   {
@@ -2289,6 +2342,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Tankdeckel beschädigt / fehlend',
       en: 'Fuel cap damaged / missing',
       ru: 'Повреждённая / отсутствующая крышка топливного бака',
+      uk: 'Пошкоджена / відсутня кришка паливного бака',
     },
   },
   {
@@ -2301,6 +2355,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Verschmutzter Luft- oder Innenraumfilter',
       en: 'Dirty air or cabin filter',
       ru: 'Загрязнённый воздушный или салонный фильтр',
+      uk: 'Забруднений повітряний або салонний фільтр',
     },
   },
   {
@@ -2313,6 +2368,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Wischerblätter verschlissen / beschädigt',
       en: 'Wiper blades worn / damaged',
       ru: 'Щётки стеклоочистителей изношены / повреждены',
+      uk: 'Щітки склоочисників зношені / пошкоджені',
     },
   },
   {
@@ -2325,6 +2381,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Geräusch der Radlager',
       en: 'Wheel-bearing noise',
       ru: 'Шум ступичных подшипников',
+      uk: 'Шум маточинних підшипників',
     },
   },
   {
@@ -2337,6 +2394,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Spiel in Spurstangen / Spurstangenköpfen',
       en: 'Play in tie rods / tie-rod ends',
       ru: 'Люфт рулевых тяг / наконечников',
+      uk: 'Люфт рульових тяг / наконечників',
     },
   },
   {
@@ -2349,6 +2407,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Verschleiß von Silentblöcken / Stabilisatorstreben',
       en: 'Wear of bushings / stabilizer links',
       ru: 'Износ сайлент-блоков / стоек стабилизатора',
+      uk: 'Знос сайлентблоків / стійок стабілізатора',
     },
   },
   {
@@ -2361,6 +2420,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Leckage oder Defekt der Stoßdämpfer',
       en: 'Shock-absorber leak or fault',
       ru: 'Течь или неисправность амортизаторов',
+      uk: 'Теча або несправність амортизаторів',
     },
   },
   {
@@ -2373,6 +2433,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Fremdgeräusche im Fahrwerk',
       en: 'Knocking noises in the suspension',
       ru: 'Посторонние стуки в подвеске',
+      uk: 'Сторонні стуки в підвісці',
     },
   },
   {
@@ -2385,6 +2446,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Defekte / gerissene Motor- und Getriebelager',
       en: 'Broken / cracked engine and transmission mounts',
       ru: 'Разбитые / треснувшие опоры двигателя, подушки КПП',
+      uk: 'Розбиті / тріснуті опори двигуна, подушки КПП',
     },
   },
 
@@ -2399,6 +2461,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Unterschiedliche oder gegenläufige Reifen auf einer Achse',
       en: 'Mismatched or differently-directed tires on one axle',
       ru: 'Разноразмерные или разнонаправленные шины на одной оси',
+      uk: 'Різнорозмірні або різноспрямовані шини на одній осі',
     },
   },
   {
@@ -2411,6 +2474,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Reifen mit abgelaufenem DOT (älter als 6 Jahre)',
       en: 'Tires with expired DOT (older than 6 years)',
       ru: 'Шины с просроченным DOT (старше 6 лет)',
+      uk: 'Шини з простроченим DOT (старші за 6 років)',
     },
   },
   {
@@ -2423,6 +2487,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Beulen (seitliche Wölbungen), Schnitte an den Reifen',
       en: 'Bulges (sidewall blisters), cuts on the tires',
       ru: '«Грыжи» (боковые вздутия), порезы на шинах',
+      uk: '«Грижі» (бокові здуття), порізи на шинах',
     },
   },
   {
@@ -2435,6 +2500,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Ungleichmäßiger Reifenverschleiß (Anzeichen für Spur / Sturz)',
       en: 'Uneven tire wear (sign of toe / camber issue)',
       ru: 'Неравномерный износ шин (признак схождения / развала)',
+      uk: 'Нерівномірний знос шин (ознака порушення сходження / розвалу)',
     },
   },
   {
@@ -2447,6 +2513,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Reserverad / Notrad / Reparaturset / Kompressor fehlt',
       en: 'Spare wheel / space-saver / repair kit / compressor missing',
       ru: 'Отсутствует запасное колесо / докатка / ремкомплект / компрессор',
+      uk: 'Відсутнє запасне колесо / докатка / ремкомплект / компресор',
     },
   },
   {
@@ -2459,6 +2526,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Felgenschloss / Sicherungsschraube fehlt oder beschädigt',
       en: 'Locking wheel bolt missing or damaged',
       ru: 'Отсутствует или повреждён секретный болт («секретка»)',
+      uk: 'Відсутній або пошкоджений секретний болт («секретка»)',
     },
   },
   {
@@ -2471,6 +2539,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Festsitzender / defekter Bremssattel, Beläge klemmen',
       en: 'Seized / faulty brake caliper, pads sticking',
       ru: '«Закисший» / сломанный суппорт, клинит колодки',
+      uk: 'Прикипілий / зламаний супорт, клинить колодки',
     },
   },
   {
@@ -2483,6 +2552,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Überhitzte / verformte Bremsscheiben (Blaufärbung, Schlag)',
       en: 'Overheated / warped brake discs (bluing, runout)',
       ru: 'Перегретые / деформированные тормозные диски (посинение, биение)',
+      uk: 'Перегріті / деформовані гальмівні диски (посиніння, биття)',
     },
   },
   {
@@ -2495,6 +2565,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Beschädigter Bremsschlauch, schwitzender Schlauch',
       en: 'Damaged brake hose, weeping hose',
       ru: 'Повреждение тормозного шланга, «потеющий» шланг',
+      uk: 'Пошкоджений гальмівний шланг, шланг «пітніє»',
     },
   },
   {
@@ -2507,6 +2578,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Rost / Riefen an Achsmanschetten, Bremskolben',
       en: 'Rust / scoring on CV boots, brake pistons',
       ru: 'Ржавчина / задиры на пыльниках ШРУС, тормозных поршнях',
+      uk: 'Іржа / задири на пильниках ШРКШ, гальмівних поршнях',
     },
   },
 
@@ -2521,6 +2593,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Fehlendes Serviceheft / fehlende Servicestempel',
       en: 'Missing service booklet / service stamps',
       ru: 'Отсутствие сервисной книжки / штампов ТО',
+      uk: 'Відсутність сервісної книжки / штампів ТО',
     },
   },
   {
@@ -2533,6 +2606,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Fehlender Zweitschlüssel / fehlende Keyless-Karte',
       en: 'Missing second key / Keyless card',
       ru: 'Отсутствие второго ключа / карточки Keyless',
+      uk: 'Відсутність другого ключа / картки Keyless',
     },
   },
   {
@@ -2545,6 +2619,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Fehlendes Warndreieck, Verbandskasten, Feuerlöscher, Warnweste',
       en: 'Missing warning triangle, first-aid kit, fire extinguisher, hi-vis vest',
       ru: 'Отсутствие знака аварийной остановки, аптечки, огнетушителя, жилета',
+      uk: 'Відсутність знака аварійної зупинки, аптечки, вогнегасника, жилета',
     },
   },
   {
@@ -2557,6 +2632,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Fehlender Wagenheber, Radmutternschlüssel, Abschleppöse',
       en: 'Missing jack, wheel wrench, tow hook',
       ru: 'Отсутствие домкрата, баллонного ключа, буксировочной петли',
+      uk: 'Відсутність домкрата, балонного ключа, буксирувальної петлі',
     },
   },
   {
@@ -2569,6 +2645,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Fehlende Betriebsanleitung / FIN-Aufkleber an der Säule',
       en: 'Missing owner manual / VIN sticker on the pillar',
       ru: 'Отсутствие инструкции / VIN-наклейки на стойке',
+      uk: 'Відсутність інструкції / VIN-наклейки на стійці',
     },
   },
   {
@@ -2581,6 +2658,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Unleserliche / beschädigte FIN an Karosserie oder Typenschild',
       en: 'Illegible / damaged VIN on body or plate',
       ru: 'Нечитаемый / повреждённый номер VIN на кузове или табличке',
+      uk: 'Нечитабельний / пошкоджений номер VIN на кузові або табличці',
     },
   },
   {
@@ -2593,6 +2671,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'FIN in den Papieren stimmt nicht mit der Karosserie überein',
       en: 'VIN in documents does not match the body',
       ru: 'Несоответствие VIN в ПТС и на кузове',
+      uk: 'Невідповідність VIN у документах і на кузові',
     },
   },
   {
@@ -2605,6 +2684,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Nicht eingetragene / nicht zertifizierte Umbauten (Tuning, Lift, Chip)',
       en: 'Non-certified / unregistered modifications (tuning, lift, chip)',
       ru: 'Нестандартные / несертифицированные доработки (тюнинг, лифт, чип)',
+      uk: 'Нестандартні / несертифіковані доробки (тюнінг, ліфт, чип)',
     },
   },
 
@@ -2619,6 +2699,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Check-Engine / ABS / ESP / Airbag / EPC leuchtet',
       en: 'Check Engine / ABS / ESP / Airbag / EPC light on',
       ru: 'Горит Check Engine / ABS / ESP / Airbag / EPC',
+      uk: 'Горить Check Engine / ABS / ESP / Airbag / EPC',
     },
   },
   {
@@ -2631,6 +2712,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Klimaanlage ohne Funktion, kein Kältemittel',
       en: 'Air conditioning not working, no refrigerant',
       ru: 'Не работает кондиционер, нет хладагента',
+      uk: 'Не працює кондиціонер, немає холодоагенту',
     },
   },
   {
@@ -2643,6 +2725,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Schiebedach öffnet / schließt nicht',
       en: 'Sunroof does not open / close',
       ru: 'Не открывается / не закрывается люк',
+      uk: 'Не відкривається / не закривається люк',
     },
   },
   {
@@ -2655,6 +2738,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Elektrischer Fensterheber ohne Funktion',
       en: 'Power window not working',
       ru: 'Не работает электроподъёмник стекла',
+      uk: 'Не працює електросклопідйомник',
     },
   },
   {
@@ -2667,6 +2751,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Zentralverriegelung reagiert nicht / mit Fehlfunktion',
       en: 'Central locking not responding / malfunctioning',
       ru: 'Не срабатывает / глючит центральный замок',
+      uk: 'Не спрацьовує / збоїть центральний замок',
     },
   },
   {
@@ -2679,6 +2764,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Defekter Regen- / Lichtsensor',
       en: 'Faulty rain / light sensor',
       ru: 'Неисправный датчик дождя / света',
+      uk: 'Несправний датчик дощу / світла',
     },
   },
   {
@@ -2691,6 +2777,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Parkassistent, adaptiver Tempomat, Lane Assist ohne Funktion',
       en: 'Park assist, adaptive cruise, Lane Assist not working',
       ru: 'Не работает система помощи парковки, адаптивный круиз, Lane Assist',
+      uk: 'Не працює система допомоги при паркуванні, адаптивний круїз, Lane Assist',
     },
   },
   {
@@ -2703,6 +2790,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Fehler im eCall- / Telematiksystem',
       en: 'eCall / telematics system errors',
       ru: 'Ошибки системы eCall / телематики',
+      uk: 'Помилки системи eCall / телематики',
     },
   },
   {
@@ -2715,6 +2803,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Keine Verbindung zum Schlüssel (toter Chip)',
       en: 'No connection to the key (dead chip)',
       ru: 'Нет связи с ключом (мёртвый чип)',
+      uk: 'Немає зв’язку з ключем (неробочий чип)',
     },
   },
 
@@ -2729,6 +2818,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Kraftstoff- / Abgasgeruch im Innenraum',
       en: 'Fuel / exhaust smell in the cabin',
       ru: 'Запах топлива / выхлопа в салоне',
+      uk: 'Запах палива / вихлопу в салоні',
     },
   },
   {
@@ -2741,6 +2831,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Feuchtigkeit, Wasser, Schimmel unter Matten oder im Kofferraum',
       en: 'Damp, water, mold under mats or in the boot',
       ru: 'Сырость, вода, плесень под ковриками или в багажнике',
+      uk: 'Вологість, вода, пліснява під килимками або в багажнику',
     },
   },
   {
@@ -2753,6 +2844,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Öl- / ATF-Flecken unter dem Fahrzeug nach dem Parken',
       en: 'Oil / ATF stains under the vehicle after parking',
       ru: 'Пятна масла / ATF под автомобилем после стоянки',
+      uk: 'Плями оливи / ATF під автомобілем після стоянки',
     },
   },
   {
@@ -2765,6 +2857,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Hupe ohne Funktion',
       en: 'Horn not working',
       ru: 'Не работает звуковой сигнал',
+      uk: 'Не працює звуковий сигнал',
     },
   },
   {
@@ -2777,6 +2870,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Beschädigter Schalthebel, Wählhebel AT / CVT / DSG',
       en: 'Damaged gear lever, AT / CVT / DSG selector',
       ru: 'Повреждённый рычаг КПП, селектор AT / CVT / DSG',
+      uk: 'Пошкоджений важіль КПП, селектор AT / CVT / DSG',
     },
   },
   {
@@ -2789,6 +2883,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Beschädigte AdBlue-Klappe / leerer AdBlue-Tank (Diesel)',
       en: 'Damaged AdBlue flap / empty AdBlue tank (diesel)',
       ru: 'Повреждение лючка AdBlue / пустой бак AdBlue (дизель)',
+      uk: 'Пошкодження лючка AdBlue / порожній бак AdBlue (дизель)',
     },
   },
   {
@@ -2801,6 +2896,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Verrotteter / beschädigter Kofferraummatte',
       en: 'Rotted / damaged boot mat',
       ru: 'Сгнивший / повреждённый коврик в багажнике',
+      uk: 'Згнилий / пошкоджений килимок багажника',
     },
   },
   {
@@ -2813,6 +2909,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Kältemittelaustritt, Geruch aus der Klimaanlage',
       en: 'Refrigerant leak, smell from the AC system',
       ru: 'Утечка фреона, запах из климатической системы',
+      uk: 'Витік холодоагенту, запах із системи клімат-контролю',
     },
   },
   {
@@ -2825,6 +2922,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Nicht zugelassene Werbung / Aufkleber an Karosserie und Scheiben',
       en: 'Non-permitted advertising / stickers on body and glass',
       ru: 'Нерегламентная реклама / наклейки на кузове и стёклах',
+      uk: 'Нерегламентована реклама / наклейки на кузові та склі',
     },
   },
   {
@@ -2837,6 +2935,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Defekte / fehlende Kennzeichenhalterung, Rahmen',
       en: 'Broken / missing license-plate mount, frame',
       ru: 'Сломанный / отсутствующий крепёж номерного знака, рамка',
+      uk: 'Зламане / відсутнє кріплення номерного знака, рамка',
     },
   },
   {
@@ -2849,6 +2948,7 @@ const CHECKLIST: ChecklistItemDef[] = [
       de: 'Abweichung von der Werksausstattung (Felgen, Scheinwerfer, Grill)',
       en: 'Deviation from factory equipment (rims, headlights, grille)',
       ru: 'Несоответствие элементов заводской комплектации (диски, фары, решётка)',
+      uk: 'Невідповідність елементів заводської комплектації (диски, фари, решітка)',
     },
   },
 ];
