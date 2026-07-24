@@ -16,6 +16,10 @@
  *  - §4.3  — severity tiers T1 / T2 / T3
  *
  * German is the primary market: DE labels use correct automotive terminology.
+ *
+ * Additive extensions (catalog version stays '1'):
+ *  - `angles[].hint`   — capture instruction explaining the walk-around order.
+ *  - `thicknessPanels` — the 13 guided paint-thickness (Lackdicke) stations.
  */
 
 export interface LocalizedLabel {
@@ -32,6 +36,12 @@ export interface AngleDef {
   order: number;
   label: LocalizedLabel;
   required: boolean;
+  /**
+   * Short capture instruction rendered under the angle label. Explains why the
+   * required walk-around zigzags: the near front wheel is turned outward for
+   * the diagonal shots and straightened again for the side shots.
+   */
+  hint?: LocalizedLabel;
 }
 
 export interface PartDef {
@@ -42,6 +52,28 @@ export interface PartDef {
 
 export interface DamageTypeDef {
   id: string;
+  label: LocalizedLabel;
+}
+
+/**
+ * A guided paint-thickness (Lackdicke) measurement station.
+ *
+ * `THICKNESS_PANELS` lists the stations in the inspector's walk order; each one
+ * maps to a real `parts` id, so a suspicious reading can become a damage
+ * without re-picking the panel.
+ *
+ * NOTE on panelId namespaces: the catalog ids below are the only canonical
+ * ones. The mobile app also lets the inspector add ad-hoc measurements, stored
+ * with an `extra_`-prefixed panelId (e.g. `extra_1`). The `extra_` prefix is
+ * RESERVED for those user-added rows — never mint a catalog panel id starting
+ * with `extra_` (same convention as the reserved `C` prefix for
+ * checklist-derived damage codes, see the KstCodeDef note below).
+ */
+export interface ThicknessPanelDef {
+  id: string;
+  order: number;
+  /** Matching `parts` entry — every panel resolves to one. */
+  partId: string;
   label: LocalizedLabel;
 }
 
@@ -95,6 +127,7 @@ export interface CatalogV1 {
   damageTypes: DamageTypeDef[];
   kstCodes: KstCodeDef[];
   checklist: ChecklistItemDef[];
+  thicknessPanels: ThicknessPanelDef[];
 }
 
 // ---------------------------------------------------------------------------
@@ -102,66 +135,93 @@ export interface CatalogV1 {
 // ---------------------------------------------------------------------------
 
 const ANGLES: AngleDef[] = [
-  {
-    id: 'front',
-    group: 'exterior',
-    order: 1,
-    required: true,
-    label: { de: 'Vorderansicht', en: 'Front view', ru: 'Вид спереди' },
-  },
-  {
-    id: 'diag_front_right',
-    group: 'exterior',
-    order: 2,
-    required: true,
-    label: {
-      de: 'Diagonal vorne rechts',
-      en: 'Front right (3/4)',
-      ru: 'Диагональ спереди-справа',
-    },
-  },
+  // Walk-around order dictated by the inspector: diagonal (near front wheel
+  // turned outward) → side (wheels straight) → front, then the same on the
+  // right half and finally the rear. Ids/labels are unchanged; only `order` is.
   {
     id: 'diag_front_left',
     group: 'exterior',
-    order: 3,
+    order: 1,
     required: true,
     label: {
       de: 'Diagonal vorne links',
       en: 'Front left (3/4)',
       ru: 'Диагональ спереди-слева',
     },
+    hint: {
+      de: 'Schlagen Sie das linke Vorderrad nach außen ein.',
+      en: 'Turn the near front wheel outward.',
+      ru: 'Поверните переднее левое колесо наружу.',
+      uk: 'Поверніть переднє ліве колесо назовні.',
+    },
   },
   {
     id: 'left',
     group: 'exterior',
-    order: 4,
+    order: 2,
     required: true,
     label: { de: 'Linke Seite', en: 'Left side', ru: 'Левая сторона' },
+    hint: {
+      de: 'Stellen Sie die Räder gerade.',
+      en: 'Keep the wheels straight.',
+      ru: 'Поставьте колёса прямо.',
+      uk: 'Поставте колеса прямо.',
+    },
   },
   {
-    id: 'rear',
+    id: 'front',
     group: 'exterior',
-    order: 5,
+    order: 3,
     required: true,
-    label: { de: 'Rückansicht', en: 'Rear view', ru: 'Задняя часть' },
+    label: { de: 'Vorderansicht', en: 'Front view', ru: 'Вид спереди' },
+  },
+  {
+    id: 'diag_front_right',
+    group: 'exterior',
+    order: 4,
+    required: true,
+    label: {
+      de: 'Diagonal vorne rechts',
+      en: 'Front right (3/4)',
+      ru: 'Диагональ спереди-справа',
+    },
+    hint: {
+      de: 'Schlagen Sie das rechte Vorderrad nach außen ein.',
+      en: 'Turn the near front wheel outward.',
+      ru: 'Поверните переднее правое колесо наружу.',
+      uk: 'Поверніть переднє праве колесо назовні.',
+    },
   },
   {
     id: 'right',
     group: 'exterior',
-    order: 6,
+    order: 5,
     required: true,
     label: { de: 'Rechte Seite', en: 'Right side', ru: 'Правая сторона' },
+    hint: {
+      de: 'Stellen Sie die Räder gerade.',
+      en: 'Keep the wheels straight.',
+      ru: 'Поставьте колёса прямо.',
+      uk: 'Поставте колеса прямо.',
+    },
   },
   {
     id: 'diag_rear_right',
     group: 'exterior',
-    order: 7,
+    order: 6,
     required: true,
     label: {
       de: 'Diagonal hinten rechts',
       en: 'Rear right (3/4)',
       ru: 'Диагональ сзади-справа',
     },
+  },
+  {
+    id: 'rear',
+    group: 'exterior',
+    order: 7,
+    required: true,
+    label: { de: 'Rückansicht', en: 'Rear view', ru: 'Задняя часть' },
   },
   {
     id: 'diag_rear_left',
@@ -214,9 +274,83 @@ const ANGLES: AngleDef[] = [
     label: { de: 'Sitze', en: 'Seats', ru: 'Сиденья' },
   },
   {
+    id: 'interior_steering_wheel',
+    group: 'interior',
+    order: 14,
+    required: false,
+    label: { de: 'Lenkrad', en: 'Steering wheel', ru: 'Руль', uk: 'Кермо' },
+  },
+  {
+    id: 'interior_pedals',
+    group: 'interior',
+    order: 15,
+    required: false,
+    label: { de: 'Pedalerie', en: 'Pedals', ru: 'Педали', uk: 'Педалі' },
+  },
+  {
+    id: 'interior_overview',
+    group: 'interior',
+    order: 16,
+    required: false,
+    label: {
+      de: 'Innenraum Gesamtübersicht',
+      en: 'Cabin overview',
+      ru: 'Салон — общий вид',
+      uk: 'Салон — загальний вигляд',
+    },
+  },
+  {
+    id: 'interior_door_trim_fl',
+    group: 'interior',
+    order: 17,
+    required: false,
+    label: {
+      de: 'Türverkleidung vorne links',
+      en: 'Front left door trim',
+      ru: 'Обшивка двери передняя левая',
+      uk: 'Обшивка дверей передня ліва',
+    },
+  },
+  {
+    id: 'interior_door_trim_fr',
+    group: 'interior',
+    order: 18,
+    required: false,
+    label: {
+      de: 'Türverkleidung vorne rechts',
+      en: 'Front right door trim',
+      ru: 'Обшивка двери передняя правая',
+      uk: 'Обшивка дверей передня права',
+    },
+  },
+  {
+    id: 'interior_door_trim_rl',
+    group: 'interior',
+    order: 19,
+    required: false,
+    label: {
+      de: 'Türverkleidung hinten links',
+      en: 'Rear left door trim',
+      ru: 'Обшивка двери задняя левая',
+      uk: 'Обшивка дверей задня ліва',
+    },
+  },
+  {
+    id: 'interior_door_trim_rr',
+    group: 'interior',
+    order: 20,
+    required: false,
+    label: {
+      de: 'Türverkleidung hinten rechts',
+      en: 'Rear right door trim',
+      ru: 'Обшивка двери задняя правая',
+      uk: 'Обшивка дверей задня права',
+    },
+  },
+  {
     id: 'wheel_fl',
     group: 'wheel',
-    order: 14,
+    order: 21,
     required: false,
     label: {
       de: 'Rad vorne links',
@@ -227,7 +361,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_fr',
     group: 'wheel',
-    order: 15,
+    order: 22,
     required: false,
     label: {
       de: 'Rad vorne rechts',
@@ -238,7 +372,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_rl',
     group: 'wheel',
-    order: 16,
+    order: 23,
     required: false,
     label: {
       de: 'Rad hinten links',
@@ -249,7 +383,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_rr',
     group: 'wheel',
-    order: 17,
+    order: 24,
     required: false,
     label: {
       de: 'Rad hinten rechts',
@@ -260,14 +394,14 @@ const ANGLES: AngleDef[] = [
   {
     id: 'odometer',
     group: 'misc',
-    order: 18,
+    order: 25,
     required: false,
     label: { de: 'Kilometerstand', en: 'Odometer', ru: 'Одометр' },
   },
   {
     id: 'vin_plate',
     group: 'misc',
-    order: 19,
+    order: 26,
     required: false,
     label: { de: 'FIN-Schild', en: 'VIN plate', ru: 'Табличка VIN' },
   },
@@ -370,6 +504,16 @@ const PARTS: PartDef[] = [
     },
   },
   {
+    id: 'pillar_b_left',
+    zone: 'left',
+    label: {
+      de: 'B-Säule links',
+      en: 'Left B-pillar',
+      ru: 'Центральная стойка (B) слева',
+      uk: 'Центральна стійка (B) зліва',
+    },
+  },
+  {
     id: 'side_panel_rear_left',
     zone: 'left',
     label: {
@@ -455,6 +599,16 @@ const PARTS: PartDef[] = [
       de: 'Schwellerverkleidung rechts',
       en: 'Right sill trim',
       ru: 'Накладка порога справа',
+    },
+  },
+  {
+    id: 'pillar_b_right',
+    zone: 'right',
+    label: {
+      de: 'B-Säule rechts',
+      en: 'Right B-pillar',
+      ru: 'Центральная стойка (B) справа',
+      uk: 'Центральна стійка (B) справа',
     },
   },
   {
@@ -2954,6 +3108,156 @@ const CHECKLIST: ChecklistItemDef[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Paint-thickness (Lackdicke) measurement stations — guided walk order
+// ---------------------------------------------------------------------------
+
+const THICKNESS_PANELS: ThicknessPanelDef[] = [
+  {
+    id: 'roof_rear_left',
+    order: 1,
+    partId: 'roof',
+    label: {
+      de: 'Dach (hintere linke Ecke)',
+      en: 'Roof (rear left corner)',
+      ru: 'Крыша (задний левый угол)',
+      uk: 'Дах (задній лівий кут)',
+    },
+  },
+  {
+    id: 'fender_rear_left',
+    order: 2,
+    partId: 'side_panel_rear_left',
+    label: {
+      de: 'Seitenwand hinten links',
+      en: 'Rear left quarter panel',
+      ru: 'Задняя боковина слева',
+      uk: 'Задня боковина зліва',
+    },
+  },
+  {
+    id: 'door_rear_left',
+    order: 3,
+    partId: 'door_rear_left',
+    label: {
+      de: 'Tür hinten links',
+      en: 'Rear left door',
+      ru: 'Задняя левая дверь',
+      uk: 'Задні ліві двері',
+    },
+  },
+  {
+    id: 'opening_left',
+    order: 4,
+    partId: 'pillar_b_left',
+    label: {
+      de: 'Türöffnung / B-Säule links',
+      en: 'Left door opening / B-pillar',
+      ru: 'Дверной проём / стойка B слева',
+      uk: 'Дверний проєм / стійка B зліва',
+    },
+  },
+  {
+    id: 'door_front_left',
+    order: 5,
+    partId: 'door_front_left',
+    label: {
+      de: 'Tür vorne links',
+      en: 'Front left door',
+      ru: 'Передняя левая дверь',
+      uk: 'Передні ліві двері',
+    },
+  },
+  {
+    id: 'fender_front_left',
+    order: 6,
+    partId: 'fender_front_left',
+    label: {
+      de: 'Kotflügel vorne links',
+      en: 'Front left fender',
+      ru: 'Переднее левое крыло',
+      uk: 'Переднє ліве крило',
+    },
+  },
+  {
+    id: 'hood',
+    order: 7,
+    partId: 'hood',
+    label: {
+      de: 'Motorhaube',
+      en: 'Hood / bonnet',
+      ru: 'Капот',
+      uk: 'Капот',
+    },
+  },
+  {
+    id: 'fender_front_right',
+    order: 8,
+    partId: 'fender_front_right',
+    label: {
+      de: 'Kotflügel vorne rechts',
+      en: 'Front right fender',
+      ru: 'Переднее правое крыло',
+      uk: 'Переднє праве крило',
+    },
+  },
+  {
+    id: 'door_front_right',
+    order: 9,
+    partId: 'door_front_right',
+    label: {
+      de: 'Tür vorne rechts',
+      en: 'Front right door',
+      ru: 'Передняя правая дверь',
+      uk: 'Передні праві двері',
+    },
+  },
+  {
+    id: 'opening_right',
+    order: 10,
+    partId: 'pillar_b_right',
+    label: {
+      de: 'Türöffnung / B-Säule rechts',
+      en: 'Right door opening / B-pillar',
+      ru: 'Дверной проём / стойка B справа',
+      uk: 'Дверний проєм / стійка B справа',
+    },
+  },
+  {
+    id: 'door_rear_right',
+    order: 11,
+    partId: 'door_rear_right',
+    label: {
+      de: 'Tür hinten rechts',
+      en: 'Rear right door',
+      ru: 'Задняя правая дверь',
+      uk: 'Задні праві двері',
+    },
+  },
+  {
+    id: 'fender_rear_right',
+    order: 12,
+    partId: 'side_panel_rear_right',
+    label: {
+      de: 'Seitenwand hinten rechts',
+      en: 'Rear right quarter panel',
+      ru: 'Задняя боковина справа',
+      uk: 'Задня боковина справа',
+    },
+  },
+  {
+    id: 'trunk_lid',
+    order: 13,
+    partId: 'trunk_lid',
+    label: {
+      de: 'Heckklappe',
+      en: 'Trunk lid / tailgate',
+      ru: 'Крышка багажника',
+      uk: 'Кришка багажника',
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
 // Assembled catalog
 // ---------------------------------------------------------------------------
 
@@ -2964,4 +3268,5 @@ export const CATALOG_V1: CatalogV1 = {
   damageTypes: DAMAGE_TYPES,
   kstCodes: KST_CODES,
   checklist: CHECKLIST,
+  thicknessPanels: THICKNESS_PANELS,
 };

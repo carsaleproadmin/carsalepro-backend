@@ -23,10 +23,12 @@ writeFileSync(out, `${JSON.stringify(CATALOG_V1, null, 2)}\n`, 'utf8');
 
 const c = CATALOG_V1;
 const exterior = c.angles.filter((a) => a.group === 'exterior' && a.required);
+const interior = c.angles.filter((a) => a.group === 'interior');
 // eslint-disable-next-line no-console
 console.log(
   `catalog.v1.json written → ${out}\n` +
-    `  version=${c.version}  angles=${c.angles.length} (exterior required=${exterior.length})  ` +
-    `parts=${c.parts.length}  damageTypes=${c.damageTypes.length}  ` +
-    `kstCodes=${c.kstCodes.length}  checklist=${c.checklist.length}`,
+    `  version=${c.version}  angles=${c.angles.length} (exterior required=${exterior.length}, ` +
+    `interior=${interior.length})  parts=${c.parts.length}  damageTypes=${c.damageTypes.length}  ` +
+    `kstCodes=${c.kstCodes.length}  checklist=${c.checklist.length}  ` +
+    `thicknessPanels=${c.thicknessPanels.length}`,
 );
