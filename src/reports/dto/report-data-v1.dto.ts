@@ -30,6 +30,10 @@ import { Type } from 'class-transformer';
  * an older backend. Money values inside this payload are plain EUR numbers —
  * a documented, contained deviation from the integer-cents rule (this JSON is
  * archival inspection data, never ledger input).
+ *
+ * Array caps are sized for the WORST realistic report, never for the average
+ * one: hitting a cap throws 400 `invalid_report_data`, which blocks the mobile
+ * Finish flow entirely. Raise a cap before it can bite.
  */
 
 export class ReportVehicleDto {
@@ -115,6 +119,38 @@ export class ReportDamageDto {
   @IsOptional() @IsString() @MaxLength(1000) note?: string;
 }
 
+/**
+ * One guided paint-thickness (Lackdicke) reading.
+ *
+ * `panelId` is a catalog `thicknessPanels[].id` (13 stations) or an
+ * `extra_`-prefixed id for an ad-hoc measurement the inspector added — the
+ * `extra_` prefix is RESERVED for those (see `catalog.data.ts`). `label` is the
+ * denormalized display name so the website/PDF never needs the catalog.
+ */
+export class ReportThicknessPanelDto {
+  @IsString() @MaxLength(48) panelId!: string;
+
+  /** Measured coating thickness in micrometres (µm); absent = not measured. */
+  @IsOptional() @IsNumber() @Min(0) @Max(5000) um?: number;
+
+  @IsOptional() @IsString() @MaxLength(120) label?: string;
+}
+
+/**
+ * Paint-thickness block. `panels` is required inside `thickness` — emit `[]`
+ * (or omit the whole `thickness` object) when nothing was measured.
+ */
+export class ReportThicknessDto {
+  @IsArray()
+  @ArrayMaxSize(60)
+  @ValidateNested({ each: true })
+  @Type(() => ReportThicknessPanelDto)
+  panels!: ReportThicknessPanelDto[];
+
+  /** Median of the measured panels (µm), computed on the device. */
+  @IsOptional() @IsNumber() @Min(0) @Max(5000) medianUm?: number;
+}
+
 export class ReportSignoffDto {
   @IsOptional() @IsBoolean() accidentFree?: boolean;
   @IsOptional() @IsBoolean() priorRepairs?: boolean;
@@ -157,6 +193,9 @@ export class ReportPhotoMetaDto {
   @IsOptional() @IsISO8601() capturedAt?: string;
   @IsOptional() @IsInt() @Min(1) widthPx?: number;
   @IsOptional() @IsInt() @Min(1) heightPx?: number;
+
+  /** Optional per-photo comment, printed under the photo in the PDF. */
+  @IsOptional() @IsString() @MaxLength(200) caption?: string;
 }
 
 export class ReportMetaDto {
@@ -192,12 +231,21 @@ export class ReportDataV1Dto {
   @Type(() => ReportWheelDto)
   wheels?: ReportWheelDto[];
 
+  /**
+   * Cap 200: the defect catalog alone can contribute up to 98 C-coded damages
+   * and the inspector adds free ones on top (hail cars, multi-panel repaints).
+   */
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(100)
+  @ArrayMaxSize(200)
   @ValidateNested({ each: true })
   @Type(() => ReportDamageDto)
   damages?: ReportDamageDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ReportThicknessDto)
+  thickness?: ReportThicknessDto;
 
   @IsOptional()
   @ValidateNested()
@@ -216,9 +264,15 @@ export class ReportDataV1Dto {
   @Type(() => ReportRecipientDto)
   recipients?: ReportRecipientDto[];
 
+  /**
+   * Cap 300: a thorough report now carries ~8 exterior + unlimited exterior
+   * extras + 12 interior + 13 thickness stations + 2 calibration shots + 4
+   * wheels + odometer/VIN/zero-proof + several photos per damage (~100–120
+   * slots typical). 150 was within reach and a 400 here blocks Finish.
+   */
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(150)
+  @ArrayMaxSize(300)
   @ValidateNested({ each: true })
   @Type(() => ReportPhotoMetaDto)
   photos?: ReportPhotoMetaDto[];

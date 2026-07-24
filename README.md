@@ -29,7 +29,7 @@ The shared NestJS backend for the **CarSalePro** ecosystem. One service, one Pos
 | Notifications | Channel providers (email/SMS/push) with a **dev-outbox** fallback; in-process `@nestjs/schedule` cron |
 | Validation / docs | class-validator + global `ValidationPipe` · Joi env schema · `@nestjs/swagger` |
 | Observability | helmet · pino-style logging interceptor · Sentry (optional, when `SENTRY_DSN` set) |
-| Testing | Jest unit + Supertest e2e (**205 e2e across 20 suites**) |
+| Testing | Jest unit + Supertest e2e (**222 e2e across 20 suites**) |
 | Deploy | Render (auto-deploy from `main`) |
 
 ## Run locally
@@ -51,7 +51,7 @@ $env:PORT=3001; npm run start:dev                      # website dev on :3001 (m
 
 ```bash
 npm test                                               # unit tests
-npm run test:e2e -- --forceExit                        # 205 e2e / 20 suites (needs Postgres+PostGIS on :5433)
+npm run test:e2e -- --forceExit                        # 222 e2e / 20 suites (needs Postgres+PostGIS on :5433)
 node scripts/verify-deployed.mjs https://carsalepro-backend.onrender.com   # deployed smoke
 ```
 

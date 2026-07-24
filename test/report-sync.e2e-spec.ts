@@ -27,6 +27,26 @@ const validReportData = {
   meta: { appVersion: '0.1.0', locale: 'de' },
 };
 
+/** The 13 guided Lackdicke stations as the app would send them. */
+const thicknessBlock = {
+  panels: [
+    { panelId: 'roof_rear_left', um: 118, label: 'Dach (hintere linke Ecke)' },
+    { panelId: 'fender_rear_left', um: 124 },
+    { panelId: 'door_rear_left', um: 121 },
+    { panelId: 'opening_left', um: 133 },
+    { panelId: 'door_front_left', um: 350 },
+    { panelId: 'fender_front_left', um: 119 },
+    { panelId: 'hood', um: 122 },
+    { panelId: 'fender_front_right', um: 120 },
+    { panelId: 'door_front_right', um: 117 },
+    { panelId: 'opening_right', um: 131 },
+    { panelId: 'door_rear_right', um: 123 },
+    { panelId: 'fender_rear_right' }, // not measured
+    { panelId: 'extra_1', um: 640, label: 'Tankdeckel' },
+  ],
+  medianUm: 122,
+};
+
 describe('Report sync v2 (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -172,6 +192,139 @@ describe('Report sync v2 (e2e)', () => {
     });
   });
 
+  describe('paint thickness (Lackdicke) block', () => {
+    it('accepts and stores a v1 payload carrying thickness readings', async () => {
+      if (!r2Configured) return;
+      const did = uniqueDeviceId();
+      const res = await post(did, {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: {
+          ...validReportData,
+          thickness: thicknessBlock,
+          signoff: { ...validReportData.signoff, paintMeasured: true },
+        },
+      }).expect(201);
+
+      const row = await prisma.report.findUnique({ where: { id: res.body.reportId } });
+      const stored = row?.reportData as { thickness?: typeof thicknessBlock };
+      expect(stored.thickness?.panels).toHaveLength(13);
+      expect(stored.thickness?.medianUm).toBe(122);
+      expect(stored.thickness?.panels[4]).toEqual({ panelId: 'door_front_left', um: 350 });
+      // Ad-hoc `extra_`-prefixed panel ids survive the round trip.
+      expect(stored.thickness?.panels[12].panelId).toBe('extra_1');
+    });
+
+    it('rejects a negative µm reading with 400 and no quota burn', async () => {
+      const did = uniqueDeviceId();
+      const res = await post(did, {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: {
+          ...validReportData,
+          thickness: { panels: [{ panelId: 'hood', um: -1 }] },
+        },
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error ?? res.body.message?.error).toBe('invalid_report_data');
+
+      const quota = await prisma.deviceQuota.findUnique({ where: { deviceId: did } });
+      expect(quota?.freeReportsUsed ?? 0).toBe(0);
+    });
+
+    it('rejects an out-of-range µm reading (> 5000) with 400', async () => {
+      const res = await post(uniqueDeviceId(), {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: {
+          ...validReportData,
+          thickness: { panels: [{ panelId: 'hood', um: 5001 }] },
+        },
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('keeps unknown extra keys inside thickness (forward compatibility)', async () => {
+      if (!r2Configured) return;
+      const res = await post(uniqueDeviceId(), {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: {
+          ...validReportData,
+          thickness: {
+            panels: [{ panelId: 'hood', um: 120, sensorSerial: 'EL-2201' }],
+            medianUm: 120,
+            deviceName: 'ElcoMeter 456',
+            calibratedAt: '2026-07-24T08:00:00.000Z',
+          },
+        },
+      }).expect(201);
+
+      const row = await prisma.report.findUnique({ where: { id: res.body.reportId } });
+      const stored = row?.reportData as {
+        thickness?: { deviceName?: string; panels: { sensorSerial?: string }[] };
+      };
+      expect(stored.thickness?.deviceName).toBe('ElcoMeter 456');
+      expect(stored.thickness?.panels[0].sensorSerial).toBe('EL-2201');
+    });
+  });
+
+  describe('photo metadata', () => {
+    it('accepts 200 photo metas (the cap is 300)', async () => {
+      if (!r2Configured) return;
+      const photos = Array.from({ length: 200 }, (_, i) => ({
+        kind: i < 8 ? 'exterior-extra' : `damage-d${i}`,
+        position: i,
+        widthPx: 1920,
+        heightPx: 1440,
+        caption: i === 0 ? 'Kratzer über die ganze Tür' : undefined,
+      }));
+      const res = await post(uniqueDeviceId(), {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: { ...validReportData, photos },
+      }).expect(201);
+
+      const row = await prisma.report.findUnique({ where: { id: res.body.reportId } });
+      const stored = row?.reportData as { photos: unknown[] };
+      expect(stored.photos).toHaveLength(200);
+    });
+
+    it('rejects more photo metas than the cap allows', async () => {
+      const photos = Array.from({ length: 301 }, (_, i) => ({ kind: 'extra', position: i }));
+      await post(uniqueDeviceId(), {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: { ...validReportData, photos },
+      }).expect(400);
+    });
+
+    it('rejects a photo caption longer than 200 characters', async () => {
+      const res = await post(uniqueDeviceId(), {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: {
+          ...validReportData,
+          photos: [{ kind: 'exterior-front', position: 0, caption: 'x'.repeat(201) }],
+        },
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error ?? res.body.message?.error).toBe('invalid_report_data');
+    });
+
+    it('accepts a caption at the 200-character limit', async () => {
+      if (!r2Configured) return;
+      await post(uniqueDeviceId(), {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: {
+          ...validReportData,
+          photos: [{ kind: 'exterior-front', position: 0, caption: 'x'.repeat(200) }],
+        },
+      }).expect(201);
+    });
+  });
+
   describe('PUT /reports/:id (re-sync)', () => {
     it('updates metadata + reportData without touching quota', async () => {
       if (!r2Configured) return;
@@ -262,6 +415,25 @@ describe('Report sync v2 (e2e)', () => {
         .expect(400);
       const row = await prisma.report.findUnique({ where: { id: rep.id } });
       expect(row?.make).toBe('BMW');
+    });
+
+    it('re-syncs a thickness block via PUT', async () => {
+      if (!r2Configured) return;
+      const did = uniqueDeviceId();
+      const created = await post(did, { code: UUID_CODE }).expect(201);
+
+      await request(app.getHttpServer())
+        .put(`/reports/${created.body.reportId}`)
+        .set('x-device-id', did)
+        .send({
+          reportSchemaVersion: 1,
+          reportData: { ...validReportData, thickness: thicknessBlock },
+        })
+        .expect(200);
+
+      const row = await prisma.report.findUnique({ where: { id: created.body.reportId } });
+      const stored = row?.reportData as { thickness?: { medianUm?: number } };
+      expect(stored.thickness?.medianUm).toBe(122);
     });
   });
 });
