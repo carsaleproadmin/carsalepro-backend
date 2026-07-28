@@ -147,6 +147,7 @@ const ANGLES: AngleDef[] = [
       de: 'Diagonal vorne links',
       en: 'Front left (3/4)',
       ru: 'Диагональ спереди-слева',
+      uk: 'Діагональ спереду-зліва',
     },
     hint: {
       de: 'Schlagen Sie das linke Vorderrad nach außen ein.',
@@ -160,7 +161,7 @@ const ANGLES: AngleDef[] = [
     group: 'exterior',
     order: 2,
     required: true,
-    label: { de: 'Linke Seite', en: 'Left side', ru: 'Левая сторона' },
+    label: { de: 'Linke Seite', en: 'Left side', ru: 'Левая сторона', uk: 'Ліва сторона' },
     hint: {
       de: 'Stellen Sie die Räder gerade.',
       en: 'Keep the wheels straight.',
@@ -173,7 +174,7 @@ const ANGLES: AngleDef[] = [
     group: 'exterior',
     order: 3,
     required: true,
-    label: { de: 'Vorderansicht', en: 'Front view', ru: 'Вид спереди' },
+    label: { de: 'Vorderansicht', en: 'Front view', ru: 'Вид спереди', uk: 'Вид спереду' },
   },
   {
     id: 'diag_front_right',
@@ -184,6 +185,7 @@ const ANGLES: AngleDef[] = [
       de: 'Diagonal vorne rechts',
       en: 'Front right (3/4)',
       ru: 'Диагональ спереди-справа',
+      uk: 'Діагональ спереду-справа',
     },
     hint: {
       de: 'Schlagen Sie das rechte Vorderrad nach außen ein.',
@@ -197,7 +199,7 @@ const ANGLES: AngleDef[] = [
     group: 'exterior',
     order: 5,
     required: true,
-    label: { de: 'Rechte Seite', en: 'Right side', ru: 'Правая сторона' },
+    label: { de: 'Rechte Seite', en: 'Right side', ru: 'Правая сторона', uk: 'Права сторона' },
     hint: {
       de: 'Stellen Sie die Räder gerade.',
       en: 'Keep the wheels straight.',
@@ -214,6 +216,7 @@ const ANGLES: AngleDef[] = [
       de: 'Diagonal hinten rechts',
       en: 'Rear right (3/4)',
       ru: 'Диагональ сзади-справа',
+      uk: 'Діагональ ззаду-справа',
     },
   },
   {
@@ -221,7 +224,7 @@ const ANGLES: AngleDef[] = [
     group: 'exterior',
     order: 7,
     required: true,
-    label: { de: 'Rückansicht', en: 'Rear view', ru: 'Задняя часть' },
+    label: { de: 'Rückansicht', en: 'Rear view', ru: 'Задняя часть', uk: 'Задня частина' },
   },
   {
     id: 'diag_rear_left',
@@ -232,6 +235,7 @@ const ANGLES: AngleDef[] = [
       de: 'Diagonal hinten links',
       en: 'Rear left (3/4)',
       ru: 'Диагональ сзади-слева',
+      uk: 'Діагональ ззаду-зліва',
     },
   },
   {
@@ -243,6 +247,7 @@ const ANGLES: AngleDef[] = [
       de: 'Innenraum vorne',
       en: 'Interior front',
       ru: 'Салон спереди',
+      uk: 'Салон спереду',
     },
   },
   {
@@ -250,28 +255,33 @@ const ANGLES: AngleDef[] = [
     group: 'interior',
     order: 10,
     required: false,
-    label: { de: 'Innenraum hinten', en: 'Interior rear', ru: 'Салон сзади' },
+    label: { de: 'Innenraum hinten', en: 'Interior rear', ru: 'Салон сзади', uk: 'Салон ззаду' },
   },
   {
     id: 'interior_dashboard',
     group: 'interior',
     order: 11,
     required: false,
-    label: { de: 'Armaturenbrett', en: 'Dashboard', ru: 'Приборная панель' },
+    label: {
+      de: 'Armaturenbrett',
+      en: 'Dashboard',
+      ru: 'Приборная панель',
+      uk: 'Приладова панель',
+    },
   },
   {
     id: 'interior_boot',
     group: 'interior',
     order: 12,
     required: false,
-    label: { de: 'Kofferraum', en: 'Boot / trunk', ru: 'Багажник' },
+    label: { de: 'Kofferraum', en: 'Boot / trunk', ru: 'Багажник', uk: 'Багажник' },
   },
   {
     id: 'interior_seats',
     group: 'interior',
     order: 13,
     required: false,
-    label: { de: 'Sitze', en: 'Seats', ru: 'Сиденья' },
+    label: { de: 'Sitze', en: 'Seats', ru: 'Сиденья', uk: 'Сидіння' },
   },
   {
     id: 'interior_steering_wheel',
@@ -356,6 +366,7 @@ const ANGLES: AngleDef[] = [
       de: 'Rad vorne links',
       en: 'Front left wheel',
       ru: 'Колесо переднее левое',
+      uk: 'Колесо переднє ліве',
     },
   },
   {
@@ -367,6 +378,7 @@ const ANGLES: AngleDef[] = [
       de: 'Rad vorne rechts',
       en: 'Front right wheel',
       ru: 'Колесо переднее правое',
+      uk: 'Колесо переднє праве',
     },
   },
   {
@@ -378,6 +390,7 @@ const ANGLES: AngleDef[] = [
       de: 'Rad hinten links',
       en: 'Rear left wheel',
       ru: 'Колесо заднее левое',
+      uk: 'Колесо заднє ліве',
     },
   },
   {
@@ -389,6 +402,7 @@ const ANGLES: AngleDef[] = [
       de: 'Rad hinten rechts',
       en: 'Rear right wheel',
       ru: 'Колесо заднее правое',
+      uk: 'Колесо заднє праве',
     },
   },
   {
@@ -396,14 +410,14 @@ const ANGLES: AngleDef[] = [
     group: 'misc',
     order: 25,
     required: false,
-    label: { de: 'Kilometerstand', en: 'Odometer', ru: 'Одометр' },
+    label: { de: 'Kilometerstand', en: 'Odometer', ru: 'Одометр', uk: 'Одометр' },
   },
   {
     id: 'vin_plate',
     group: 'misc',
     order: 26,
     required: false,
-    label: { de: 'FIN-Schild', en: 'VIN plate', ru: 'Табличка VIN' },
+    label: { de: 'FIN-Schild', en: 'VIN plate', ru: 'Табличка VIN', uk: 'Табличка VIN' },
   },
 ];
 
@@ -416,22 +430,32 @@ const PARTS: PartDef[] = [
   {
     id: 'bumper_front',
     zone: 'front',
-    label: { de: 'Stoßfänger vorne', en: 'Front bumper', ru: 'Передний бампер' },
+    label: {
+      de: 'Stoßfänger vorne',
+      en: 'Front bumper',
+      ru: 'Передний бампер',
+      uk: 'Передній бампер',
+    },
   },
   {
     id: 'hood',
     zone: 'front',
-    label: { de: 'Motorhaube', en: 'Hood / bonnet', ru: 'Капот' },
+    label: { de: 'Motorhaube', en: 'Hood / bonnet', ru: 'Капот', uk: 'Капот' },
   },
   {
     id: 'grille',
     zone: 'front',
-    label: { de: 'Kühlergrill', en: 'Radiator grille', ru: 'Решётка радиатора' },
+    label: {
+      de: 'Kühlergrill',
+      en: 'Radiator grille',
+      ru: 'Решётка радиатора',
+      uk: 'Решітка радіатора',
+    },
   },
   {
     id: 'headlight_left',
     zone: 'front',
-    label: { de: 'Scheinwerfer links', en: 'Left headlight', ru: 'Фара левая' },
+    label: { de: 'Scheinwerfer links', en: 'Left headlight', ru: 'Фара левая', uk: 'Фара ліва' },
   },
   {
     id: 'headlight_right',
@@ -440,6 +464,7 @@ const PARTS: PartDef[] = [
       de: 'Scheinwerfer rechts',
       en: 'Right headlight',
       ru: 'Фара правая',
+      uk: 'Фара права',
     },
   },
   {
@@ -449,6 +474,7 @@ const PARTS: PartDef[] = [
       de: 'Nebelscheinwerfer links',
       en: 'Left fog light',
       ru: 'Противотуманка левая',
+      uk: 'Протитуманна фара ліва',
     },
   },
   {
@@ -458,12 +484,13 @@ const PARTS: PartDef[] = [
       de: 'Nebelscheinwerfer rechts',
       en: 'Right fog light',
       ru: 'Противотуманка правая',
+      uk: 'Протитуманна фара права',
     },
   },
   {
     id: 'windshield',
     zone: 'front',
-    label: { de: 'Frontscheibe', en: 'Windshield', ru: 'Лобовое стекло' },
+    label: { de: 'Frontscheibe', en: 'Windshield', ru: 'Лобовое стекло', uk: 'Лобове скло' },
   },
 
   // left
@@ -474,6 +501,7 @@ const PARTS: PartDef[] = [
       de: 'Kotflügel vorne links',
       en: 'Front left fender',
       ru: 'Переднее левое крыло',
+      uk: 'Переднє ліве крило',
     },
   },
   {
@@ -483,6 +511,7 @@ const PARTS: PartDef[] = [
       de: 'Tür vorne links',
       en: 'Front left door',
       ru: 'Передняя левая дверь',
+      uk: 'Передні ліві двері',
     },
   },
   {
@@ -492,6 +521,7 @@ const PARTS: PartDef[] = [
       de: 'Tür hinten links',
       en: 'Rear left door',
       ru: 'Задняя левая дверь',
+      uk: 'Задні ліві двері',
     },
   },
   {
@@ -501,6 +531,7 @@ const PARTS: PartDef[] = [
       de: 'Schwellerverkleidung links',
       en: 'Left sill trim',
       ru: 'Накладка порога слева',
+      uk: 'Накладка порога зліва',
     },
   },
   {
@@ -520,12 +551,18 @@ const PARTS: PartDef[] = [
       de: 'Seitenwand hinten links',
       en: 'Rear left side panel',
       ru: 'Задняя боковина слева',
+      uk: 'Задня боковина зліва',
     },
   },
   {
     id: 'mirror_left',
     zone: 'left',
-    label: { de: 'Außenspiegel links', en: 'Left mirror', ru: 'Зеркало левое' },
+    label: {
+      de: 'Außenspiegel links',
+      en: 'Left mirror',
+      ru: 'Зеркало левое',
+      uk: 'Дзеркало ліве',
+    },
   },
   {
     id: 'wheel_arch_front_left',
@@ -534,6 +571,7 @@ const PARTS: PartDef[] = [
       de: 'Radlauf vorne links',
       en: 'Front left wheel arch',
       ru: 'Колёсная арка передняя левая',
+      uk: 'Колісна арка передня ліва',
     },
   },
   {
@@ -543,6 +581,7 @@ const PARTS: PartDef[] = [
       de: 'Radlauf hinten links',
       en: 'Rear left wheel arch',
       ru: 'Колёсная арка задняя левая',
+      uk: 'Колісна арка задня ліва',
     },
   },
   {
@@ -552,6 +591,7 @@ const PARTS: PartDef[] = [
       de: 'Seitenscheibe vorne links',
       en: 'Front left window',
       ru: 'Боковое стекло переднее левое',
+      uk: 'Бокове скло переднє ліве',
     },
   },
   {
@@ -561,6 +601,7 @@ const PARTS: PartDef[] = [
       de: 'Seitenscheibe hinten links',
       en: 'Rear left window',
       ru: 'Боковое стекло заднее левое',
+      uk: 'Бокове скло заднє ліве',
     },
   },
 
@@ -572,6 +613,7 @@ const PARTS: PartDef[] = [
       de: 'Kotflügel vorne rechts',
       en: 'Front right fender',
       ru: 'Переднее правое крыло',
+      uk: 'Переднє праве крило',
     },
   },
   {
@@ -581,6 +623,7 @@ const PARTS: PartDef[] = [
       de: 'Tür vorne rechts',
       en: 'Front right door',
       ru: 'Передняя правая дверь',
+      uk: 'Передні праві двері',
     },
   },
   {
@@ -590,6 +633,7 @@ const PARTS: PartDef[] = [
       de: 'Tür hinten rechts',
       en: 'Rear right door',
       ru: 'Задняя правая дверь',
+      uk: 'Задні праві двері',
     },
   },
   {
@@ -599,6 +643,7 @@ const PARTS: PartDef[] = [
       de: 'Schwellerverkleidung rechts',
       en: 'Right sill trim',
       ru: 'Накладка порога справа',
+      uk: 'Накладка порога справа',
     },
   },
   {
@@ -618,6 +663,7 @@ const PARTS: PartDef[] = [
       de: 'Seitenwand hinten rechts',
       en: 'Rear right side panel',
       ru: 'Задняя боковина справа',
+      uk: 'Задня боковина справа',
     },
   },
   {
@@ -627,6 +673,7 @@ const PARTS: PartDef[] = [
       de: 'Außenspiegel rechts',
       en: 'Right mirror',
       ru: 'Зеркало правое',
+      uk: 'Дзеркало праве',
     },
   },
   {
@@ -636,6 +683,7 @@ const PARTS: PartDef[] = [
       de: 'Radlauf vorne rechts',
       en: 'Front right wheel arch',
       ru: 'Колёсная арка передняя правая',
+      uk: 'Колісна арка передня права',
     },
   },
   {
@@ -645,6 +693,7 @@ const PARTS: PartDef[] = [
       de: 'Radlauf hinten rechts',
       en: 'Rear right wheel arch',
       ru: 'Колёсная арка задняя правая',
+      uk: 'Колісна арка задня права',
     },
   },
   {
@@ -654,6 +703,7 @@ const PARTS: PartDef[] = [
       de: 'Seitenscheibe vorne rechts',
       en: 'Front right window',
       ru: 'Боковое стекло переднее правое',
+      uk: 'Бокове скло переднє праве',
     },
   },
   {
@@ -663,6 +713,7 @@ const PARTS: PartDef[] = [
       de: 'Seitenscheibe hinten rechts',
       en: 'Rear right window',
       ru: 'Боковое стекло заднее правое',
+      uk: 'Бокове скло заднє праве',
     },
   },
 
@@ -670,7 +721,7 @@ const PARTS: PartDef[] = [
   {
     id: 'bumper_rear',
     zone: 'rear',
-    label: { de: 'Stoßfänger hinten', en: 'Rear bumper', ru: 'Задний бампер' },
+    label: { de: 'Stoßfänger hinten', en: 'Rear bumper', ru: 'Задний бампер', uk: 'Задній бампер' },
   },
   {
     id: 'trunk_lid',
@@ -679,12 +730,13 @@ const PARTS: PartDef[] = [
       de: 'Heckklappe',
       en: 'Trunk lid / tailgate',
       ru: 'Крышка багажника / 5-я дверь',
+      uk: 'Кришка багажника / 5-ті двері',
     },
   },
   {
     id: 'rear_window',
     zone: 'rear',
-    label: { de: 'Heckscheibe', en: 'Rear window', ru: 'Заднее стекло' },
+    label: { de: 'Heckscheibe', en: 'Rear window', ru: 'Заднее стекло', uk: 'Заднє скло' },
   },
   {
     id: 'tail_light_left',
@@ -693,6 +745,7 @@ const PARTS: PartDef[] = [
       de: 'Rückleuchte links',
       en: 'Left tail light',
       ru: 'Задний фонарь левый',
+      uk: 'Задній ліхтар лівий',
     },
   },
   {
@@ -702,12 +755,13 @@ const PARTS: PartDef[] = [
       de: 'Rückleuchte rechts',
       en: 'Right tail light',
       ru: 'Задний фонарь правый',
+      uk: 'Задній ліхтар правий',
     },
   },
   {
     id: 'heckspoiler',
     zone: 'rear',
-    label: { de: 'Heckspoiler', en: 'Rear spoiler', ru: 'Задний спойлер' },
+    label: { de: 'Heckspoiler', en: 'Rear spoiler', ru: 'Задний спойлер', uk: 'Задній спойлер' },
   },
   {
     id: 'license_plate_holder',
@@ -716,6 +770,7 @@ const PARTS: PartDef[] = [
       de: 'Kennzeichenhalter',
       en: 'License plate holder',
       ru: 'Рамка номерного знака',
+      uk: 'Рамка номерного знака',
     },
   },
 
@@ -723,39 +778,44 @@ const PARTS: PartDef[] = [
   {
     id: 'roof',
     zone: 'roof',
-    label: { de: 'Dach', en: 'Roof', ru: 'Крыша' },
+    label: { de: 'Dach', en: 'Roof', ru: 'Крыша', uk: 'Дах' },
   },
   {
     id: 'panoramic_roof',
     zone: 'roof',
-    label: { de: 'Panoramadach', en: 'Panoramic roof', ru: 'Панорамная крыша' },
+    label: {
+      de: 'Panoramadach',
+      en: 'Panoramic roof',
+      ru: 'Панорамная крыша',
+      uk: 'Панорамний дах',
+    },
   },
   {
     id: 'antenna',
     zone: 'roof',
-    label: { de: 'Antenne', en: 'Antenna', ru: 'Антенна' },
+    label: { de: 'Antenne', en: 'Antenna', ru: 'Антенна', uk: 'Антена' },
   },
 
   // interior
   {
     id: 'dashboard',
     zone: 'interior',
-    label: { de: 'Armaturenbrett', en: 'Dashboard', ru: 'Торпедо' },
+    label: { de: 'Armaturenbrett', en: 'Dashboard', ru: 'Торпедо', uk: 'Торпедо' },
   },
   {
     id: 'steering_wheel',
     zone: 'interior',
-    label: { de: 'Lenkrad', en: 'Steering wheel', ru: 'Руль' },
+    label: { de: 'Lenkrad', en: 'Steering wheel', ru: 'Руль', uk: 'Кермо' },
   },
   {
     id: 'gear_lever',
     zone: 'interior',
-    label: { de: 'Schalthebel', en: 'Gear lever', ru: 'Рычаг КПП' },
+    label: { de: 'Schalthebel', en: 'Gear lever', ru: 'Рычаг КПП', uk: 'Важіль КПП' },
   },
   {
     id: 'seat_driver',
     zone: 'interior',
-    label: { de: 'Fahrersitz', en: 'Driver seat', ru: 'Сиденье водителя' },
+    label: { de: 'Fahrersitz', en: 'Driver seat', ru: 'Сиденье водителя', uk: 'Сидіння водія' },
   },
   {
     id: 'seat_passenger',
@@ -764,12 +824,13 @@ const PARTS: PartDef[] = [
       de: 'Beifahrersitz',
       en: 'Passenger seat',
       ru: 'Сиденье пассажира',
+      uk: 'Сидіння пасажира',
     },
   },
   {
     id: 'seat_rear',
     zone: 'interior',
-    label: { de: 'Rücksitzbank', en: 'Rear seat', ru: 'Заднее сиденье' },
+    label: { de: 'Rücksitzbank', en: 'Rear seat', ru: 'Заднее сиденье', uk: 'Заднє сидіння' },
   },
   {
     id: 'door_card_FL',
@@ -778,6 +839,7 @@ const PARTS: PartDef[] = [
       de: 'Türverkleidung vorne links',
       en: 'Front left door card',
       ru: 'Обшивка двери перед. лев.',
+      uk: 'Обшивка дверей передня ліва',
     },
   },
   {
@@ -787,6 +849,7 @@ const PARTS: PartDef[] = [
       de: 'Türverkleidung vorne rechts',
       en: 'Front right door card',
       ru: 'Обшивка двери перед. прав.',
+      uk: 'Обшивка дверей передня права',
     },
   },
   {
@@ -796,6 +859,7 @@ const PARTS: PartDef[] = [
       de: 'Türverkleidung hinten links',
       en: 'Rear left door card',
       ru: 'Обшивка двери задн. лев.',
+      uk: 'Обшивка дверей задня ліва',
     },
   },
   {
@@ -805,17 +869,23 @@ const PARTS: PartDef[] = [
       de: 'Türverkleidung hinten rechts',
       en: 'Rear right door card',
       ru: 'Обшивка двери задн. прав.',
+      uk: 'Обшивка дверей задня права',
     },
   },
   {
     id: 'headliner',
     zone: 'interior',
-    label: { de: 'Dachhimmel', en: 'Headliner', ru: 'Обшивка потолка' },
+    label: { de: 'Dachhimmel', en: 'Headliner', ru: 'Обшивка потолка', uk: 'Оббивка стелі' },
   },
   {
     id: 'sun_visor',
     zone: 'interior',
-    label: { de: 'Sonnenblende', en: 'Sun visor', ru: 'Солнцезащитный козырёк' },
+    label: {
+      de: 'Sonnenblende',
+      en: 'Sun visor',
+      ru: 'Солнцезащитный козырёк',
+      uk: 'Сонцезахисний козирок',
+    },
   },
   {
     id: 'infotainment_screen',
@@ -824,6 +894,7 @@ const PARTS: PartDef[] = [
       de: 'Infotainment-Display',
       en: 'Infotainment screen',
       ru: 'Дисплей мультимедиа',
+      uk: 'Дисплей мультимедіа',
     },
   },
   {
@@ -833,17 +904,23 @@ const PARTS: PartDef[] = [
       de: 'Kombiinstrument',
       en: 'Instrument cluster',
       ru: 'Приборная панель',
+      uk: 'Приладова панель',
     },
   },
   {
     id: 'floor_mats',
     zone: 'interior',
-    label: { de: 'Fußmatten', en: 'Floor mats', ru: 'Коврики салона' },
+    label: { de: 'Fußmatten', en: 'Floor mats', ru: 'Коврики салона', uk: 'Килимки салону' },
   },
   {
     id: 'trunk_mat',
     zone: 'interior',
-    label: { de: 'Kofferraummatte', en: 'Trunk mat', ru: 'Коврик багажника' },
+    label: {
+      de: 'Kofferraummatte',
+      en: 'Trunk mat',
+      ru: 'Коврик багажника',
+      uk: 'Килимок багажника',
+    },
   },
   {
     id: 'airbag_indicator',
@@ -852,6 +929,7 @@ const PARTS: PartDef[] = [
       de: 'Airbag-Kontrollleuchte',
       en: 'Airbag indicator',
       ru: 'Индикатор подушки безопасности',
+      uk: 'Індикатор подушки безпеки',
     },
   },
 
@@ -859,27 +937,32 @@ const PARTS: PartDef[] = [
   {
     id: 'rim',
     zone: 'wheels',
-    label: { de: 'Felge', en: 'Rim', ru: 'Диск' },
+    label: { de: 'Felge', en: 'Rim', ru: 'Диск', uk: 'Диск' },
   },
   {
     id: 'tire',
     zone: 'wheels',
-    label: { de: 'Reifen', en: 'Tire', ru: 'Шина' },
+    label: { de: 'Reifen', en: 'Tire', ru: 'Шина', uk: 'Шина' },
   },
   {
     id: 'brake_disc',
     zone: 'wheels',
-    label: { de: 'Bremsscheibe', en: 'Brake disc', ru: 'Тормозной диск' },
+    label: { de: 'Bremsscheibe', en: 'Brake disc', ru: 'Тормозной диск', uk: 'Гальмівний диск' },
   },
   {
     id: 'brake_caliper',
     zone: 'wheels',
-    label: { de: 'Bremssattel', en: 'Brake caliper', ru: 'Тормозной суппорт' },
+    label: {
+      de: 'Bremssattel',
+      en: 'Brake caliper',
+      ru: 'Тормозной суппорт',
+      uk: 'Гальмівний супорт',
+    },
   },
   {
     id: 'hub_dust_cap',
     zone: 'wheels',
-    label: { de: 'Nabendeckel', en: 'Hub dust cap', ru: 'Колпак ступицы' },
+    label: { de: 'Nabendeckel', en: 'Hub dust cap', ru: 'Колпак ступицы', uk: 'Ковпак маточини' },
   },
 
   // undercarriage
@@ -890,22 +973,28 @@ const PARTS: PartDef[] = [
       de: 'Unterbodenverkleidung',
       en: 'Underbody panel',
       ru: 'Защита днища',
+      uk: 'Захист днища',
     },
   },
   {
     id: 'oil_pan_guard',
     zone: 'undercarriage',
-    label: { de: 'Ölwannenschutz', en: 'Oil pan guard', ru: 'Защита картера' },
+    label: {
+      de: 'Ölwannenschutz',
+      en: 'Oil pan guard',
+      ru: 'Защита картера',
+      uk: 'Захист картера',
+    },
   },
   {
     id: 'exhaust',
     zone: 'undercarriage',
-    label: { de: 'Auspuffanlage', en: 'Exhaust', ru: 'Выхлопная система' },
+    label: { de: 'Auspuffanlage', en: 'Exhaust', ru: 'Выхлопная система', uk: 'Вихлопна система' },
   },
   {
     id: 'catalytic_converter',
     zone: 'undercarriage',
-    label: { de: 'Katalysator', en: 'Catalytic converter', ru: 'Катализатор' },
+    label: { de: 'Katalysator', en: 'Catalytic converter', ru: 'Катализатор', uk: 'Каталізатор' },
   },
   {
     id: 'cv_joint_dust_cover',
@@ -914,17 +1003,18 @@ const PARTS: PartDef[] = [
       de: 'Achsmanschette',
       en: 'CV joint dust cover',
       ru: 'Пыльник ШРУС',
+      uk: 'Пильник ШРКШ',
     },
   },
   {
     id: 'suspension_arm',
     zone: 'undercarriage',
-    label: { de: 'Querlenker', en: 'Suspension arm', ru: 'Рычаг подвески' },
+    label: { de: 'Querlenker', en: 'Suspension arm', ru: 'Рычаг подвески', uk: 'Важіль підвіски' },
   },
   {
     id: 'shock_absorber',
     zone: 'undercarriage',
-    label: { de: 'Stoßdämpfer', en: 'Shock absorber', ru: 'Амортизатор' },
+    label: { de: 'Stoßdämpfer', en: 'Shock absorber', ru: 'Амортизатор', uk: 'Амортизатор' },
   },
 ];
 
@@ -935,31 +1025,31 @@ const PARTS: PartDef[] = [
 const DAMAGE_TYPES: DamageTypeDef[] = [
   {
     id: 'scratch',
-    label: { de: 'Kratzer', en: 'Scratch', ru: 'Царапина' },
+    label: { de: 'Kratzer', en: 'Scratch', ru: 'Царапина', uk: 'Подряпина' },
   },
   {
     id: 'dent',
-    label: { de: 'Delle', en: 'Dent', ru: 'Вмятина' },
+    label: { de: 'Delle', en: 'Dent', ru: 'Вмятина', uk: 'Вм’ятина' },
   },
   {
     id: 'chip',
-    label: { de: 'Steinschlag', en: 'Chip', ru: 'Скол' },
+    label: { de: 'Steinschlag', en: 'Chip', ru: 'Скол', uk: 'Скол' },
   },
   {
     id: 'crack',
-    label: { de: 'Riss', en: 'Crack', ru: 'Трещина' },
+    label: { de: 'Riss', en: 'Crack', ru: 'Трещина', uk: 'Тріщина' },
   },
   {
     id: 'corrosion',
-    label: { de: 'Rost', en: 'Corrosion', ru: 'Коррозия / ржавчина' },
+    label: { de: 'Rost', en: 'Corrosion', ru: 'Коррозия / ржавчина', uk: 'Корозія / іржа' },
   },
   {
     id: 'broken',
-    label: { de: 'Beschädigt / kaputt', en: 'Broken', ru: 'Разбито' },
+    label: { de: 'Beschädigt / kaputt', en: 'Broken', ru: 'Разбито', uk: 'Розбито' },
   },
   {
     id: 'missing',
-    label: { de: 'Fehlt', en: 'Missing', ru: 'Отсутствует' },
+    label: { de: 'Fehlt', en: 'Missing', ru: 'Отсутствует', uk: 'Відсутнє' },
   },
   {
     id: 'paint-peeling',
@@ -967,11 +1057,12 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
       de: 'Lack abgeplatzt',
       en: 'Paint peeling',
       ru: 'Облупилась краска',
+      uk: 'Відшарування лаку',
     },
   },
   {
     id: 'deformation',
-    label: { de: 'Verformung', en: 'Deformation', ru: 'Деформация' },
+    label: { de: 'Verformung', en: 'Deformation', ru: 'Деформация', uk: 'Деформація' },
   },
   {
     id: 'dirt',
@@ -979,6 +1070,7 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
       de: 'Verschmutzung',
       en: 'Dirt / soiling',
       ru: 'Загрязнение / следы',
+      uk: 'Забруднення / сліди',
     },
   },
 ];
@@ -999,6 +1091,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Heckklappe verkratzt',
       en: 'Trunk lid scratched',
       ru: 'Крышка багажника / 5-я дверь — царапины ЛКП',
+      uk: 'Кришка багажника / 5-ті двері — подряпини ЛФП',
     },
   },
   {
@@ -1011,6 +1104,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Kotflügel vorne links verkratzt',
       en: 'Front left fender scratched',
       ru: 'Переднее левое крыло — царапины',
+      uk: 'Переднє ліве крило — подряпини',
     },
   },
   {
@@ -1023,6 +1117,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Kotflügel vorne rechts verkratzt',
       en: 'Front right fender scratched',
       ru: 'Переднее правое крыло — царапины',
+      uk: 'Переднє праве крило — подряпини',
     },
   },
   {
@@ -1035,6 +1130,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Motorhaube verkratzt',
       en: 'Hood scratched',
       ru: 'Капот — царапины',
+      uk: 'Капот — подряпини',
     },
   },
   {
@@ -1047,6 +1143,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Seitenwand hinten links verkratzt',
       en: 'Rear left side panel scratched',
       ru: 'Задняя боковина слева — царапины',
+      uk: 'Задня боковина зліва — подряпини',
     },
   },
   {
@@ -1059,6 +1156,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Seitenwand hinten rechts verkratzt',
       en: 'Rear right side panel scratched',
       ru: 'Задняя боковина справа — царапины',
+      uk: 'Задня боковина справа — подряпини',
     },
   },
   {
@@ -1071,6 +1169,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Stoßfänger hinten verkratzt',
       en: 'Rear bumper scratched',
       ru: 'Задний бампер — царапины',
+      uk: 'Задній бампер — подряпини',
     },
   },
   {
@@ -1083,6 +1182,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Stoßfänger vorne verkratzt',
       en: 'Front bumper scratched',
       ru: 'Передний бампер — царапины',
+      uk: 'Передній бампер — подряпини',
     },
   },
   {
@@ -1095,6 +1195,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Tür hinten links verkratzt',
       en: 'Rear left door scratched',
       ru: 'Задняя левая дверь — царапины',
+      uk: 'Задні ліві двері — подряпини',
     },
   },
   {
@@ -1107,6 +1208,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Tür hinten rechts verkratzt',
       en: 'Rear right door scratched',
       ru: 'Задняя правая дверь — царапины',
+      uk: 'Задні праві двері — подряпини',
     },
   },
   {
@@ -1119,6 +1221,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Tür vorne links verkratzt',
       en: 'Front left door scratched',
       ru: 'Передняя левая дверь — царапины',
+      uk: 'Передні ліві двері — подряпини',
     },
   },
   {
@@ -1131,6 +1234,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Tür vorne rechts verkratzt',
       en: 'Front right door scratched',
       ru: 'Передняя правая дверь — царапины',
+      uk: 'Передні праві двері — подряпини',
     },
   },
   {
@@ -1143,6 +1247,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Schwellerverkleidung links verkratzt',
       en: 'Left sill trim scratched',
       ru: 'Накладка порога слева — повреждение / царапина',
+      uk: 'Накладка порога зліва — пошкодження / подряпина',
     },
   },
   {
@@ -1155,6 +1260,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Schwellerverkleidung rechts verkratzt',
       en: 'Right sill trim scratched',
       ru: 'Накладка порога справа — повреждение / царапина',
+      uk: 'Накладка порога справа — пошкодження / подряпина',
     },
   },
   {
@@ -1167,6 +1273,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Heckspoiler verkratzt',
       en: 'Rear spoiler scratched',
       ru: 'Задний спойлер — царапины',
+      uk: 'Задній спойлер — подряпини',
     },
   },
   {
@@ -1179,6 +1286,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Dach verkratzt / beklebt',
       en: 'Roof scratched / wrapped',
       ru: 'Крыша — царапины / потёртости',
+      uk: 'Дах — подряпини / потертості',
     },
   },
   {
@@ -1191,6 +1299,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Radlauf verkratzt',
       en: 'Wheel arch scratched',
       ru: 'Колёсная арка — царапины / задиры',
+      uk: 'Колісна арка — подряпини / задири',
     },
   },
   {
@@ -1203,6 +1312,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Frontscheibe beschädigt',
       en: 'Windshield damaged (chip / crack)',
       ru: 'Лобовое стекло — скол / трещина',
+      uk: 'Лобове скло — скол / тріщина',
     },
   },
   {
@@ -1215,6 +1325,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Spiegelkappe verkratzt',
       en: 'Mirror cap scratched',
       ru: 'Корпус зеркала — царапины / повреждения',
+      uk: 'Корпус дзеркала — подряпини / пошкодження',
     },
   },
   {
@@ -1227,6 +1338,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Fahrzeug mit Hagelschaden',
       en: 'Vehicle with hail damage',
       ru: 'Автомобиль — градобой (Hagelschaden)',
+      uk: 'Автомобіль — градобій (Hagelschaden)',
     },
   },
   {
@@ -1239,6 +1351,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Heckklappe Delle/Dellen',
       en: 'Trunk lid dent(s)',
       ru: 'Крышка багажника — вмятина',
+      uk: 'Кришка багажника — вм’ятина',
     },
   },
   {
@@ -1251,6 +1364,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Kotflügel vorne links Delle',
       en: 'Front left fender dent',
       ru: 'Переднее левое крыло — вмятина',
+      uk: 'Переднє ліве крило — вм’ятина',
     },
   },
   {
@@ -1263,6 +1377,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Kotflügel vorne rechts Delle',
       en: 'Front right fender dent',
       ru: 'Переднее правое крыло — вмятина',
+      uk: 'Переднє праве крило — вм’ятина',
     },
   },
   {
@@ -1275,6 +1390,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Motorhaube Delle',
       en: 'Hood dent',
       ru: 'Капот — вмятина',
+      uk: 'Капот — вм’ятина',
     },
   },
   {
@@ -1287,6 +1403,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Seitenwand hinten links Delle',
       en: 'Rear left side panel dent',
       ru: 'Задняя боковина слева — вмятина',
+      uk: 'Задня боковина зліва — вм’ятина',
     },
   },
   {
@@ -1299,6 +1416,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Seitenwand hinten rechts Delle',
       en: 'Rear right side panel dent',
       ru: 'Задняя боковина справа — вмятина',
+      uk: 'Задня боковина справа — вм’ятина',
     },
   },
   {
@@ -1311,6 +1429,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Stoßfänger hinten Delle',
       en: 'Rear bumper dent / deformation',
       ru: 'Задний бампер — вмятина / деформация',
+      uk: 'Задній бампер — вм’ятина / деформація',
     },
   },
   {
@@ -1323,6 +1442,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Stoßfänger vorne Delle',
       en: 'Front bumper dent / deformation',
       ru: 'Передний бампер — вмятина / деформация',
+      uk: 'Передній бампер — вм’ятина / деформація',
     },
   },
   {
@@ -1335,6 +1455,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Tür hinten links Delle',
       en: 'Rear left door dent',
       ru: 'Задняя левая дверь — вмятина',
+      uk: 'Задні ліві двері — вм’ятина',
     },
   },
   {
@@ -1347,6 +1468,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Tür hinten rechts Delle',
       en: 'Rear right door dent',
       ru: 'Задняя правая дверь — вмятина',
+      uk: 'Задні праві двері — вм’ятина',
     },
   },
   {
@@ -1359,6 +1481,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Tür vorne links Delle',
       en: 'Front left door dent',
       ru: 'Передняя левая дверь — вмятина',
+      uk: 'Передні ліві двері — вм’ятина',
     },
   },
   {
@@ -1371,6 +1494,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Tür vorne rechts Delle',
       en: 'Front right door dent',
       ru: 'Передняя правая дверь — вмятина',
+      uk: 'Передні праві двері — вм’ятина',
     },
   },
   {
@@ -1383,6 +1507,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Schwellerverkleidung links Delle',
       en: 'Left sill trim deformation',
       ru: 'Накладка порога слева — деформация',
+      uk: 'Накладка порога зліва — деформація',
     },
   },
   {
@@ -1395,6 +1520,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Schwellerverkleidung rechts Delle',
       en: 'Right sill trim deformation',
       ru: 'Накладка порога справа — деформация',
+      uk: 'Накладка порога справа — деформація',
     },
   },
   {
@@ -1407,6 +1533,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Heckspoiler Delle',
       en: 'Rear spoiler dent',
       ru: 'Задний спойлер — вмятина',
+      uk: 'Задній спойлер — вм’ятина',
     },
   },
   {
@@ -1419,6 +1546,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Dach Delle/Dellen',
       en: 'Roof dent(s)',
       ru: 'Крыша — вмятина',
+      uk: 'Дах — вм’ятина',
     },
   },
 
@@ -1433,6 +1561,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Fahrzeug-Check',
       en: 'Scheduled vehicle check',
       ru: 'Общий техосмотр по регламенту',
+      uk: 'Загальний техогляд за регламентом',
     },
   },
   {
@@ -1445,6 +1574,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Ölservice fällig',
       en: 'Oil service due',
       ru: 'Просрочена замена моторного масла',
+      uk: 'Прострочена заміна моторного масла',
     },
   },
   {
@@ -1457,6 +1587,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Service Bremsflüssigkeit',
       en: 'Brake fluid service due',
       ru: 'Просрочен сервис тормозной жидкости',
+      uk: 'Прострочений сервіс гальмівної рідини',
     },
   },
   {
@@ -1469,6 +1600,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Service überzogen',
       en: 'Service overdue (interval exceeded)',
       ru: 'ТО просрочено (превышен интервал)',
+      uk: 'ТО прострочено (перевищено інтервал)',
     },
   },
   {
@@ -1481,6 +1613,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Service (Elektrofahrzeug)',
       en: 'EV / HV battery service',
       ru: 'Сервис электромобиля / ВВ-батареи',
+      uk: 'Сервіс електромобіля / ВВ-батареї',
     },
   },
 
@@ -1495,6 +1628,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Batterie-/Schlüsselfernbedienung',
       en: 'Key fob / remote not working or missing',
       ru: 'Не работает / отсутствует брелок, пульт-ключ от АКБ',
+      uk: 'Не працює / відсутній брелок, пульт-ключ від АКБ',
     },
   },
   {
@@ -1507,6 +1641,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Bremsbeläge hinten verschlissen',
       en: 'Rear brake pads worn',
       ru: 'Тормозные колодки сзади — износ',
+      uk: 'Гальмівні колодки ззаду — знос',
     },
   },
   {
@@ -1519,6 +1654,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Bremsbeläge vorne verschlissen',
       en: 'Front brake pads worn',
       ru: 'Тормозные колодки спереди — износ',
+      uk: 'Гальмівні колодки спереду — знос',
     },
   },
   {
@@ -1531,6 +1667,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Bremse hinten verschlissen',
       en: 'Rear brake worn / faulty',
       ru: 'Задний тормозной механизм — износ / неисправность',
+      uk: 'Задній гальмівний механізм — знос / несправність',
     },
   },
   {
@@ -1543,6 +1680,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Bremse vorne verschlissen',
       en: 'Front brake worn / faulty',
       ru: 'Передний тормозной механизм — износ / неисправность',
+      uk: 'Передній гальмівний механізм — знос / несправність',
     },
   },
   {
@@ -1555,6 +1693,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Bremsscheiben vorne',
       en: 'Front brake discs worn / warped',
       ru: 'Тормозные диски передние — износ / деформация',
+      uk: 'Гальмівні диски передні — знос / деформація',
     },
   },
   {
@@ -1567,6 +1706,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Bremsscheiben hinten',
       en: 'Rear brake discs worn / warped',
       ru: 'Тормозные диски задние — износ / деформация',
+      uk: 'Гальмівні диски задні — знос / деформація',
     },
   },
   {
@@ -1579,6 +1719,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Dämmmatte Motorhaube',
       en: 'Hood insulation mat damaged / missing',
       ru: 'Шумопоглотитель капота — повреждён / отсутствует',
+      uk: 'Шумоізоляція капота — пошкоджена / відсутня',
     },
   },
   {
@@ -1591,6 +1732,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Felge hinten links',
       en: 'Rear left rim damaged / repainted',
       ru: 'Диск задний левый — повреждён / перекрашен',
+      uk: 'Диск задній лівий — пошкоджений / перефарбований',
     },
   },
   {
@@ -1603,6 +1745,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Felge hinten rechts',
       en: 'Rear right rim damaged',
       ru: 'Диск задний правый — повреждён',
+      uk: 'Диск задній правий — пошкоджений',
     },
   },
   {
@@ -1615,6 +1758,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Felge vorne links',
       en: 'Front left rim damaged',
       ru: 'Диск передний левый — повреждён',
+      uk: 'Диск передній лівий — пошкоджений',
     },
   },
   {
@@ -1627,6 +1771,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Felge vorne rechts',
       en: 'Front right rim damaged',
       ru: 'Диск передний правый — повреждён',
+      uk: 'Диск передній правий — пошкоджений',
     },
   },
   {
@@ -1639,6 +1784,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Fußmatte vorne',
       en: 'Front floor mat missing / damaged',
       ru: 'Передний коврик — отсутствует / повреждён',
+      uk: 'Передній килимок — відсутній / пошкоджений',
     },
   },
   {
@@ -1651,6 +1797,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Fußmatten fehlen',
       en: 'Floor mats missing',
       ru: 'Коврики салона отсутствуют',
+      uk: 'Килимки салону відсутні',
     },
   },
   {
@@ -1663,6 +1810,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Gelenkscheibe / Gummiring',
       en: 'CV joint / flex disc damaged',
       ru: 'ШРУС / защита шарнира — повреждение',
+      uk: 'ШРКШ / пильник шарніра — пошкодження',
     },
   },
   {
@@ -1675,6 +1823,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Nebelscheinwerfer links',
       en: 'Left fog light damaged',
       ru: 'Противотуманная фара левая — повреждена',
+      uk: 'Протитуманна фара ліва — пошкоджена',
     },
   },
   {
@@ -1687,6 +1836,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Nebelscheinwerfer rechts',
       en: 'Right fog light damaged',
       ru: 'Противотуманная фара правая — повреждена',
+      uk: 'Протитуманна фара права — пошкоджена',
     },
   },
   {
@@ -1699,6 +1849,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Reifen alle verschlissen',
       en: 'All tires worn',
       ru: 'Все шины изношены',
+      uk: 'Всі шини зношені',
     },
   },
   {
@@ -1711,6 +1862,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Reifen hinten verschlissen',
       en: 'Rear tires worn',
       ru: 'Задние шины изношены',
+      uk: 'Задні шини зношені',
     },
   },
   {
@@ -1723,6 +1875,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Reifen vorne verschlissen',
       en: 'Front tires worn',
       ru: 'Передние шины изношены',
+      uk: 'Передні шини зношені',
     },
   },
   {
@@ -1735,6 +1888,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Schlüssel / Fernbedienung fehlt',
       en: 'Key / remote missing',
       ru: 'Отсутствует ключ / брелок-пульт',
+      uk: 'Відсутній ключ / брелок-пульт',
     },
   },
   {
@@ -1747,6 +1901,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Sommerräder fehlen',
       en: 'Summer wheels missing',
       ru: 'Летние колёса отсутствуют',
+      uk: 'Літні колеса відсутні',
     },
   },
   {
@@ -1759,6 +1914,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Unterbodenverkleidung',
       en: 'Underbody panel / wheel liners damaged',
       ru: 'Защита днища / подкрылки — повреждены',
+      uk: 'Захист днища / підкрилки — пошкоджені',
     },
   },
   {
@@ -1771,6 +1927,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Reifen alle Profiltiefe',
       en: 'All tires below tread limit',
       ru: 'Все шины ниже допустимого протектора',
+      uk: 'Всі шини нижче допустимого протектора',
     },
   },
   {
@@ -1783,6 +1940,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Reifen hinten Profiltiefe',
       en: 'Rear tires low tread',
       ru: 'Задние шины — низкий протектор',
+      uk: 'Задні шини — низький протектор',
     },
   },
   {
@@ -1795,6 +1953,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Reifen vorne Profiltiefe',
       en: 'Front tires low tread',
       ru: 'Передние шины — низкий протектор',
+      uk: 'Передні шини — низький протектор',
     },
   },
   {
@@ -1807,6 +1966,7 @@ const KST_CODES: KstCodeDef[] = [
       de: 'Reifen ohne Erstausrüstung',
       en: 'Tires not OEM-marked',
       ru: 'Шины без заводской маркировки (не OEM)',
+      uk: 'Шини без заводського маркування (не OEM)',
     },
   },
 ];

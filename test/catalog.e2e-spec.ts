@@ -75,12 +75,66 @@ describe('Catalog (e2e)', () => {
     expect(res.body.checklist.length).toBe(98);
     expect(res.body.damageTypes.length).toBe(10);
     expect(Array.isArray(res.body.parts)).toBe(true);
-    // Every label is trilingual.
+    // Every label is trilingual (four-locale completeness is asserted below).
     for (const code of res.body.kstCodes) {
       expect(code.label.de).toBeTruthy();
       expect(code.label.en).toBeTruthy();
       expect(code.label.ru).toBeTruthy();
     }
+  });
+
+  // `uk` is optional on `LocalizedLabel`, and the mobile client falls back
+  // uk→ru when it is missing (catalog_models.dart). That fallback is
+  // deliberate insurance, but it means an untranslated entry renders RUSSIAN
+  // to a Ukrainian user with nothing failing anywhere. These assertions are
+  // what turn "we forgot to translate it" into a red build.
+  //
+  // Hints are covered by the stricter assertion under `exterior angles`, which
+  // also pins which four angles carry one.
+  describe('four-locale completeness', () => {
+    const collections = [
+      'angles',
+      'parts',
+      'damageTypes',
+      'kstCodes',
+      'checklist',
+      'thicknessPanels',
+    ] as const;
+
+    it('every label in every collection carries de, en, ru and uk', async () => {
+      const catalog = (await getCatalog()) as unknown as Record<
+        string,
+        { id?: string; code?: string; number?: number; label: Label }[]
+      >;
+      const missing: string[] = [];
+      for (const collection of collections) {
+        const rows = catalog[collection];
+        expect(Array.isArray(rows)).toBe(true);
+        expect(rows.length).toBeGreaterThan(0);
+        for (const row of rows) {
+          const id = row.id ?? row.code ?? String(row.number);
+          for (const locale of ['de', 'en', 'ru', 'uk'] as const) {
+            if (!row.label?.[locale]) missing.push(`${collection}.${id}.${locale}`);
+          }
+        }
+      }
+      expect(missing).toEqual([]);
+    });
+
+    it('Ukrainian labels are Ukrainian, not a copied Russian column', async () => {
+      const catalog = (await getCatalog()) as unknown as Record<
+        string,
+        { label: Label }[]
+      >;
+      const all = collections.flatMap((c) => catalog[c]).map((r) => r.label);
+      // ы/э/ъ/ё exist in Russian but not Ukrainian: any occurrence is a
+      // straight copy. і/ї/є/ґ are the converse tell, so a healthy corpus has
+      // them in a large share of its entries.
+      const russianOnly = all.filter((l) => /[ыэъёЫЭЪЁ]/.test(l.uk ?? ''));
+      expect(russianOnly.map((l) => l.uk)).toEqual([]);
+      const ukrainian = all.filter((l) => /[іїєґІЇЄҐ]/.test(l.uk ?? ''));
+      expect(ukrainian.length / all.length).toBeGreaterThan(0.5);
+    });
   });
 
   it('GET /catalog?version=<current> returns upToDate without the full payload', async () => {
