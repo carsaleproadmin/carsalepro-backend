@@ -42,8 +42,11 @@ export class AuthController {
       });
     }
     const { auth, verification } = await this.auth.register(dto);
-    // verification token returned so the notifications layer can email a link.
-    return { token: auth.token, user: auth.user, emailVerification: verification };
+    // The raw verification token goes to the notification layer and NOWHERE
+    // else. It used to be returned here, which handed anyone who could call
+    // this endpoint a working single-use credential. See SECURITY.md.
+    await this.auth.sendVerificationEmail(auth.user.id, verification);
+    return { token: auth.token, user: auth.user };
   }
 
   @Public()
@@ -62,9 +65,11 @@ export class AuthController {
   @Post('password-reset')
   @ApiOperation({ summary: 'Request a password-reset link (no account disclosure)' })
   async requestReset(@Body() dto: PasswordResetRequestDto) {
-    const grant = await this.auth.requestPasswordReset(dto.email);
-    // Always 200; token (if any) is handed to notifications, never to the client.
-    return { ok: true, reset: grant };
+    // Byte-identical response whether or not the address is registered: the
+    // service swallows the distinction, so this endpoint is not an
+    // account-existence oracle. The reset token is emailed, never returned.
+    await this.auth.requestPasswordResetAndNotify(dto.email);
+    return { ok: true };
   }
 
   @Public()

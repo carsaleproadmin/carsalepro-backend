@@ -1,7 +1,9 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Public } from '../auth/auth.decorators';
 import { ListingQueryDto } from './dto/listing-query.dto';
+import { ReportCheckQueryDto, ReportCodeParamDto } from './dto/report-lookup.dto';
 import { PublicService } from './public.service';
 
 @ApiTags('public')
@@ -22,15 +24,20 @@ export class PublicController {
     return this.publicService.getListing(id);
   }
 
+  // The two lookups below answer "does this VIN / report code exist?" without
+  // authentication, so they carry a tighter throttle than the global default
+  // and validate their input rather than passing raw query strings through.
   @Get('report-check')
+  @Throttle({ lookup: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Check whether a report exists by VIN or Report ID' })
-  reportCheck(@Query('vin') vin?: string, @Query('code') code?: string) {
-    return this.publicService.checkReport({ vin, code });
+  reportCheck(@Query() query: ReportCheckQueryDto) {
+    return this.publicService.checkReport(query);
   }
 
   @Get('reports/:code/preview')
+  @Throttle({ lookup: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Free, PII-masked preview of a report' })
-  reportPreview(@Param('code') code: string) {
-    return this.publicService.reportPreview(code);
+  reportPreview(@Param() params: ReportCodeParamDto) {
+    return this.publicService.reportPreview(params.code);
   }
 }

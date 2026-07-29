@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import { GeoService, NearestInspector } from '../geo/geo.service';
 import { LegalContractService } from '../legal/legal-contract.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -219,7 +220,10 @@ export class OrdersService {
     dto: CreateOrderDto,
     priced: PricedQuote,
   ): Promise<string> {
-    const id = cuidLike();
+    // The order row is inserted with raw SQL (PostGIS geography), so Prisma's
+    // `@default(cuid())` never runs and we mint the id here. The column is a
+    // plain text PK, so any unique string works.
+    const id = randomUUID();
     const distanceKm = new Prisma.Decimal(priced.distanceKm);
     await this.prisma.$executeRaw`
       INSERT INTO "order" (
@@ -1171,13 +1175,3 @@ export interface OrderDetail {
   }>;
 }
 
-/**
- * Generate a cuid-like id for raw inserts. Order ids elsewhere come from Prisma
- * `@default(cuid())`; here we mint our own (the column is a plain text PK so any
- * unique string works) using the same `c` prefix + time + randomness.
- */
-function cuidLike(): string {
-  const time = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
-  return `c${time}${rand}`.slice(0, 25);
-}

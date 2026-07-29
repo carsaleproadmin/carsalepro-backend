@@ -5,6 +5,8 @@
  * Notification.type so they double as a stable wire contract.
  */
 export type NotificationType =
+  | 'auth.verify_email'
+  | 'auth.password_reset'
   | 'order.created'
   | 'offer.received'
   | 'order.assigned'
@@ -37,6 +39,9 @@ export const DEFAULT_LOCALE: NotificationLocale = 'de';
  * is complete; the entries here drive the EXTERNAL channels (email/sms/push).
  */
 export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel[]> = {
+  // Email only — see SECRET_BEARING_TYPES below.
+  'auth.verify_email': ['email'],
+  'auth.password_reset': ['email'],
   'order.created': ['inapp', 'email'],
   'offer.received': ['inapp', 'email', 'push'],
   'order.assigned': ['inapp', 'email'],
@@ -54,6 +59,23 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   'listing.published': ['inapp'],
   'listing.expiring': ['inapp', 'email'],
 };
+
+/**
+ * Types whose payload carries a live single-use credential.
+ *
+ * These are the ONE exception to "inapp is always added". `GET /api/v1/notifications`
+ * returns the stored `payload` of every inapp row, so an in-app copy would let
+ * anyone holding a session read the account's own password-reset link out of
+ * the notification bell — escalating a borrowed session into a permanent
+ * takeover. They are also useless in-app: a user who cannot sign in cannot open
+ * the bell. Delivery is email only.
+ *
+ * Anything added here MUST also omit 'inapp' from TYPE_DEFAULT_CHANNELS.
+ */
+export const SECRET_BEARING_TYPES: ReadonlySet<NotificationType> = new Set([
+  'auth.verify_email',
+  'auth.password_reset',
+]);
 
 /**
  * The user's per-channel preference flags (stored on User.notificationPrefs).

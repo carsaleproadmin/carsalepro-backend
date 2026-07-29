@@ -112,11 +112,21 @@ export class ReportsService {
     } catch (err) {
       await this.rollbackQuota(deviceId, tier);
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        // Cross-device collision on the partial unique code index — practically
-        // impossible for honest UUID v4 clients, so refuse loudly.
+        // Three different unique constraints can land here, so name the right one.
+        // `target` is the constraint/column list Postgres reported.
+        const target = String((err.meta as { target?: unknown } | undefined)?.target ?? '');
+        if (target.includes('order_id')) {
+          throw new ConflictException({
+            error: 'order_report_exists',
+            message: `Order ${dto.orderId} already has a report`,
+          });
+        }
+        // Collision on the partial unique code index — practically impossible for
+        // honest UUID v4 clients, so refuse loudly. Deliberately does NOT claim
+        // "another device": the same device racing itself lands here too.
         throw new ConflictException({
           error: 'code_conflict',
-          message: `Report code ${dto.code} is already registered to another device`,
+          message: `Report code ${dto.code} is already in use`,
         });
       }
       throw err;

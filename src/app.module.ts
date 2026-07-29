@@ -45,7 +45,15 @@ import { VinModule } from './vin/vin.module';
       validationOptions: { allowUnknown: true, abortEarly: false },
     }),
     ThrottlerModule.forRoot({
-      throttlers: [{ ttl: 60_000, limit: 120 }],
+      throttlers: [
+        // 'default' is referenced by name in @Throttle() decorators across
+        // auth.controller.ts and reports.controller.ts — do not rename it.
+        { name: 'default', ttl: 60_000, limit: 120 },
+        // Tighter bucket for unauthenticated lookups that take a VIN or report
+        // code and answer "does this exist?". 122 bits of entropy already makes
+        // enumeration impractical; this stops it being the only defence.
+        { name: 'lookup', ttl: 60_000, limit: 20 },
+      ],
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
     ScheduleModule.forRoot(),

@@ -35,11 +35,9 @@ export class QuotaService {
       freeReportsUsed: quota.freeReportsUsed,
       freeReportsLimit: quota.freeReportsLimit,
       isPro: quota.isPro,
-      remaining: quota.isPro
-        ? Number.POSITIVE_INFINITY === Infinity
-          ? 0
-          : 0
-        : Math.max(0, quota.freeReportsLimit - quota.freeReportsUsed),
+      // PRO is unlimited, but the shipped mobile app gates on `isPro` and parses
+      // `remaining` as a number — it has always received 0 here. Keep the value.
+      remaining: quota.isPro ? 0 : Math.max(0, quota.freeReportsLimit - quota.freeReportsUsed),
     };
   }
 

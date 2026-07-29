@@ -5,6 +5,27 @@ implemented in this repo. The items below are **not code-complete** here because
 they require provisioning, external credentials, or product/design decisions.
 Each lists *what*, *why*, and *how to finish*.
 
+## Resolved
+
+### SEC-1 — Raw verification and password-reset tokens on the auth response
+- **Was**: `POST /api/v1/auth/register` returned `emailVerification` and
+  `POST /api/v1/auth/password-reset` returned `reset`, both containing the raw
+  single-use token. Both endpoints are `@Public()`, so anyone who could reach
+  `/password-reset` with a known address received a working credential for that
+  account. The same endpoint also returned `null` for unknown addresses and an
+  object for known ones, making it an account-existence oracle.
+- **Now**: `register` returns `{ token, user }` and `password-reset` returns
+  `{ ok: true }` unconditionally. The raw token is handed to
+  `NotificationsService` (`auth.verify_email` / `auth.password_reset`) and never
+  crosses the API boundary. `AuthService.requestPasswordResetAndNotify` resolves
+  `void` for known and unknown addresses alike.
+- **Residual**: a known address performs one extra INSERT, so a determined
+  attacker behind the 5 req/min throttle could in principle time the difference.
+  An artificial delay was considered and rejected — it would make the endpoint
+  trivially expensive to hold open. Covered by `test/auth.e2e-spec.ts` cases
+  14–18, which assert byte-identical responses and that the link still works
+  end to end through the notification.
+
 ## H2 — Dedicated private R2 bucket + scoped credentials for KYC
 - **What**: KYC documents currently live under the `kyc/` prefix of the same
   R2 bucket as public report PDFs. The code already reads dedicated narrow

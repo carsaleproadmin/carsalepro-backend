@@ -134,6 +134,47 @@ describe('Public showroom + report check (e2e)', () => {
     await request(app.getHttpServer()).get('/api/v1/public/reports/CSP-000002/preview').expect(404);
   });
 
+  // BE-J5 — these two endpoints are the unauthenticated "does this exist?"
+  // surface. They used to take raw query strings with no validation at all.
+  describe('BE-J5: public lookup input validation', () => {
+    it('10a. rejects a malformed VIN with 400 rather than answering', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/public/report-check?vin=NOTAVIN')
+        .expect(400);
+    });
+
+    it('10b. rejects a VIN containing I, O or Q (ISO 3779 excludes them)', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/public/report-check?vin=WAUZZZ8K9IA00Q01')
+        .expect(400);
+    });
+
+    it('10c. rejects a report code that is not a CSP code', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/public/report-check?code=%3Cscript%3E')
+        .expect(400);
+      await request(app.getHttpServer())
+        .get('/api/v1/public/reports/bogus/preview')
+        .expect(400);
+    });
+
+    it('10d. still accepts a lowercase VIN and a well-formed code', async () => {
+      await request(app.getHttpServer())
+        .get(`/api/v1/public/report-check?vin=${vin.toLowerCase()}`)
+        .expect(200);
+      await request(app.getHttpServer())
+        .get(`/api/v1/public/report-check?code=${code}`)
+        .expect(200);
+    });
+
+    it('10e. answers "not found" for a well-formed but unknown code', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/public/report-check?code=CSP-999999')
+        .expect(200);
+      expect(res.body.found).toBe(false);
+    });
+  });
+
   it('11. gold listings rank before standard (W.1.9)', async () => {
     const stdReport = await prisma.report.create({
       data: {
