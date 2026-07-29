@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { PriceCatalog } from './price-catalog';
 import {
   PLATFORM_SETTING_DEFAULTS,
   PUBLIC_SETTING_KEYS,
@@ -66,6 +67,28 @@ export class SettingsService {
       out[key] = await this.getNumber(key);
     }
     return out;
+  }
+
+  /**
+   * Every chargeable price in integer cents. The one shape any response that
+   * shows a price should embed, so a displayed price can never drift from the
+   * price charged at checkout.
+   */
+  async getPriceCatalog(): Promise<PriceCatalog> {
+    await this.load();
+    return {
+      currency: 'EUR',
+      payPerViewCents: await this.getCents('payPerViewPriceEur'),
+      goldPackageCents: await this.getCents('goldPackagePriceEur'),
+      standardListingCents: await this.getCents('standardListingPriceEur'),
+      vinHistoryCents: await this.getCents('vinHistoryPriceEur'),
+      orderBaseFeeCents: await this.getCents('orderBaseFeeEur'),
+      orderRatePerKmCents: await this.getCents('orderRatePerKmEur'),
+      orderRatePerMinuteCents: await this.getCents('orderRatePerMinuteEur'),
+      orderMinimumFareCents: await this.getCents('orderMinimumFareEur'),
+      listingDurationDays: await this.getNumber('listingDurationDays'),
+      expertSearchRadiusKm: await this.getNumber('expertSearchRadiusKm'),
+    };
   }
 
   async set(key: SettingKey, value: number, updatedBy?: string): Promise<void> {

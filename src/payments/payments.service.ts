@@ -78,6 +78,8 @@ export class PaymentsService {
       return {
         checkoutUrl: `${this.webOrigin}/account/reports?ppv=mock`,
         mock: true,
+        amountCents,
+        currency: 'EUR',
       };
     }
 
@@ -99,7 +101,7 @@ export class PaymentsService {
       });
     }
 
-    return { checkoutUrl };
+    return { checkoutUrl, amountCents, currency: 'EUR' };
   }
 
   /**

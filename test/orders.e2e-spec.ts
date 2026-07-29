@@ -3,6 +3,7 @@ import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { OrdersService } from '../src/orders/orders.service';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
+import { PinnedTariff, colocatedQuote, pinTariff } from './helpers/tariff';
 
 // Berlin Mitte — the order/customer location used across the suite.
 const ORDER_LAT = 52.52;
@@ -32,6 +33,12 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let orders: OrdersService;
+  let tariff: PinnedTariff;
+
+  // Every price assertion below is against a co-located inspector, so the fare
+  // is base + one minute of travel, floored at the minimum fare. Derived rather
+  // than hardcoded so a retuned default does not silently invalidate the suite.
+  const FARE = colocatedQuote();
 
   // Track ids for FK-ordered cleanup.
   const createdOrderIds = new Set<string>();
@@ -45,6 +52,8 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
     orders = app.get(OrdersService);
+    // Sibling suites mutate the tariff; pin it so these assertions mean something.
+    tariff = await pinTariff(app);
   });
 
   afterEach(async () => {
@@ -82,6 +91,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   afterAll(async () => {
+    await tariff.restore();
     await app.close();
   });
 
@@ -184,18 +194,28 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .expect(200);
 
     expect(res.body.available).toBe(true);
-    // base=5000, rate=150/km, distance≈0 → distanceFee≈0, total≈5000.
-    expect(res.body.breakdown.baseFeeCents).toBe(5000);
+    // Co-located inspector → no distance fee; the fare is base + one minute,
+    // which sits below the minimum fare and is floored up to it.
+    expect(res.body.breakdown.baseFeeCents).toBe(FARE.baseFeeCents);
     expect(res.body.breakdown.distanceFeeCents).toBe(0);
-    expect(res.body.totalCents).toBe(5000);
+    expect(res.body.breakdown.timeFeeCents).toBe(FARE.timeFeeCents);
+    expect(res.body.breakdown.minimumFareApplied).toBe(true);
+    expect(res.body.breakdown.minimumFareTopUpCents).toBe(
+      FARE.totalCents - FARE.subtotalCents,
+    );
+    // No Mapbox token in .env.test, so the estimate is explicitly labelled.
+    expect(res.body.breakdown.distanceSource).toBe('straight_line');
+    expect(res.body.breakdown.surgeFeeCents).toBe(0);
+    expect(res.body.totalCents).toBe(FARE.totalCents);
+    expect(res.body.currency).toBe('EUR');
     expect(res.body.nearestKm).toBe(0);
     expect(Array.isArray(res.body.candidates)).toBe(true);
     expect(res.body.candidates.length).toBeGreaterThanOrEqual(1);
 
     // Verify the 80/20 split is what the order would persist.
     const platformFee = Math.round((res.body.totalCents * 20) / 100);
-    expect(platformFee).toBe(1000);
-    expect(res.body.totalCents - platformFee).toBe(4000);
+    expect(platformFee).toBe(FARE.platformFeeCents);
+    expect(res.body.totalCents - platformFee).toBe(FARE.inspectorShareCents);
   });
 
   // ============================================================
@@ -247,9 +267,14 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const order = await prisma.order.findUnique({ where: { id: res.body.orderId } });
     expect(order!.status).toBe('PAID');
     expect(order!.number).toMatch(/^ORD-\d{4,8}$/);
-    expect(order!.totalCents).toBe(5000);
-    expect(order!.platformFeeCents).toBe(1000);
-    expect(order!.inspectorShareCents).toBe(4000);
+    expect(order!.totalCents).toBe(FARE.totalCents);
+    expect(order!.platformFeeCents).toBe(FARE.platformFeeCents);
+    expect(order!.inspectorShareCents).toBe(FARE.inspectorShareCents);
+    // The ride-hailing components are persisted, not just the total.
+    expect(order!.timeFeeCents).toBe(FARE.timeFeeCents);
+    expect(order!.durationMin).toBe(1);
+    expect(order!.minimumFareApplied).toBe(true);
+    expect(order!.routingSource).toBe('haversine');
 
     const payment = await prisma.payment.findUnique({ where: { orderId: order!.id } });
     expect(payment!.status).toBe('succeeded');
@@ -377,10 +402,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .set('Authorization', `Bearer ${customer.token}`)
       .expect(200);
     expect(res.body.status).toBe('CANCELLED');
-    expect(res.body.refundCents).toBe(5000); // 100% of 5000
+    expect(res.body.refundCents).toBe(FARE.totalCents); // 100%
 
     const refund = await prisma.refund.findFirst({ where: { orderId } });
-    expect(refund!.amountCents).toBe(5000);
+    expect(refund!.amountCents).toBe(FARE.totalCents);
     expect(refund!.reason).toBe('cancel_before_assign');
   });
 
@@ -398,10 +423,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .set('Authorization', `Bearer ${customer.token}`)
       .expect(200);
     expect(res.body.status).toBe('CANCELLED');
-    expect(res.body.refundCents).toBe(4000); // 80% of 5000
+    expect(res.body.refundCents).toBe(Math.round(FARE.totalCents * 0.8)); // 80%
 
     const refund = await prisma.refund.findFirst({ where: { orderId } });
-    expect(refund!.amountCents).toBe(4000);
+    expect(refund!.amountCents).toBe(Math.round(FARE.totalCents * 0.8));
     expect(refund!.reason).toBe('cancel_after_assign');
   });
 

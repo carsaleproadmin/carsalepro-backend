@@ -16,6 +16,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { UpdateListingDto } from './dto/update-listing.dto';
 import {
+  ListingPackagesDto,
   MyListingsListDto,
   PublishResultDto,
 } from './dto/listing-response.dto';
@@ -119,7 +120,12 @@ export class ListingsService {
 
     if (pkg === 'standard') {
       const { expiresAt } = await this.activateStandard(id);
-      return { status: 'ACTIVE', expiresAt: expiresAt.toISOString() };
+      return {
+        status: 'ACTIVE',
+        expiresAt: expiresAt.toISOString(),
+        amountCents: await this.settings.getCents('standardListingPriceEur'),
+        currency: 'EUR',
+      };
     }
 
     // Gold: charge via Stripe (or auto-activate in mock mode).
@@ -133,6 +139,8 @@ export class ListingsService {
       return {
         checkoutUrl: `${this.webOrigin}/account/listings?gold=mock`,
         mock: true,
+        amountCents,
+        currency: 'EUR',
       };
     }
 
@@ -153,7 +161,26 @@ export class ListingsService {
       });
     }
 
-    return { checkoutUrl };
+    return { checkoutUrl, amountCents, currency: 'EUR' };
+  }
+
+  /**
+   * The package price list. Exists so the seller-facing picker renders live
+   * tariffs — before this, the prices and the 30-day duration were hardcoded
+   * strings inside the website's translation files, one copy per locale.
+   */
+  async packages(): Promise<ListingPackagesDto> {
+    const [standardCents, goldCents, durationDays] = await Promise.all([
+      this.settings.getCents('standardListingPriceEur'),
+      this.settings.getCents('goldPackagePriceEur'),
+      this.settings.getNumber('listingDurationDays'),
+    ]);
+    return {
+      items: [
+        { package: 'standard', amountCents: standardCents, currency: 'EUR', durationDays },
+        { package: 'gold', amountCents: goldCents, currency: 'EUR', durationDays },
+      ],
+    };
   }
 
   /** Hide a listing from the showroom. */

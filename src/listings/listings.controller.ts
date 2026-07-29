@@ -7,9 +7,10 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Listing } from '@prisma/client';
-import { CurrentUser } from '../auth/auth.decorators';
+import { CurrentUser, Public } from '../auth/auth.decorators';
 import { CreateListingDto } from './dto/create-listing.dto';
 import {
+  ListingPackagesDto,
   MyListingsListDto,
   PublishResultDto,
 } from './dto/listing-response.dto';
@@ -22,6 +23,16 @@ import { ListingsService } from './listings.service';
 @Controller('api/v1/listings')
 export class ListingsController {
   constructor(private readonly listings: ListingsService) {}
+
+  // Declared before `@Get(':id')`-style routes would be, and public so the
+  // package picker can render prices before the seller signs in.
+  @Public()
+  @Get('packages')
+  @ApiOperation({ summary: 'Listing package prices (integer cents)' })
+  @ApiOkResponse({ type: ListingPackagesDto })
+  packages(): Promise<ListingPackagesDto> {
+    return this.listings.packages();
+  }
 
   @Post()
   @ApiOperation({ summary: 'Create a DRAFT listing for a report you own' })

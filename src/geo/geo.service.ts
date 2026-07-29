@@ -12,6 +12,10 @@ export interface NearestInspector {
   companyName: string | null;
   displayName: string | null;
   distanceKm: number;
+  /** Base-location latitude, so pricing can request a road route to this inspector. */
+  lat: number;
+  /** Base-location longitude. */
+  lng: number;
 }
 
 /**
@@ -62,7 +66,14 @@ export class GeoService {
   ): Promise<NearestInspector[]> {
     const radiusM = radiusKm * 1000;
     const rows = await this.prisma.$queryRaw<
-      Array<{ userId: string; companyName: string | null; displayName: string | null; distanceM: number }>
+      Array<{
+        userId: string;
+        companyName: string | null;
+        displayName: string | null;
+        distanceM: number;
+        lat: number;
+        lng: number;
+      }>
     >(Prisma.sql`
       SELECT
         ip.user_id        AS "userId",
@@ -71,7 +82,9 @@ export class GeoService {
         ST_Distance(
           ip.location,
           ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography
-        )                 AS "distanceM"
+        )                 AS "distanceM",
+        ST_Y(ip.location::geometry) AS "lat",
+        ST_X(ip.location::geometry) AS "lng"
       FROM inspector_profile ip
       JOIN "user" u ON u.id = ip.user_id
       WHERE u."kycVerified" = true
@@ -92,6 +105,8 @@ export class GeoService {
       companyName: r.companyName,
       displayName: r.displayName,
       distanceKm: Math.round((Number(r.distanceM) / 1000) * 10) / 10,
+      lat: Number(r.lat),
+      lng: Number(r.lng),
     }));
   }
 
@@ -111,7 +126,14 @@ export class GeoService {
     }
     const radiusM = radiusKm * 1000;
     const rows = await this.prisma.$queryRaw<
-      Array<{ userId: string; companyName: string | null; displayName: string | null; distanceM: number }>
+      Array<{
+        userId: string;
+        companyName: string | null;
+        displayName: string | null;
+        distanceM: number;
+        lat: number;
+        lng: number;
+      }>
     >(Prisma.sql`
       SELECT
         ip.user_id        AS "userId",
@@ -120,7 +142,9 @@ export class GeoService {
         ST_Distance(
           ip.location,
           ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography
-        )                 AS "distanceM"
+        )                 AS "distanceM",
+        ST_Y(ip.location::geometry) AS "lat",
+        ST_X(ip.location::geometry) AS "lng"
       FROM inspector_profile ip
       JOIN "user" u ON u.id = ip.user_id
       WHERE u."kycVerified" = true
@@ -142,6 +166,8 @@ export class GeoService {
       companyName: r.companyName,
       displayName: r.displayName,
       distanceKm: Math.round((Number(r.distanceM) / 1000) * 10) / 10,
+      lat: Number(r.lat),
+      lng: Number(r.lng),
     }));
   }
 

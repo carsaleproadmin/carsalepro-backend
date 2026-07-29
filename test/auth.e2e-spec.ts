@@ -174,6 +174,46 @@ describe('Auth + users (e2e)', () => {
     expect(res.body.platformFeePercent).toBeUndefined(); // not in public subset
   });
 
+  it('12c. settings/public carries a cents price catalog that agrees with the EUR keys', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/settings/public')
+      .expect(200);
+
+    const { prices } = res.body;
+    expect(prices.currency).toBe('EUR');
+    // One source of truth: the cents block must be the EUR keys, converted.
+    expect(prices.payPerViewCents).toBe(Math.round(res.body.payPerViewPriceEur * 100));
+    expect(prices.goldPackageCents).toBe(Math.round(res.body.goldPackagePriceEur * 100));
+    expect(prices.orderBaseFeeCents).toBe(Math.round(res.body.orderBaseFeeEur * 100));
+    expect(prices.orderRatePerKmCents).toBe(Math.round(res.body.orderRatePerKmEur * 100));
+    expect(prices.orderRatePerMinuteCents).toBe(
+      Math.round(res.body.orderRatePerMinuteEur * 100),
+    );
+    expect(prices.orderMinimumFareCents).toBe(Math.round(res.body.orderMinimumFareEur * 100));
+    expect(prices.vinHistoryCents).toBe(Math.round(res.body.vinHistoryPriceEur * 100));
+
+    // Operator levers stay private — publishing them would let a caller time a
+    // booking around the peak window.
+    expect(res.body.orderSurgeMultiplier).toBeUndefined();
+    expect(res.body.orderPeakMultiplier).toBeUndefined();
+    expect(res.body.orderPeakStartHour).toBeUndefined();
+  });
+
+  it('12d. exposes listing package prices without a token', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/listings/packages')
+      .expect(200);
+
+    const settings = await request(app.getHttpServer()).get('/api/v1/settings/public');
+    const gold = res.body.items.find((i: { package: string }) => i.package === 'gold');
+    const standard = res.body.items.find((i: { package: string }) => i.package === 'standard');
+
+    expect(gold.amountCents).toBe(settings.body.prices.goldPackageCents);
+    expect(gold.currency).toBe('EUR');
+    expect(standard.amountCents).toBe(settings.body.prices.standardListingCents);
+    expect(standard.durationDays).toBe(settings.body.listingDurationDays);
+  });
+
   it('13. erases the account (GDPR) and blocks subsequent login', async () => {
     const email = uniqueEmail();
     const reg = await request(app.getHttpServer())

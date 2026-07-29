@@ -18,6 +18,15 @@ export class PpvCheckoutResponseDto {
     description: 'True when Stripe is unconfigured and the purchase was auto-completed (mock mode).',
   })
   mock?: boolean;
+
+  @ApiPropertyOptional({
+    example: 1499,
+    description: 'What this unlock charges, in integer cents. Absent when alreadyOwned.',
+  })
+  amountCents?: number;
+
+  @ApiPropertyOptional({ example: 'EUR' })
+  currency?: string;
 }
 
 export class ReportPurchaseItemDto {
