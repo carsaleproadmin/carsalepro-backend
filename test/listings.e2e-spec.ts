@@ -164,6 +164,45 @@ describe('Listings (e2e)', () => {
     }
   });
 
+  it('1b. GET /listings/:id returns the full owned row, and 403s for a stranger', async () => {
+    // The manual editor hydrates a DRAFT from here. /me/listings is a summary
+    // and the public route serves only ACTIVE, so this is the only read that
+    // can rehydrate one — previously the editor had to issue an empty PATCH.
+    const owner = await registerUser(app);
+    const stranger = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id;
+
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      expect(res.body.id).toBe(listingId);
+      expect(res.body.status).toBe('DRAFT');
+      expect(res.body).toHaveProperty('vehicleData');
+      expect(res.body).toHaveProperty('contactEmail');
+
+      await request(app.getHttpServer())
+        .get(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .expect(403);
+
+      await request(app.getHttpServer())
+        .get(`/api/v1/listings/${listingId}`)
+        .expect(401);
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
   it('3b. BE-S1: a different user claiming an already-claimed code gets the same 404', async () => {
     const owner = await registerUser(app);
     const stranger = await registerUser(app);

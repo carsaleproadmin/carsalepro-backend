@@ -93,6 +93,22 @@ export class ListingsController {
     return this.listings.createManual(userId, dto);
   }
 
+  // Declared after the static segments above, before the other `:id` routes.
+  @Get(':id')
+  @ApiOperation({
+    summary: 'Read one owned listing in full, including vehicleData',
+    description:
+      'The multi-stage manual editor needs to hydrate a draft. GET /me/listings omits ' +
+      'vehicleData and the contact fields, and the public route serves only ACTIVE ' +
+      'listings, so neither can rehydrate a DRAFT. Without this the editor had to issue ' +
+      'an empty PATCH as a read — a write in the audit trail for something that changes ' +
+      'nothing.',
+  })
+  @ApiParam({ name: 'id', description: 'Listing id' })
+  get(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<Listing> {
+    return this.listings.getOwned(userId, id);
+  }
+
   @Patch(':id')
   @ApiOperation({
     summary: 'Update editable fields of an owned listing',
