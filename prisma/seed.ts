@@ -10,10 +10,7 @@ import {
   ContractKey,
   DRAFT_MARKER,
 } from '../src/legal/legal-contracts.content';
-import {
-  PLATFORM_SETTING_DEFAULTS,
-  REPRICED_SETTING_KEYS,
-} from '../src/settings/platform-settings.constants';
+import { PLATFORM_SETTING_DEFAULTS } from '../src/settings/platform-settings.constants';
 
 const prisma = new PrismaClient();
 
@@ -83,31 +80,11 @@ async function seedContractTemplates(): Promise<void> {
   }
 }
 
-/**
- * The order tariff changed shape: base + per-km became base + per-km + per-minute
- * with a minimum fare. Because settings are seeded with `update: {}`, an existing
- * deployment would keep the old base (50) and per-km rate (1.50) and simply GAIN
- * the per-minute charge — a price rise nobody decided on. Reset those two keys
- * once, on the deploy that introduces the per-minute key, and never again.
- */
-async function repriceOrderTariffOnce(): Promise<boolean> {
-  const alreadyMigrated = await prisma.platformSetting.findUnique({
-    where: { key: 'orderRatePerMinuteEur' },
-  });
-  if (alreadyMigrated) return false;
-
-  for (const key of REPRICED_SETTING_KEYS) {
-    await prisma.platformSetting.updateMany({
-      where: { key },
-      data: { value: PLATFORM_SETTING_DEFAULTS[key], updatedBy: 'seed:tariff-v2' },
-    });
-  }
-  return true;
-}
-
 async function main(): Promise<void> {
-  const repriced = await repriceOrderTariffOnce();
-
+  // NOTE: the one-time order-tariff reprice is NOT here. It lives in migration
+  // 20260729070000_reprice_order_tariff, because Render's start command runs
+  // `prisma migrate deploy` and never runs this seed — a reprice that only
+  // happens when someone remembers to seed is not a reprice.
   for (const [key, value] of Object.entries(PLATFORM_SETTING_DEFAULTS)) {
     await prisma.platformSetting.upsert({
       where: { key },
@@ -116,11 +93,6 @@ async function main(): Promise<void> {
     });
   }
   console.log(`Seeded ${Object.keys(PLATFORM_SETTING_DEFAULTS).length} platform settings`);
-  if (repriced) {
-    console.log(
-      `  reset ${REPRICED_SETTING_KEYS.join(', ')} to the v2 tariff defaults (one-time)`,
-    );
-  }
 
   const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@carsalepro.com';
   await prisma.user.upsert({
