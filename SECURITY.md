@@ -71,11 +71,13 @@ Each lists *what*, *why*, and *how to finish*.
     lives: NULL = the legacy shared bucket, a value = the dedicated one. Reads
     resolve the client from that column, so pre-migration rows keep working
     through the whole migration window.
-  - `env.validation.ts` requires `R2_KYC_ACCESS_KEY_ID`,
-    `R2_KYC_SECRET_ACCESS_KEY` and `R2_KYC_BUCKET` when `NODE_ENV=production`;
-    the boot fails without them. When they are absent outside production the KYC
-    methods fall back to the main client/bucket and log a warning at startup, so
-    local dev and CI are unaffected.
+  - The three `R2_KYC_*` vars are **not** required by `env.validation.ts`, and
+    that is deliberate. Failing the boot would take the entire service down to
+    protect a feature that, unset, is only as exposed as it was before this work —
+    and strictly less so, because `kycSignedDownloadUrl` has no `R2_PUBLIC_URL`
+    short-circuit either way. Unset, the KYC methods fall back to the main
+    client/bucket; in production `R2Service` logs that at **error** level on every
+    boot, so the gap is visible in Render logs rather than silent.
   - `MeService.erase` now sweeps `kyc/<userId>/` (resolved through `DeviceLink`)
     via `kycDeletePrefix`, in **both** buckets, and stamps `purgedAt` on the
     matching rows. Previously a GDPR erasure removed reports and photos and left
@@ -86,8 +88,9 @@ Each lists *what*, *why*, and *how to finish*.
   2. Create an R2 API token **scoped to that bucket alone** (object read/write).
      This is a Cloudflare dashboard action; there is no API for scoped-token
      creation. Set `R2_KYC_ACCESS_KEY_ID` / `R2_KYC_SECRET_ACCESS_KEY` /
-     `R2_KYC_BUCKET` on Render before the next production deploy — the Joi
-     validator will otherwise refuse to boot.
+     `R2_KYC_BUCKET` on Render. Until they are set the deploy still boots, but
+     identity documents keep landing in `carsalepro-reports` and every boot logs
+     an error saying so.
   3. Move the existing objects with
      `npx ts-node scripts/migrate-kyc-objects.ts --dry-run` and then without the
      flag. It copies → verifies with `HeadObject` → updates `kyc_document.bucket`

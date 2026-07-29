@@ -39,7 +39,9 @@ Use `npx prisma migrate deploy` (non-interactive) to apply, and `prisma migrate 
 
 ```bash
 npx tsc --noEmit -p tsconfig.build.json
-npm run test:e2e -- --forceExit            # 297 e2e / 22 suites must stay green; ONE jest at a time
+npm run lint                               # ESLint 9 flat config (eslint.config.mjs)
+npm test                                   # 87 unit / 9 suites
+npm run test:e2e -- --forceExit            # 298 e2e / 22 suites must stay green; ONE jest at a time
 ```
 
 Always pass `--forceExit` (Redis/handles keep Jest alive otherwise). e2e reads
