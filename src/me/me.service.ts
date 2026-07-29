@@ -22,10 +22,11 @@ export class MeService {
    * legacy per-report `report-photos/<reportId>/*` keys from the old presigned
    * flow. ReportPhoto rows cascade with `report.deleteMany`.
    *
-   * Also erases KYC identity documents (`kyc/<userId>/*`) when this device is
-   * linked to a web account — see {@link eraseKycDocuments}. The response shape
-   * is unchanged (KYC objects are counted in `objectsDeleted`) because the
-   * mobile contract is frozen.
+   * Also erases KYC identity documents (`kyc/<userId>/*`) and seller-uploaded
+   * listing photos (`listings/<userId>/*`) when this device is linked to a web
+   * account — see {@link eraseKycDocuments} and {@link eraseListingPhotos}. The
+   * response shape is unchanged (both are counted in `objectsDeleted`) because
+   * the mobile contract is frozen.
    */
   async erase(deviceId: string): Promise<EraseResult> {
     let objectsDeleted = 0;
@@ -46,6 +47,7 @@ export class MeService {
       }
     }
     objectsDeleted += await this.eraseKycDocuments(deviceId);
+    objectsDeleted += await this.eraseListingPhotos(deviceId);
     const { count: reportsDeleted } = await this.prisma.report.deleteMany({
       where: { deviceId },
     });
@@ -93,6 +95,44 @@ export class MeService {
     if (deleted > 0 || count > 0) {
       this.logger.log(
         `GDPR erasure removed ${deleted} KYC object(s) and purged ${count} document row(s) ` +
+          `for user=${this.mask(link.userId)}`,
+      );
+    }
+    return deleted;
+  }
+
+  /**
+   * Erase the listing photos the linked account uploaded.
+   *
+   * Manual listings (BE-S2) let a private seller upload their own photographs —
+   * user-generated content of their own property, often including a driveway, a
+   * house number or a number plate. Those objects live under
+   * `listings/<userId>/`, keyed by user rather than device, so like KYC scans
+   * they are only reachable through a DeviceLink and were untouched by an
+   * erasure that swept `free/`, `pro/` and `report-photos/`.
+   *
+   * The `ListingPhoto` rows are deleted too: unlike a `KycApplication`, they
+   * carry no audit value, and a row pointing at an object that no longer exists
+   * would surface as a broken image in the showroom. The listings themselves are
+   * left alone — a device-scoped erasure is not a request to delete the web
+   * account's adverts.
+   */
+  private async eraseListingPhotos(deviceId: string): Promise<number> {
+    if (!this.r2.isConfigured()) return 0;
+
+    const link = await this.prisma.deviceLink.findUnique({
+      where: { deviceId },
+      select: { userId: true },
+    });
+    if (!link) return 0;
+
+    const deleted = await this.r2.deletePrefix(`listings/${link.userId}/`);
+    const { count } = await this.prisma.listingPhoto.deleteMany({
+      where: { listing: { sellerId: link.userId } },
+    });
+    if (deleted > 0 || count > 0) {
+      this.logger.log(
+        `GDPR erasure removed ${deleted} listing photo object(s) and ${count} row(s) ` +
           `for user=${this.mask(link.userId)}`,
       );
     }

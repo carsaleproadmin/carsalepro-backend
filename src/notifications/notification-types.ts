@@ -23,6 +23,7 @@ export type NotificationType =
   | 'kyc.approved'
   | 'kyc.rejected'
   | 'ppv.purchased'
+  | 'vin_history.failed'
   | 'listing.published'
   | 'listing.expiring';
 
@@ -62,6 +63,8 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   'kyc.approved': ['inapp', 'email'],
   'kyc.rejected': ['inapp', 'email'],
   'ppv.purchased': ['inapp', 'email'],
+  /** Operator-facing: a paid VIN lookup could not be delivered and was refunded. */
+  'vin_history.failed': ['inapp', 'email'],
   'listing.published': ['inapp'],
   'listing.expiring': ['inapp', 'email'],
 };

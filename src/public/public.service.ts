@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, Report } from '@prisma/client';
+import { Listing, Prisma, Report } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import { SettingsService } from '../settings/settings.service';
@@ -9,6 +9,18 @@ const PAGE_SIZE = 12;
 
 type PhotoRef = { s3Key?: string; kind?: string; angle?: string };
 
+type ListingWithReport = Prisma.ListingGetPayload<{ include: { report: true } }>;
+
+/**
+ * How a listing's vehicle data was established. Explicit rather than implied by
+ * a `verified` boolean, because "we did not inspect this car" and "this car
+ * failed inspection" are very different claims and a single flag conflates them.
+ */
+export interface ListingInspectionBlock {
+  status: 'inspected' | 'self_declared';
+  reportCode: string | null;
+}
+
 @Injectable()
 export class PublicService {
   constructor(
@@ -17,15 +29,9 @@ export class PublicService {
     private readonly settings: SettingsService,
   ) {}
 
-  /** Showroom search — ACTIVE verified listings only, Gold first. */
+  /** Showroom search — ACTIVE listings, Gold first. */
   async searchListings(q: ListingQueryDto) {
     const page = q.page && q.page > 0 ? q.page : 1;
-    const reportFilter: Prisma.ReportWhereInput = {};
-    if (q.make) reportFilter.make = { equals: q.make, mode: 'insensitive' };
-    if (q.model) reportFilter.model = { contains: q.model, mode: 'insensitive' };
-    if (q.yearFrom || q.yearTo)
-      reportFilter.year = { gte: q.yearFrom ?? undefined, lte: q.yearTo ?? undefined };
-    if (q.mileageTo) reportFilter.mileageKm = { lte: q.mileageTo };
 
     const where: Prisma.ListingWhereInput = {
       status: 'ACTIVE',
@@ -37,7 +43,20 @@ export class PublicService {
       ...(q.priceFrom || q.priceTo
         ? { priceCents: { gte: q.priceFrom ?? undefined, lte: q.priceTo ?? undefined } }
         : {}),
-      ...(Object.keys(reportFilter).length ? { report: reportFilter } : {}),
+      // Vehicle filters read the LISTING's own columns, not the report relation.
+      // A manual listing has no report to join, and `(make, model, year)` is
+      // indexed on the listing, so this is both correct and faster.
+      ...(q.make ? { make: { equals: q.make, mode: 'insensitive' as const } } : {}),
+      ...(q.model ? { model: { contains: q.model, mode: 'insensitive' as const } } : {}),
+      ...(q.yearFrom || q.yearTo
+        ? { year: { gte: q.yearFrom ?? undefined, lte: q.yearTo ?? undefined } }
+        : {}),
+      ...(q.mileageTo ? { mileageKm: { lte: q.mileageTo } } : {}),
+      // Opt-IN filter. Manual listings are shown by default and badged as
+      // self-declared: hiding them would make the showroom look empty for the
+      // exact seller segment BE-S2 exists to serve. A buyer who only wants
+      // inspected cars asks for them.
+      ...(q.verifiedOnly ? { reportId: { not: null }, source: 'report' } : {}),
     };
 
     // Gold listings rank first. 'gold' < 'standard' lexically, so ascending
@@ -76,7 +95,10 @@ export class PublicService {
     if (!listing) throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
     await this.prisma.listing.update({ where: { id }, data: { viewsCount: { increment: 1 } } });
 
-    const photos = await this.signPhotos(listing.report.photosManifest, 12);
+    const inspection = this.inspectionOf(listing);
+    const inspected = inspection.status === 'inspected';
+    const photos = await this.listingPhotos(listing, 12);
+
     return {
       id: listing.id,
       priceCents: listing.priceCents,
@@ -86,10 +108,17 @@ export class PublicService {
       contactPhone: listing.contactPhone,
       contactEmail: listing.contactEmail,
       package: listing.package,
-      vehicle: this.vehicle(listing.report),
-      qualityScore: listing.report.qualityScore,
-      reportCode: listing.report.code,
-      verified: true,
+      source: listing.source,
+      vehicle: this.listingVehicle(listing),
+      // A quality score is derived from an inspection. There is no honest value
+      // for a self-declared car, so it is null rather than 0 (which reads as
+      // "inspected and terrible") or omitted (which the UI would guess about).
+      qualityScore: inspected ? (listing.report?.qualityScore ?? null) : null,
+      reportCode: inspection.reportCode,
+      verified: inspected,
+      inspection,
+      /** Seller's own claims. Never merged into `vehicle` — provenance matters. */
+      selfDeclaration: this.selfDeclarationOf(listing),
       photos,
       views: listing.viewsCount + 1,
       // What unlocking the full report costs, so the page never hardcodes it.
@@ -158,18 +187,96 @@ export class PublicService {
     };
   }
 
-  private async toCard(listing: Prisma.ListingGetPayload<{ include: { report: true } }>) {
-    const [thumb] = await this.signPhotos(listing.report.photosManifest, 1);
+  /**
+   * The listing's own denormalised vehicle facts.
+   *
+   * Identical shape for both provenances — the caller learns which it is from
+   * `inspection.status`, not from a differently-shaped payload.
+   */
+  private listingVehicle(l: Listing) {
+    return {
+      make: l.make,
+      model: l.model,
+      year: l.year,
+      mileageKm: l.mileageKm,
+      color: l.color,
+      bodyType: l.bodyType,
+      driveType: l.driveType,
+      fuelType: l.fuelType,
+      transmission: l.transmission,
+      powerKw: l.powerKw,
+      firstRegistration: l.firstRegistration ? l.firstRegistration.toISOString() : null,
+      huValidUntil: l.huValidUntil,
+    };
+  }
+
+  /**
+   * `source` alone is not enough: a report-backed listing whose report was
+   * hard-deleted (GDPR erasure sets `report_id` to NULL) must stop claiming an
+   * inspection immediately. The relation is the authority.
+   */
+  private inspectionOf(l: ListingWithReport): ListingInspectionBlock {
+    if (l.source === 'report' && l.report) {
+      return { status: 'inspected', reportCode: l.report.code };
+    }
+    return { status: 'self_declared', reportCode: null };
+  }
+
+  private selfDeclarationOf(l: Listing): Record<string, unknown> | null {
+    if (l.source !== 'manual') return null;
+    const data = (l.vehicleData ?? null) as Record<string, unknown> | null;
+    const declared = data?.selfDeclaration;
+    return declared && typeof declared === 'object' && !Array.isArray(declared)
+      ? (declared as Record<string, unknown>)
+      : null;
+  }
+
+  private async toCard(listing: ListingWithReport) {
+    const inspection = this.inspectionOf(listing);
+    const inspected = inspection.status === 'inspected';
+    const [thumb] = await this.listingPhotos(listing, 1);
     return {
       id: listing.id,
       priceCents: listing.priceCents,
       city: listing.city,
       package: listing.package,
-      qualityScore: listing.report.qualityScore,
-      verified: true,
-      vehicle: this.vehicle(listing.report),
+      source: listing.source,
+      qualityScore: inspected ? (listing.report?.qualityScore ?? null) : null,
+      verified: inspected,
+      inspection,
+      vehicle: this.listingVehicle(listing),
       thumbnailUrl: thumb?.url ?? null,
     };
+  }
+
+  /**
+   * Photos for a listing card/detail, resolved from whichever gallery the
+   * listing actually has: the inspector's `photosManifest` for a report-backed
+   * listing, the seller's own `ListingPhoto` rows for a manual one.
+   */
+  private async listingPhotos(
+    listing: ListingWithReport,
+    limit: number,
+  ): Promise<{ url: string; kind?: string }[]> {
+    if (listing.source === 'report' && listing.report) {
+      return this.signPhotos(listing.report.photosManifest, limit);
+    }
+    if (!this.r2.isConfigured()) return [];
+    const rows = await this.prisma.listingPhoto.findMany({
+      where: { listingId: listing.id },
+      orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+      take: limit,
+    });
+    const out: { url: string; kind?: string }[] = [];
+    for (const row of rows) {
+      try {
+        const { url } = await this.r2.createPresignedDownloadUrl(row.r2Key);
+        out.push({ url, kind: 'listing' });
+      } catch {
+        /* skip unsignable */
+      }
+    }
+    return out;
   }
 
   private async signPhotos(

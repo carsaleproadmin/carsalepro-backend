@@ -1,9 +1,13 @@
 import { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import request from 'supertest';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { ListingsService } from '../src/listings/listings.service';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { R2Service } from '../src/r2/r2.service';
+
+const FIXTURE_PHOTO = join(__dirname, 'fixtures', 'small-800x600.png');
 
 let codeCounter = 0;
 function uniqueCode(): string {
@@ -559,5 +563,375 @@ describe('Listings (e2e)', () => {
     } finally {
       await cleanup({ listingId: listing.id, reportId: report.id });
     }
+  });
+
+  // ============================================================
+  // BE-S2 — listing a car with NO inspection report
+  // ============================================================
+  describe('BE-S2: manual listings', () => {
+    const sellerIds: string[] = [];
+
+    async function newSeller() {
+      const seller = await registerUser(app);
+      sellerIds.push(seller.userId);
+      return seller;
+    }
+
+    afterAll(async () => {
+      // Photos are real objects in R2 during e2e — sweep the sellers' prefixes.
+      const r2 = app.get(R2Service);
+      if (r2.isConfigured()) {
+        for (const id of sellerIds) {
+          await r2.deletePrefix(`listings/${id}/`).catch(() => undefined);
+        }
+      }
+      await prisma.listing.deleteMany({ where: { sellerId: { in: sellerIds } } });
+    });
+
+    async function createManual(token: string, body: Record<string, unknown> = {}) {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/listings/manual')
+        .set('Authorization', `Bearer ${token}`)
+        .send(body)
+        .expect(201);
+      return res.body;
+    }
+
+    it('13. POST /listings/manual opens a DRAFT with source=manual and reportId=null', async () => {
+      const seller = await newSeller();
+      const listing = await createManual(seller.token, {
+        priceCents: 990000,
+        city: 'Dresden',
+        vehicleData: {
+          schemaVersion: 1,
+          vehicle: {
+            make: 'Opel',
+            model: 'Astra',
+            year: 2016,
+            fuelType: 'petrol',
+            transmission: 'manual',
+            powerKw: 92,
+            colour: 'silver',
+            tuvDate: '2027-06',
+            firstRegistration: '2016-04-12',
+          },
+          operational: { mileageKm: 132000 },
+          selfDeclaration: { accidentFreeClaimed: true, ownersCount: 2 },
+        },
+      });
+
+      expect(listing.status).toBe('DRAFT');
+      expect(listing.source).toBe('manual');
+      expect(listing.reportId).toBeNull();
+      // Projected onto the searchable columns, not left inside the JSON blob.
+      expect(listing.make).toBe('Opel');
+      expect(listing.model).toBe('Astra');
+      expect(listing.year).toBe(2016);
+      expect(listing.mileageKm).toBe(132000);
+      expect(listing.powerKw).toBe(92);
+      expect(listing.color).toBe('silver');
+      expect(listing.huValidUntil).toBe('2027-06');
+      expect(listing.firstRegistration).toContain('2016-04-12');
+    });
+
+    it('14. money on seller-declared damages is stripped, and scores/signoff are refused', async () => {
+      const seller = await newSeller();
+      const listing = await createManual(seller.token, {
+        vehicleData: {
+          damages: [
+            {
+              id: 'd1',
+              tier: 'T2',
+              partId: 'door_fl',
+              note: 'scratch',
+              materialsEur: 120,
+              hours: 3,
+              hourlyRate: 90,
+              manualCostEur: 400,
+            },
+          ],
+        },
+      });
+
+      const stored = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+      const damages = (stored.vehicleData as { damages: Record<string, unknown>[] }).damages;
+      expect(damages[0].id).toBe('d1');
+      expect(damages[0].note).toBe('scratch');
+      // AW/AZT estimation is a trained discipline; a seller pricing their own
+      // damage is the one party motivated to understate it.
+      expect(damages[0].materialsEur).toBeUndefined();
+      expect(damages[0].hours).toBeUndefined();
+      expect(damages[0].hourlyRate).toBeUndefined();
+      expect(damages[0].manualCostEur).toBeUndefined();
+
+      // A quality score and an inspector sign-off have no seller-side meaning.
+      await request(app.getHttpServer())
+        .post('/api/v1/listings/manual')
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ vehicleData: { scores: { qualityScore: 100 } } })
+        .expect(400);
+      await request(app.getHttpServer())
+        .post('/api/v1/listings/manual')
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ vehicleData: { signoff: { accidentFree: true } } })
+        .expect(400);
+    });
+
+    it('15. PATCH vehicleData deep-merges: objects merge, arrays replace, null deletes', async () => {
+      const seller = await newSeller();
+      const listing = await createManual(seller.token, {
+        vehicleData: {
+          vehicle: { make: 'Opel', model: 'Astra', year: 2016 },
+          operational: { mileageKm: 132000, keysCount: 2 },
+          damages: [
+            { id: 'd1', tier: 'T1' },
+            { id: 'd2', tier: 'T2' },
+          ],
+          selfDeclaration: { accidentFreeClaimed: true, ownersCount: 2 },
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listing.id}`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({
+          vehicleData: {
+            // object: merges, so `model` and `year` survive
+            vehicle: { year: 2017 },
+            // array: replaces wholesale — the ONLY way a client can delete an
+            // element from a list
+            damages: [{ id: 'd3', tier: 'T3' }],
+            // explicit null: deletes the key
+            selfDeclaration: null,
+          },
+        })
+        .expect(200);
+
+      const data = res.body.vehicleData as Record<string, Record<string, unknown>>;
+      expect(data.vehicle).toEqual({ make: 'Opel', model: 'Astra', year: 2017 });
+      expect(data.operational).toEqual({ mileageKm: 132000, keysCount: 2 });
+      expect(data.damages).toEqual([{ id: 'd3', tier: 'T3' }]);
+      expect(data.selfDeclaration).toBeUndefined();
+      // The projected column follows the merge.
+      expect(res.body.year).toBe(2017);
+    });
+
+    it('16. PATCH vehicleData on a report-backed listing is refused with vehicle_immutable', async () => {
+      const owner = await newSeller();
+      const code = uniqueCode();
+      const report = await seedReport({ code, userId: owner.userId });
+      let listingId: string | undefined;
+      try {
+        const created = await request(app.getHttpServer())
+          .post('/api/v1/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ reportCode: code })
+          .expect(201);
+        listingId = created.body.id;
+        expect(created.body.source).toBe('report');
+        // The claim path denormalises the report onto the listing columns.
+        expect(created.body.make).toBe('BMW');
+        expect(created.body.year).toBe(2018);
+
+        const res = await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listingId}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ vehicleData: { vehicle: { make: 'Ferrari' } } })
+          .expect(400);
+        expect(res.body.error.code).toBe('vehicle_immutable');
+
+        // Ordinary fields still patch fine on the same listing.
+        await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listingId}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ city: 'Kiel' })
+          .expect(200);
+      } finally {
+        await cleanup({ listingId, reportId: report.id });
+      }
+    });
+
+    it('17. photos upload, list, reorder and delete', async () => {
+      const seller = await newSeller();
+      const listing = await createManual(seller.token, { city: 'Kiel' });
+
+      const first = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .field('caption', 'Front')
+        .attach('file', FIXTURE_PHOTO)
+        .expect(201);
+      expect(first.body.id).toBeTruthy();
+      expect(first.body.width).toBeGreaterThan(0);
+      expect(first.body.caption).toBe('Front');
+
+      // Stored under the seller-scoped prefix GDPR erasure sweeps.
+      const row = await prisma.listingPhoto.findUniqueOrThrow({ where: { id: first.body.id } });
+      expect(row.r2Key.startsWith(`listings/${seller.userId}/${listing.id}/`)).toBe(true);
+      expect(row.format).toBe('jpeg');
+
+      // Identical bytes are a retry, not a second photo.
+      const retry = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .attach('file', FIXTURE_PHOTO)
+        .expect(201);
+      expect(retry.body.id).toBe(first.body.id);
+
+      const second = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .attach('file', join(__dirname, 'fixtures', 'photo-exif-rotated.jpg'))
+        .expect(201);
+
+      const listed = await request(app.getHttpServer())
+        .get(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(200);
+      expect(listed.body.items).toHaveLength(2);
+      expect(listed.body.max).toBe(20);
+      expect(listed.body.items[0].id).toBe(first.body.id);
+
+      const reordered = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listing.id}/photos/order`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ ids: [second.body.id, first.body.id] })
+        .expect(200);
+      expect(reordered.body.items.map((p: { id: string }) => p.id)).toEqual([
+        second.body.id,
+        first.body.id,
+      ]);
+
+      // A partial order has no well-defined result and is refused.
+      const bad = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listing.id}/photos/order`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ ids: [first.body.id] })
+        .expect(400);
+      expect(bad.body.error.code).toBe('photo_order_mismatch');
+
+      await request(app.getHttpServer())
+        .delete(`/api/v1/listings/${listing.id}/photos/${second.body.id}`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(200);
+      expect(await prisma.listingPhoto.count({ where: { listingId: listing.id } })).toBe(1);
+    });
+
+    it('18. a stranger cannot read or upload to someone else\u2019s gallery', async () => {
+      const seller = await newSeller();
+      const stranger = await newSeller();
+      const listing = await createManual(seller.token, { city: 'Kiel' });
+
+      await request(app.getHttpServer())
+        .get(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .expect(403);
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .attach('file', FIXTURE_PHOTO)
+        .expect(403);
+    });
+
+    it('19. the 21st photo is refused with photo_limit_reached', async () => {
+      const seller = await newSeller();
+      const listing = await createManual(seller.token, { city: 'Kiel' });
+
+      // Seed the cap directly: twenty real uploads would spend twenty sharp
+      // transforms and twenty R2 round-trips to test one integer comparison.
+      await prisma.listingPhoto.createMany({
+        data: Array.from({ length: 20 }, (_, i) => ({
+          listingId: listing.id,
+          r2Key: `listings/${seller.userId}/${listing.id}/seed-${i}-${randomUUID()}.jpg`,
+          sizeBytes: 1000,
+          width: 800,
+          height: 600,
+          order: i,
+        })),
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .attach('file', FIXTURE_PHOTO)
+        .expect(400);
+      expect(res.body.error.code).toBe('photo_limit_reached');
+      expect(res.body.error.max).toBe(20);
+    });
+
+    it('20. publishing an incomplete manual listing returns incomplete_listing with missing[]', async () => {
+      const seller = await newSeller();
+      const listing = await createManual(seller.token, {});
+
+      const empty = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/publish`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ package: 'standard' })
+        .expect(400);
+      expect(empty.body.error.code).toBe('incomplete_listing');
+      expect(empty.body.error.missing).toEqual(
+        expect.arrayContaining(['priceCents', 'city', 'make', 'model', 'year', 'photos']),
+      );
+
+      // Fill everything except the photo — the gate must still name it, and only it.
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listing.id}`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({
+          priceCents: 990000,
+          city: 'Dresden',
+          vehicleData: { vehicle: { make: 'Opel', model: 'Astra', year: 2016 } },
+        })
+        .expect(200);
+
+      const noPhotos = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/publish`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ package: 'standard' })
+        .expect(400);
+      expect(noPhotos.body.error.code).toBe('incomplete_listing');
+      expect(noPhotos.body.error.missing).toEqual(['photos']);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .attach('file', FIXTURE_PHOTO)
+        .expect(201);
+
+      const published = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/publish`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ package: 'standard' })
+        .expect(201);
+      expect(published.body.status).toBe('ACTIVE');
+
+      const showroom = await request(app.getHttpServer())
+        .get('/api/v1/public/listings?make=Opel&city=Dresden')
+        .expect(200);
+      const card = showroom.body.items.find((i: { id: string }) => i.id === listing.id);
+      expect(card).toBeTruthy();
+      expect(card.verified).toBe(false);
+      expect(card.qualityScore).toBeNull();
+      expect(card.inspection.status).toBe('self_declared');
+    });
+
+    it('21. GET /me/listings reports source, photoCount and a null reportCode', async () => {
+      const seller = await newSeller();
+      const listing = await createManual(seller.token, { city: 'Kiel' });
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .attach('file', FIXTURE_PHOTO)
+        .expect(201);
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(200);
+      const item = res.body.items.find((i: { id: string }) => i.id === listing.id);
+      expect(item.source).toBe('manual');
+      expect(item.reportCode).toBeNull();
+      expect(item.photoCount).toBe(1);
+    });
   });
 });

@@ -35,6 +35,7 @@ import { ReportsModule } from './reports/reports.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { SettingsModule } from './settings/settings.module';
 import { VinModule } from './vin/vin.module';
+import { VinHistoryModule } from './vin-history/vin-history.module';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { VinModule } from './vin/vin.module';
     R2Module,
     HealthModule,
     VinModule,
+    VinHistoryModule,
     QuotaModule,
     ReportsModule,
     MeModule,

@@ -61,6 +61,11 @@ export const envValidationSchema = Joi.object({
 
   NHTSA_BASE_URL: Joi.string().uri().default('https://vpic.nhtsa.dot.gov/api'),
 
+  // Paid VIN history (BE-S3). Only 'mock' is implemented; an unknown value
+  // falls back to the mock, which refuses PAID unlocks in production.
+  VIN_HISTORY_PROVIDER: Joi.string().allow('').default('mock'),
+  VIN_HISTORY_API_KEY: Joi.string().allow('').default(''),
+
   IAP_VALIDATION_MODE: Joi.string().valid('client-trust', 'server').default('client-trust'),
   IAP_BUNDLE_ID: Joi.string().default('com.carsalepro.app'),
   APPLE_SHARED_SECRET: Joi.string().allow('').default(''),

@@ -136,34 +136,35 @@ enum Role {
 }
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  emailVerified DateTime?
-  passwordHash  String?
-  name          String?
-  phone         String?
-  locale        String    @default("de")
-  countryCode   String    @default("DE")
-  role          Role      @default(USER)
-  kycVerified   Boolean   @default(false)
-  bannedAt      DateTime?
-  totpSecret    String?
+  id                String    @id @default(cuid())
+  email             String    @unique
+  emailVerified     DateTime?
+  passwordHash      String?
+  name              String?
+  phone             String?
+  locale            String    @default("de")
+  countryCode       String    @default("DE")
+  role              Role      @default(USER)
+  kycVerified       Boolean   @default(false)
+  bannedAt          DateTime?
+  totpSecret        String?
   notificationPrefs Json?
-  gdprConsentAt DateTime  @default(now())
-  createdAt     DateTime  @default(now())
-  deletedAt     DateTime?
+  gdprConsentAt     DateTime  @default(now())
+  createdAt         DateTime  @default(now())
+  deletedAt         DateTime?
 
-  inspector        InspectorProfile?
-  deviceLinks      DeviceLink[]
-  ordersAsCustomer Order[]           @relation("CustomerOrders")
-  listings         Listing[]
-  reportPurchases  ReportPurchase[]
-  notifications    Notification[]
-  reports          Report[]
-  payments         Payment[]
-  kycApplications  KycApplication[]
-  authAccounts     AuthAccount[]
-  verificationTokens VerificationToken[]
+  inspector           InspectorProfile?
+  deviceLinks         DeviceLink[]
+  ordersAsCustomer    Order[]              @relation("CustomerOrders")
+  listings            Listing[]
+  reportPurchases     ReportPurchase[]
+  notifications       Notification[]
+  reports             Report[]
+  payments            Payment[]
+  vinHistoryPurchases VinHistoryPurchase[]
+  kycApplications     KycApplication[]
+  authAccounts        AuthAccount[]
+  verificationTokens  VerificationToken[]
 
   @@index([role])
   @@map("user")
@@ -171,10 +172,10 @@ model User {
 
 /// OAuth / external identity links for NextAuth (Google, etc.).
 model AuthAccount {
-  id                String  @id @default(cuid())
-  userId            String  @map("user_id")
+  id                String   @id @default(cuid())
+  userId            String   @map("user_id")
   provider          String
-  providerAccountId String  @map("provider_account_id")
+  providerAccountId String   @map("provider_account_id")
   type              String
   createdAt         DateTime @default(now())
 
@@ -186,14 +187,14 @@ model AuthAccount {
 
 /// Email verification / magic-link / password-reset tokens (hashed).
 model VerificationToken {
-  id        String   @id @default(cuid())
-  userId    String?  @map("user_id")
+  id         String    @id @default(cuid())
+  userId     String?   @map("user_id")
   identifier String
-  tokenHash String   @unique @map("token_hash")
-  purpose   String // verify_email | magic_link | password_reset
-  expiresAt DateTime @map("expires_at")
+  tokenHash  String    @unique @map("token_hash")
+  purpose    String // verify_email | magic_link | password_reset
+  expiresAt  DateTime  @map("expires_at")
   consumedAt DateTime? @map("consumed_at")
-  createdAt DateTime @default(now())
+  createdAt  DateTime  @default(now())
 
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -202,19 +203,19 @@ model VerificationToken {
 }
 
 model InspectorProfile {
-  userId          String  @id @map("user_id")
-  companyName     String? @map("company_name")
-  taxId           String? @map("tax_id")
-  vatId           String? @map("vat_id")
-  baseAddress     String  @map("base_address")
+  userId          String                                 @id @map("user_id")
+  companyName     String?                                @map("company_name")
+  taxId           String?                                @map("tax_id")
+  vatId           String?                                @map("vat_id")
+  baseAddress     String                                 @map("base_address")
   location        Unsupported("geography(Point, 4326)")?
-  searchRadiusKm  Int     @default(50) @map("search_radius_km")
-  available       Boolean @default(true)
-  stripeAccountId String? @unique @map("stripe_account_id")
-  stripeOnboarded Boolean @default(false) @map("stripe_onboarded")
-  fcmToken        String? @map("fcm_token")
-  cancelCount     Int     @default(0) @map("cancel_count")
-  createdAt       DateTime @default(now())
+  searchRadiusKm  Int                                    @default(50) @map("search_radius_km")
+  available       Boolean                                @default(true)
+  stripeAccountId String?                                @unique @map("stripe_account_id")
+  stripeOnboarded Boolean                                @default(false) @map("stripe_onboarded")
+  fcmToken        String?                                @map("fcm_token")
+  cancelCount     Int                                    @default(0) @map("cancel_count")
+  createdAt       DateTime                               @default(now())
 
   user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   orders  Order[]      @relation("InspectorOrders")
@@ -306,56 +307,56 @@ enum OrderStatus {
 }
 
 model Order {
-  id          String      @id @default(cuid())
-  number      String      @unique // ORD-#### autogen
-  customerId  String      @map("customer_id")
-  inspectorId String?     @map("inspector_id")
-  status      OrderStatus @default(CREATED)
-  vin         String?     @db.VarChar(17)
+  id          String                                @id @default(cuid())
+  number      String                                @unique // ORD-#### autogen
+  customerId  String                                @map("customer_id")
+  inspectorId String?                               @map("inspector_id")
+  status      OrderStatus                           @default(CREATED)
+  vin         String?                               @db.VarChar(17)
   make        String
   model       String
-  listingUrl  String?     @map("listing_url")
+  listingUrl  String?                               @map("listing_url")
   address     String
   location    Unsupported("geography(Point, 4326)")
-  scheduledAt DateTime    @map("scheduled_at")
-  countryCode String      @default("DE") @map("country_code")
+  scheduledAt DateTime                              @map("scheduled_at")
+  countryCode String                                @default("DE") @map("country_code")
 
   // money (integer cents)
-  baseFeeCents        Int    @map("base_fee_cents")
+  baseFeeCents        Int     @map("base_fee_cents")
   /// Distance the fare was calculated on. ROAD kilometres when the routing
   /// provider answered, great-circle × orderDetourFactor otherwise — see
   /// `routingSource`. Was purely great-circle before the ride-hailing tariff.
   distanceKm          Decimal @map("distance_km")
-  distanceFeeCents    Int    @map("distance_fee_cents")
+  distanceFeeCents    Int     @map("distance_fee_cents")
   /// Driving minutes the time component was calculated on.
-  durationMin         Int?   @map("duration_min")
-  timeFeeCents        Int    @default(0) @map("time_fee_cents")
+  durationMin         Int?    @map("duration_min")
+  timeFeeCents        Int     @default(0) @map("time_fee_cents")
   /// surge × peak, frozen at quote time. 1 when neither applied.
-  surgeMultiplier     Decimal @default(1) @db.Decimal(4, 2) @map("surge_multiplier")
+  surgeMultiplier     Decimal @default(1) @map("surge_multiplier") @db.Decimal(4, 2)
   /// True when the minimum fare floor raised the total.
   minimumFareApplied  Boolean @default(false) @map("minimum_fare_applied")
   /// 'mapbox' | 'haversine' — how distanceKm/durationMin were obtained.
   routingSource       String? @map("routing_source")
-  totalCents          Int    @map("total_cents")
-  platformFeeCents    Int    @map("platform_fee_cents")
-  inspectorShareCents Int    @map("inspector_share_cents")
-  currency            String @default("EUR")
+  totalCents          Int     @map("total_cents")
+  platformFeeCents    Int     @map("platform_fee_cents")
+  inspectorShareCents Int     @map("inspector_share_cents")
+  currency            String  @default("EUR")
 
   contractId    String?   @unique @map("contract_id")
   autoApproveAt DateTime? @map("auto_approve_at")
   submittedAt   DateTime? @map("submitted_at")
   createdAt     DateTime  @default(now())
 
-  customer User              @relation("CustomerOrders", fields: [customerId], references: [id])
+  customer  User              @relation("CustomerOrders", fields: [customerId], references: [id])
   inspector InspectorProfile? @relation("InspectorOrders", fields: [inspectorId], references: [userId])
-  report   Report?
-  payment  Payment?
-  payout   Payout?
-  refunds  Refund[]
-  dispute  Dispute?
-  offers   OrderOffer[]
-  events   OrderEvent[]
-  contract OrderContract?    @relation(fields: [contractId], references: [id])
+  report    Report?
+  payment   Payment?
+  payout    Payout?
+  refunds   Refund[]
+  dispute   Dispute?
+  offers    OrderOffer[]
+  events    OrderEvent[]
+  contract  OrderContract?    @relation(fields: [contractId], references: [id])
 
   @@index([status])
   @@index([customerId])
@@ -402,7 +403,7 @@ model OrderEvent {
 model Payment {
   id                      String   @id @default(cuid())
   orderId                 String?  @unique @map("order_id")
-  purpose                 String // order | ppv | gold
+  purpose                 String // order | ppv | gold | vin_history
   userId                  String   @map("user_id")
   amountCents             Int      @map("amount_cents")
   currency                String   @default("EUR")
@@ -411,43 +412,54 @@ model Payment {
   stripeCheckoutSessionId String?  @unique @map("stripe_checkout_session_id")
   createdAt               DateTime @default(now())
 
-  order          Order?          @relation(fields: [orderId], references: [id])
-  user           User            @relation(fields: [userId], references: [id])
-  reportPurchase ReportPurchase?
+  order              Order?              @relation(fields: [orderId], references: [id])
+  user               User                @relation(fields: [userId], references: [id])
+  reportPurchase     ReportPurchase?
+  vinHistoryPurchase VinHistoryPurchase?
+  refund             Refund?
 
   @@index([userId])
   @@map("payment")
 }
 
+/// A refund issued against a captured payment.
+///
+/// `orderId` is nullable because not every refundable charge belongs to an
+/// order: a paid VIN history whose provider fails AFTER capture is refunded
+/// automatically and has no order to hang off. Order refunds (fired only from
+/// the state machine) still record the order; non-order refunds record the
+/// payment instead, so every row still points at exactly one thing.
 model Refund {
   id             String   @id @default(cuid())
-  orderId        String   @map("order_id")
+  orderId        String?  @map("order_id")
+  paymentId      String?  @unique @map("payment_id")
   amountCents    Int      @map("amount_cents")
-  reason         String // cancel_before_assign|cancel_after_assign|dispute|admin
+  reason         String // cancel_before_assign|cancel_after_assign|dispute|admin|vin_history_provider_failed
   stripeRefundId String   @unique @map("stripe_refund_id")
   createdAt      DateTime @default(now())
 
-  order Order @relation(fields: [orderId], references: [id])
+  order   Order?   @relation(fields: [orderId], references: [id])
+  payment Payment? @relation(fields: [paymentId], references: [id])
 
   @@index([orderId])
   @@map("refund")
 }
 
 model Payout {
-  id               String   @id @default(cuid())
-  orderId          String   @unique @map("order_id")
-  inspectorId      String   @map("inspector_id")
-  amountCents      Int      @map("amount_cents")
-  stripeTransferId String?  @unique @map("stripe_transfer_id")
+  id               String    @id @default(cuid())
+  orderId          String    @unique @map("order_id")
+  inspectorId      String    @map("inspector_id")
+  amountCents      Int       @map("amount_cents")
+  stripeTransferId String?   @unique @map("stripe_transfer_id")
   status           String // pending|paid|failed
   /// Transfer attempts. Retries stop at a cap so a permanently broken payout
   /// becomes an operator task instead of an hourly loop.
-  attempts         Int      @default(0)
-  lastError        String?  @map("last_error")
+  attempts         Int       @default(0)
+  lastError        String?   @map("last_error")
   lastAttemptAt    DateTime? @map("last_attempt_at")
   /// When the retry cron may try again. Null = terminal, needs a human.
   nextRetryAt      DateTime? @map("next_retry_at")
-  createdAt        DateTime @default(now())
+  createdAt        DateTime  @default(now())
 
   order     Order            @relation(fields: [orderId], references: [id])
   inspector InspectorProfile @relation(fields: [inspectorId], references: [userId])
@@ -478,33 +490,95 @@ enum ListingStatus {
   DELETED
 }
 
+/// A car for sale.
+///
+/// Two provenances, distinguished by `source`:
+///   - "report"  — backed by an inspection. `reportId` is set and the vehicle
+///                 columns below are denormalised FROM that report.
+///   - "manual"  — a private seller with no inspection. `reportId` is NULL and
+///                 the vehicle columns are seller-declared (`vehicleData`).
+///
+/// `reportId` is nullable AND unique: Postgres treats NULLs as distinct in a
+/// unique index, so any number of manual listings coexist while the single-use
+/// Report-ID claim (one listing per report, ever) keeps working unchanged.
+///
+/// Nothing derived from an inspection may be inferred for a manual listing —
+/// `verified` is false and `qualityScore` is null for them, always.
 model Listing {
-  id           String        @id @default(cuid())
-  sellerId     String        @map("seller_id")
-  reportId     String        @unique @map("report_id")
-  status       ListingStatus @default(DRAFT)
-  package      String        @default("standard") // standard | gold
-  priceCents   Int           @map("price_cents")
-  city         String
-  plz          String?
-  description  String?
-  contactPhone String?       @map("contact_phone")
-  contactEmail String?       @map("contact_email")
-  // denormalized from the report at import (card + filters)
-  color     String?
-  bodyType  String? @map("body_type")
-  driveType String? @map("drive_type")
-  viewsCount Int    @default(0) @map("views_count")
-  publishedAt DateTime? @map("published_at")
-  expiresAt   DateTime? @map("expires_at")
-  createdAt   DateTime  @default(now())
+  id                String        @id @default(cuid())
+  sellerId          String        @map("seller_id")
+  reportId          String?       @unique @map("report_id")
+  /// "report" | "manual" — how this listing's vehicle data was obtained.
+  source            String        @default("report")
+  status            ListingStatus @default(DRAFT)
+  package           String        @default("standard") // standard | gold
+  priceCents        Int           @map("price_cents")
+  city              String
+  plz               String?
+  description       String?
+  contactPhone      String?       @map("contact_phone")
+  contactEmail      String?       @map("contact_email")
+  // Denormalized vehicle facts. Copied from the report for source="report",
+  // seller-declared for source="manual". Search reads THESE columns, never the
+  // report relation, so both provenances are filterable the same way.
+  vin               String?       @db.VarChar(17)
+  make              String?
+  model             String?
+  year              Int?
+  mileageKm         Int?          @map("mileage_km")
+  fuelType          String?       @map("fuel_type")
+  transmission      String?
+  powerKw           Int?          @map("power_kw")
+  firstRegistration DateTime?     @map("first_registration")
+  /// HU/TÜV validity as the seller writes it ("2027-06") — free text, not a date.
+  huValidUntil      String?       @map("hu_valid_until")
+  color             String?
+  bodyType          String?       @map("body_type")
+  driveType         String?       @map("drive_type")
+  /// Structured seller-declared payload (ListingVehicleV1Dto). Manual only.
+  vehicleData       Json?         @map("vehicle_data")
+  viewsCount        Int           @default(0) @map("views_count")
+  publishedAt       DateTime?     @map("published_at")
+  expiresAt         DateTime?     @map("expires_at")
+  createdAt         DateTime      @default(now())
 
-  seller User   @relation(fields: [sellerId], references: [id])
-  report Report @relation(fields: [reportId], references: [id])
+  seller User           @relation(fields: [sellerId], references: [id])
+  report Report?        @relation(fields: [reportId], references: [id])
+  photos ListingPhoto[]
 
   @@index([status, package, publishedAt])
   @@index([sellerId])
+  @@index([make, model, year])
   @@map("listing")
+}
+
+/// One server-compressed photo belonging to a listing.
+///
+/// Report-backed listings show the inspector's photos (`Report.photosManifest`);
+/// this table is the seller's own gallery for manual listings. Same compression
+/// pipeline as report photos (`PhotoProcessingService`), different key space:
+/// `listings/<sellerId>/<listingId>/<uuid>.jpg`.
+model ListingPhoto {
+  id          String   @id @default(cuid())
+  listingId   String   @map("listing_id")
+  r2Key       String   @unique @map("r2_key")
+  /// Compressed size stored in R2.
+  sizeBytes   Int      @map("size_bytes")
+  /// Original upload size (diagnostics).
+  sourceBytes Int?     @map("source_bytes")
+  width       Int
+  height      Int
+  format      String   @default("jpeg")
+  /// SHA-256 of the ORIGINAL bytes — duplicate-upload short-circuit.
+  hash        String?
+  order       Int      @default(0)
+  caption     String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId, order])
+  @@map("listing_photo")
 }
 
 model ReportPurchase {
@@ -540,23 +614,23 @@ model LegalTemplate {
 }
 
 model OrderContract {
-  id              String   @id @default(cuid())
-  templateKey     String   @map("template_key")
-  templateVersion Int      @map("template_version")
-  renderedHtml    String   @map("rendered_html")
+  id              String    @id @default(cuid())
+  templateKey     String    @map("template_key")
+  templateVersion Int       @map("template_version")
+  renderedHtml    String    @map("rendered_html")
   /// The placeholder-substituted markdown the HTML was rendered from, frozen at
   /// render time. The PDF renders from this same string, so the two documents
   /// cannot disagree, and a later re-render cannot pick up changed order data.
-  bodyMd          String?  @map("body_md")
+  bodyMd          String?   @map("body_md")
   /// R2 key of the archived HTML. The key was computed and the object uploaded,
   /// but the key itself was never persisted, so the archive was unreachable.
-  htmlS3Key       String?  @map("html_s3_key")
-  pdfS3Key        String?  @map("pdf_s3_key")
+  htmlS3Key       String?   @map("html_s3_key")
+  pdfS3Key        String?   @map("pdf_s3_key")
   pdfRenderedAt   DateTime? @map("pdf_rendered_at")
   /// Render attempts, so the backfill cron can give up instead of looping.
-  pdfAttempts     Int      @default(0) @map("pdf_attempts")
-  pdfLastError    String?  @map("pdf_last_error")
-  createdAt       DateTime @default(now())
+  pdfAttempts     Int       @default(0) @map("pdf_attempts")
+  pdfLastError    String?   @map("pdf_last_error")
+  createdAt       DateTime  @default(now())
 
   order Order?
 
@@ -581,14 +655,14 @@ model Dispute {
 }
 
 model Notification {
-  id        String   @id @default(cuid())
-  userId    String   @map("user_id")
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
   type      String
   channel   String // email|sms|push|inapp
   payload   Json
-  status    String   @default("queued") // queued|sent|failed
+  status    String    @default("queued") // queued|sent|failed
   readAt    DateTime? @map("read_at")
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -619,12 +693,71 @@ model PlatformSetting {
   @@map("platform_setting")
 }
 
+// ============================================================
+// VIN history (paid, third-party provenance data)
+//
+// Deliberately separate from `VinCache`, which caches the FREE NHTSA decode and
+// whose `payload` is a frozen mobile contract. Nothing here touches that table.
+// ============================================================
+
+/// Cached, normalised VIN history for one (vin, provider) pair.
+///
+/// Providers charge per lookup, so the fetch is cached for `vinHistoryCacheDays`
+/// and SHARED across buyers: two users unlocking the same VIN inside the window
+/// pay twice but the provider is queried once.
+model VinHistoryReport {
+  id          String   @id @default(cuid())
+  vin         String   @db.VarChar(17)
+  /// Provider that produced this payload ('mock' until a real one is wired).
+  provider    String
+  /// Normalised VinHistoryPayloadV1 — the contract the API serves.
+  payload     Json
+  /// R2 key of the archived payload, served only via a private signed URL.
+  rawS3Key    String?  @map("raw_s3_key")
+  recordCount Int      @default(0) @map("record_count")
+  fetchedAt   DateTime @default(now()) @map("fetched_at")
+  expiresAt   DateTime @map("expires_at")
+
+  purchases VinHistoryPurchase[]
+
+  @@unique([vin, provider])
+  @@index([expiresAt])
+  @@map("vin_history_report")
+}
+
+/// One user's paid unlock of one VIN.
+///
+/// `@@unique([userId, vin])` makes /unlock idempotent: a user cannot be charged
+/// twice for the same VIN, however many times the button is pressed or the
+/// webhook is replayed.
+model VinHistoryPurchase {
+  id            String    @id @default(cuid())
+  userId        String    @map("user_id")
+  vin           String    @db.VarChar(17)
+  reportId      String?   @map("report_id")
+  paymentId     String?   @unique @map("payment_id")
+  /// pending | ready | failed | refunded
+  status        String    @default("pending")
+  provider      String?
+  failureReason String?   @map("failure_reason")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  readyAt       DateTime? @map("ready_at")
+
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  report  VinHistoryReport? @relation(fields: [reportId], references: [id])
+  payment Payment?          @relation(fields: [paymentId], references: [id])
+
+  @@unique([userId, vin])
+  @@index([userId, createdAt])
+  @@map("vin_history_purchase")
+}
+
 model WaitlistEntry {
-  id        String   @id @default(cuid())
+  id        String                                 @id @default(cuid())
   email     String
   city      String?
   location  Unsupported("geography(Point, 4326)")?
-  createdAt DateTime @default(now())
+  createdAt DateTime                               @default(now())
 
   @@map("waitlist_entry")
 }

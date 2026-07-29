@@ -45,6 +45,7 @@ describe('Public showroom + report check (e2e)', () => {
       data: {
         sellerId,
         reportId: report.id,
+        source: 'report',
         status: 'ACTIVE',
         package: 'gold',
         priceCents: 1850000,
@@ -52,6 +53,13 @@ describe('Public showroom + report check (e2e)', () => {
         bodyType: 'limousine',
         driveType: 'diesel',
         color: 'black',
+        // BE-S2: search reads the LISTING's denormalised columns, not the
+        // report relation, so a fixture must populate them the way the claim
+        // path (and the migration backfill) does.
+        make: 'BMW',
+        model: '320d',
+        year: 2019,
+        mileageKm: 84500,
         publishedAt: new Date(),
         expiresAt: new Date(Date.now() + 30 * 86400000),
       },
@@ -91,6 +99,11 @@ describe('Public showroom + report check (e2e)', () => {
     expect(res.body.vehicle.model).toBe('320d');
     expect(res.body.reportCode).toBe(code);
     expect(res.body.views).toBeGreaterThanOrEqual(1);
+    // BE-S2: provenance is stated explicitly, not implied by a bare boolean.
+    expect(res.body.source).toBe('report');
+    expect(res.body.verified).toBe(true);
+    expect(res.body.inspection).toEqual({ status: 'inspected', reportCode: code });
+    expect(res.body.qualityScore).toBe(82);
   });
 
   it('5. 404s for an unknown listing', async () => {
@@ -175,6 +188,122 @@ describe('Public showroom + report check (e2e)', () => {
     });
   });
 
+  // BE-S2 — a listing with no inspection behind it. The whole point of the
+  // feature is that these are sellable AND unmistakable.
+  describe('BE-S2: manual (self-declared) listings', () => {
+    let manualId: string;
+
+    beforeAll(async () => {
+      const manual = await prisma.listing.create({
+        data: {
+          sellerId,
+          reportId: null,
+          source: 'manual',
+          status: 'ACTIVE',
+          package: 'standard',
+          priceCents: 990000,
+          city: 'Dresden',
+          make: 'Opel',
+          model: 'Astra',
+          year: 2016,
+          mileageKm: 132000,
+          fuelType: 'petrol',
+          transmission: 'manual',
+          powerKw: 92,
+          vehicleData: {
+            schemaVersion: 1,
+            vehicle: { make: 'Opel', model: 'Astra', year: 2016 },
+            selfDeclaration: { accidentFreeClaimed: true, ownersCount: 2 },
+          },
+          publishedAt: new Date(),
+          expiresAt: new Date(Date.now() + 30 * 86400000),
+        },
+      });
+      manualId = manual.id;
+    });
+
+    afterAll(async () => {
+      await prisma.listing.deleteMany({ where: { id: manualId } });
+    });
+
+    it('11a. two manual listings coexist despite reportId being UNIQUE (NULLs are distinct)', async () => {
+      // The load-bearing assumption behind making reportId nullable rather than
+      // synthesising a Report row: the single-use claim index still works.
+      const second = await prisma.listing.create({
+        data: {
+          sellerId,
+          reportId: null,
+          source: 'manual',
+          status: 'DRAFT',
+          priceCents: 0,
+          city: '',
+        },
+      });
+      try {
+        const both = await prisma.listing.findMany({
+          where: { id: { in: [manualId, second.id] }, reportId: null },
+        });
+        expect(both).toHaveLength(2);
+      } finally {
+        await prisma.listing.deleteMany({ where: { id: second.id } });
+      }
+    });
+
+    it('11b. appears in the showroom, but verified:false / qualityScore:null / self_declared', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/public/listings?city=Dresden')
+        .expect(200);
+      const card = res.body.items.find((i: { id: string }) => i.id === manualId);
+      expect(card).toBeTruthy();
+      expect(card.verified).toBe(false);
+      expect(card.qualityScore).toBeNull();
+      expect(card.source).toBe('manual');
+      expect(card.inspection).toEqual({ status: 'self_declared', reportCode: null });
+      expect(card.vehicle.make).toBe('Opel');
+    });
+
+    it('11c. is filterable by make/model/year through the listing columns', async () => {
+      const hit = await request(app.getHttpServer())
+        .get('/api/v1/public/listings?make=Opel&model=Astra&yearFrom=2015&yearTo=2017')
+        .expect(200);
+      expect(hit.body.items.some((i: { id: string }) => i.id === manualId)).toBe(true);
+
+      const miss = await request(app.getHttpServer())
+        .get('/api/v1/public/listings?make=Opel&yearFrom=2020')
+        .expect(200);
+      expect(miss.body.items.some((i: { id: string }) => i.id === manualId)).toBe(false);
+    });
+
+    it('11d. ?verifiedOnly=true excludes it and keeps the inspected one', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/public/listings?verifiedOnly=true')
+        .expect(200);
+      const ids: string[] = res.body.items.map((i: { id: string }) => i.id);
+      expect(ids).not.toContain(manualId);
+      expect(res.body.items.every((i: { verified: boolean }) => i.verified)).toBe(true);
+
+      // Default (absent) must NOT filter — manual listings are shown, badged.
+      const unfiltered = await request(app.getHttpServer())
+        .get('/api/v1/public/listings?city=Dresden')
+        .expect(200);
+      expect(unfiltered.body.items.map((i: { id: string }) => i.id)).toContain(manualId);
+    });
+
+    it('11e. the detail view is honest and surfaces the seller declaration separately', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/listings/${manualId}`)
+        .expect(200);
+      expect(res.body.verified).toBe(false);
+      expect(res.body.qualityScore).toBeNull();
+      expect(res.body.reportCode).toBeNull();
+      expect(res.body.inspection.status).toBe('self_declared');
+      // Never merged into `vehicle` — a claim is not a finding.
+      expect(res.body.selfDeclaration).toEqual({ accidentFreeClaimed: true, ownersCount: 2 });
+      expect(res.body.vehicle.powerKw).toBe(92);
+      expect(res.body.vehicle.fuelType).toBe('petrol');
+    });
+  });
+
   it('11. gold listings rank before standard (W.1.9)', async () => {
     const stdReport = await prisma.report.create({
       data: {
@@ -185,8 +314,9 @@ describe('Public showroom + report check (e2e)', () => {
     });
     const stdListing = await prisma.listing.create({
       data: {
-        sellerId, reportId: stdReport.id, status: 'ACTIVE', package: 'standard',
+        sellerId, reportId: stdReport.id, source: 'report', status: 'ACTIVE', package: 'standard',
         priceCents: 1000000, city: 'Berlin', publishedAt: new Date(),
+        make: 'BMW', model: '318i', year: 2017,
         expiresAt: new Date(Date.now() + 30 * 86400000),
       },
     });

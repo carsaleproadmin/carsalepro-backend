@@ -20,6 +20,14 @@ export interface AppConfig {
   nhtsa: {
     baseUrl: string;
   };
+  /**
+   * Paid VIN history provenance provider (BE-S3). Only 'mock' is implemented;
+   * see .env.example. Distinct from `nhtsa`, which is the free VIN decode.
+   */
+  vinHistory: {
+    provider: string;
+    apiKey: string;
+  };
   iap: {
     mode: 'client-trust' | 'server';
     bundleId: string;
@@ -109,6 +117,10 @@ export default (): AppConfig => ({
   },
   nhtsa: {
     baseUrl: process.env.NHTSA_BASE_URL ?? 'https://vpic.nhtsa.dot.gov/api',
+  },
+  vinHistory: {
+    provider: process.env.VIN_HISTORY_PROVIDER ?? 'mock',
+    apiKey: process.env.VIN_HISTORY_API_KEY ?? '',
   },
   iap: {
     mode: (process.env.IAP_VALIDATION_MODE as 'client-trust' | 'server') || 'client-trust',

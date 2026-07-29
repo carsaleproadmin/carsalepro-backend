@@ -11,11 +11,18 @@ import {
 } from 'class-validator';
 import { ListingVehicleV1Dto } from './listing-vehicle-v1.dto';
 
-export class UpdateListingDto {
-  @ApiPropertyOptional({ example: 1850000, description: 'Asking price in integer cents (> 0).' })
+/**
+ * Open a DRAFT listing for a car that has NOT been inspected (BE-S2).
+ *
+ * Everything is optional: a seller starts the form, saves, and comes back. The
+ * completeness contract lives in `POST /listings/:id/publish`, which answers
+ * with the exact list of what is still missing.
+ */
+export class CreateManualListingDto {
+  @ApiPropertyOptional({ example: 1850000, description: 'Asking price in integer cents.' })
   @IsOptional()
   @IsInt()
-  @Min(1)
+  @Min(0)
   priceCents?: number;
 
   @ApiPropertyOptional({ example: 'Berlin' })
@@ -48,16 +55,6 @@ export class UpdateListingDto {
   @MaxLength(254)
   contactEmail?: string;
 
-  /**
-   * Seller-declared vehicle data. Accepted ONLY on a `source: 'manual'` listing
-   * — an inspected listing's vehicle data comes from its report, and editing it
-   * here would let a seller contradict the inspector (400 `vehicle_immutable`).
-   *
-   * DEEP-MERGED into the stored payload: objects merge key by key, **arrays are
-   * replaced wholesale**, and an explicit `null` deletes the key. Arrays replace
-   * because a merge cannot express "remove the second damage" — element-wise
-   * merging would leave the client with no way to delete from a list at all.
-   */
   @ApiPropertyOptional({ type: ListingVehicleV1Dto })
   @IsOptional()
   @ValidateNested()

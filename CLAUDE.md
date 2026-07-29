@@ -26,7 +26,10 @@ Single source of truth for `GET /catalog`, exported to the mobile bundle via `np
 - **Stripe** runs MOCK when no key OR `NODE_ENV==='test'`. The webhook (`/webhooks/stripe`, `@Public`, raw body) verifies the signature and records its idempotency row only after successful handling.
 - **Notifications are non-fatal** — `NotificationService.notify` must never throw into a domain flow; in `NODE_ENV==='test'` it dispatches inline so e2e can assert rows. The scheduler (`src/scheduler`) is gated off when `NODE_ENV==='test'` or `SCHEDULER_ENABLED='false'`.
 - **Secrets** come from `ConfigService`, never source or logs. KYC documents are served only via short-lived **signed** URLs (`R2Service.createPrivateSignedUrl`) — never a public URL. Mask device/user ids in logs (`mask()` helpers).
-- **No schema edits without a migration.** Migrations under `prisma/migrations/` are part of the contract — never edit a committed one.
+- **No schema edits without a migration.** Migrations under `prisma/migrations/` are part of the contract — never edit a committed one. **`prisma migrate diff` proposes `DROP INDEX` for the three PostGIS GIST indexes on every single run** — grep the generated SQL for `DROP INDEX` and strip those lines before committing, then re-verify with `SELECT indexname FROM pg_indexes WHERE indexname LIKE '%location_idx'` (three rows).
+- **Money that reaches a client comes from `SettingsService.getPriceCatalog()`** (integer cents). The website must never hardcode a price or bake one into a translation file.
+- **A notification whose payload carries a live credential must not create an inapp row** — `GET /api/v1/notifications` returns the stored payload, so an in-app copy of a password-reset link turns a borrowed session into a permanent takeover. See `SECRET_BEARING_TYPES`.
+- **KYC objects go through the `kyc*` methods on `R2Service`, never the general ones.** `createPresignedDownloadUrl` short-circuits to `R2_PUBLIC_URL`; `kycSignedDownloadUrl` never does.
 
 ## Migrations
 
@@ -36,10 +39,16 @@ Use `npx prisma migrate deploy` (non-interactive) to apply, and `prisma migrate 
 
 ```bash
 npx tsc --noEmit -p tsconfig.build.json
-npm run test:e2e -- --forceExit            # 222 e2e / 20 suites must stay green; ONE jest at a time
+npm run test:e2e -- --forceExit            # 297 e2e / 22 suites must stay green; ONE jest at a time
 ```
 
-Always pass `--forceExit` (Redis/handles keep Jest alive otherwise). Render auto-deploys on push to `main` (runs `prisma migrate deploy` on start; Joi env validation can fail the boot — e.g. a weak prod `JWT_SECRET`). If a deploy fails, check `mcp__render__list_logs` for `srv-d83o7j1kh4rs73cgjfng` first. **Commit messages must not mention Claude/AI or include a Co-Authored-By trailer.**
+Always pass `--forceExit` (Redis/handles keep Jest alive otherwise). e2e reads
+`.env.test` (see `.env.test.example`), which points at a **dedicated**
+`carsalepro_test` database and deliberately blanks `STRIPE_SECRET_KEY`,
+`MAPBOX_TOKEN`, `RESEND_API_KEY` and `SENTRY_DSN`. Without that file the suite
+silently runs against the dev database using real credentials. Suites that assert
+prices must pin the tariff (`test/helpers/tariff.ts`) — the admin settings suite
+mutates `orderBaseFeeEur` as part of an acceptance test. Render auto-deploys on push to `main` (runs `prisma migrate deploy` on start; Joi env validation can fail the boot — e.g. a weak prod `JWT_SECRET`). If a deploy fails, check `mcp__render__list_logs` for `srv-d83o7j1kh4rs73cgjfng` first. **Commit messages must not mention Claude/AI or include a Co-Authored-By trailer.**
 
 ## Where agent-relevant things live
 

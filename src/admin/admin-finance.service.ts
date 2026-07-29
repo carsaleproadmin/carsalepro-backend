@@ -10,6 +10,8 @@ export interface FinanceSummary {
     order: { count: number; cents: number };
     ppv: { count: number; cents: number };
     gold: { count: number; cents: number };
+    /** BE-S3 paid VIN history. */
+    vin_history: { count: number; cents: number };
   };
   refunds: { count: number; cents: number };
   payouts: { count: number; cents: number };
@@ -47,6 +49,7 @@ export class AdminFinanceService {
       order: { count: 0, cents: 0 },
       ppv: { count: 0, cents: 0 },
       gold: { count: 0, cents: 0 },
+      vin_history: { count: 0, cents: 0 },
     };
     for (const p of succeeded) {
       const bucket = byPurpose[p.purpose as keyof typeof byPurpose];
