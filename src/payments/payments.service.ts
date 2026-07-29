@@ -151,6 +151,21 @@ export class PaymentsService {
         } else if (meta.purpose === 'gold' && meta.paymentId && meta.listingId) {
           await this.activateGoldListing(meta.paymentId, meta.listingId);
           this.logger.log(`Gold listing ${meta.listingId} activated for payment ${meta.paymentId}`);
+        } else if (
+          meta.purpose === 'vin_history' &&
+          meta.paymentId &&
+          meta.purchaseId &&
+          meta.vin
+        ) {
+          const vinHistory = await this.resolveVinHistoryService();
+          if (vinHistory) {
+            await vinHistory.fulfillFromWebhook(meta.paymentId, meta.purchaseId, meta.vin);
+            this.logger.log(`VIN history purchase ${meta.purchaseId} settled`);
+          } else {
+            // Throwing leaves the event unrecorded, so Stripe redelivers it once
+            // the module is up — better than silently keeping the money.
+            throw new Error('VinHistoryService unavailable — cannot settle vin_history payment');
+          }
         }
         break;
       }
@@ -376,6 +391,22 @@ export class PaymentsService {
   }
 
   /**
+   * Lazily resolve VinHistoryService. Same pattern as OrdersService above:
+   * VinHistoryModule imports PaymentsModule for StripeService, so importing it
+   * back here would be a cycle. Returns null when the module is not loaded.
+   */
+  private async resolveVinHistoryService(): Promise<{
+    fulfillFromWebhook: (paymentId: string, purchaseId: string, vin: string) => Promise<void>;
+  } | null> {
+    try {
+      const { VinHistoryService } = await import('../vin-history/vin-history.service');
+      return this.moduleRef.get(VinHistoryService, { strict: false });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Idempotently mark a Gold payment succeeded and activate its listing
    * (ACTIVE, package 'gold', publishedAt now, expiresAt now + duration). Safe to
    * call from both the mock path and the Stripe webhook.
@@ -398,16 +429,17 @@ export class PaymentsService {
           publishedAt: now,
           expiresAt,
         },
-        include: { report: true },
       })
       .catch(() => null);
 
     // E11: notify the seller their Gold listing is live (non-throwing).
+    // Reads the listing's own denormalised columns — `report` is null for a
+    // manual listing, and Gold is sold to both provenances.
     if (listing) {
       await this.notifications.notify(listing.sellerId, 'listing.published', {
         listingId: listing.id,
-        make: listing.report.make,
-        model: listing.report.model,
+        make: listing.make,
+        model: listing.model,
       });
     }
   }

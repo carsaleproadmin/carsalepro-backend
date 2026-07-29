@@ -21,6 +21,14 @@ export class MyListingItemDto {
   @ApiProperty({ example: 'DRAFT' })
   status!: string;
 
+  @ApiProperty({
+    example: 'report',
+    enum: ['report', 'manual'],
+    description:
+      '"report" = backed by an inspection (verified). "manual" = seller-declared, no inspection.',
+  })
+  source!: string;
+
   @ApiProperty({ example: 'standard' })
   package!: string;
 
@@ -39,8 +47,11 @@ export class MyListingItemDto {
   @ApiProperty({ type: ListingVehicleDto })
   vehicle!: ListingVehicleDto;
 
-  @ApiProperty({ example: 'CSP-042' })
-  reportCode!: string;
+  @ApiProperty({ example: 'CSP-042', nullable: true, description: 'Null for a manual listing.' })
+  reportCode!: string | null;
+
+  @ApiProperty({ example: 3, description: 'Photos in the seller gallery (manual listings).' })
+  photoCount!: number;
 
   @ApiProperty({ example: '2026-06-13T10:00:00.000Z', nullable: true })
   publishedAt!: string | null;

@@ -80,7 +80,22 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     // 5xx (and non-HttpException errors, which map to 500) must NEVER leak the
     // internal message/stack to the client — return a generic, normalized body.
-    if (status >= 500) {
+    //
+    // The one exception is a DELIBERATE HttpException carrying the domain shape
+    // `{ error: { code, message } }`: that body was written by us, for the
+    // client, and contains no internals. Without this, a documented contract
+    // like 503 `provider_unavailable` (VIN history with no provider) or 502
+    // `provider_failed` reaches the frontend as `internal_error`, and the UI
+    // cannot tell a deliberate refusal — you were not charged — from a crash.
+    // Anything else at 5xx (a raw Error, a framework exception, an
+    // HttpException whose payload is a bare string) is still masked.
+    const deliberate =
+      exception instanceof HttpException &&
+      typeof errorName === 'object' &&
+      errorName !== null &&
+      typeof (errorName as { code?: unknown }).code === 'string';
+
+    if (status >= 500 && !deliberate) {
       const genericBody: GenericErrorBody = {
         error: { code: 'internal_error', message: 'Internal server error' },
         ...(sentryEventId ? { requestId: sentryEventId } : {}),

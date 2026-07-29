@@ -16,10 +16,12 @@ export class AdminListingsService {
     if (query.status) where.status = query.status;
     if (query.sellerId) where.sellerId = query.sellerId;
     if (query.q) {
+      // Search the listing's own denormalised columns: a manual listing has no
+      // report to join through, and these columns are indexed.
       where.OR = [
         { city: { contains: query.q, mode: 'insensitive' } },
-        { report: { make: { contains: query.q, mode: 'insensitive' } } },
-        { report: { model: { contains: query.q, mode: 'insensitive' } } },
+        { make: { contains: query.q, mode: 'insensitive' } },
+        { model: { contains: query.q, mode: 'insensitive' } },
       ];
     }
 
@@ -29,7 +31,6 @@ export class AdminListingsService {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: { report: { select: { make: true, model: true, year: true } } },
       }),
       this.prisma.listing.count({ where }),
     ]);
@@ -42,9 +43,10 @@ export class AdminListingsService {
         package: l.package,
         priceCents: l.priceCents,
         city: l.city,
-        make: l.report.make,
-        model: l.report.model,
-        year: l.report.year,
+        source: l.source,
+        make: l.make,
+        model: l.model,
+        year: l.year,
         publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
         expiresAt: l.expiresAt ? l.expiresAt.toISOString() : null,
         createdAt: l.createdAt.toISOString(),

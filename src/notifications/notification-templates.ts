@@ -343,6 +343,23 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Отчёт ${str(p, 'reportCode')} разблокирован.`,
     }),
   },
+  'vin_history.failed': {
+    de: (p) => ({
+      subject: `VIN-Abfrage fehlgeschlagen — ${str(p, 'vin')}`,
+      body: `Die bezahlte VIN-Historie für ${str(p, 'vin')} konnte nicht geliefert werden: ${str(p, 'reason')}. Der Betrag von ${formatEur(p.amountCents)} wurde automatisch erstattet. Bitte prüfen Sie den Anbieter-Status.`,
+      short: `VIN-Abfrage ${str(p, 'vin')} fehlgeschlagen, erstattet.`,
+    }),
+    en: (p) => ({
+      subject: `VIN lookup failed — ${str(p, 'vin')}`,
+      body: `The paid VIN history for ${str(p, 'vin')} could not be delivered: ${str(p, 'reason')}. ${formatEur(p.amountCents)} was refunded automatically. Please check the provider status.`,
+      short: `VIN lookup ${str(p, 'vin')} failed, refunded.`,
+    }),
+    ru: (p) => ({
+      subject: `Запрос истории VIN не выполнен — ${str(p, 'vin')}`,
+      body: `Оплаченную историю по VIN ${str(p, 'vin')} доставить не удалось: ${str(p, 'reason')}. Сумма ${formatEur(p.amountCents)} возвращена автоматически. Проверьте состояние провайдера.`,
+      short: `Запрос по VIN ${str(p, 'vin')} не выполнен, средства возвращены.`,
+    }),
+  },
   'listing.published': {
     de: (p) => ({
       subject: `Anzeige veröffentlicht`,
