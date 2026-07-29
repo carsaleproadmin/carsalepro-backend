@@ -16,6 +16,7 @@ import {
   NotificationChannel,
   NotificationPreferences,
   NotificationType,
+  SECRET_BEARING_TYPES,
   TYPE_DEFAULT_CHANNELS,
 } from './notification-types';
 import {
@@ -173,12 +174,23 @@ export class NotificationsService {
       );
   }
 
-  /** Channels = type defaults ∩ enabled prefs, with inapp always present. */
+  /**
+   * Channels = type defaults ∩ enabled prefs, with inapp always present —
+   * except for SECRET_BEARING_TYPES, whose payload holds a live single-use
+   * credential that must not be readable from the notification bell. Those
+   * types also ignore the user's channel preferences: an account-recovery mail
+   * is transactional, not something a preference toggle may suppress.
+   */
   private resolveChannels(
     type: NotificationType,
     prefs: NotificationPreferences,
   ): NotificationChannel[] {
     const defaults = TYPE_DEFAULT_CHANNELS[type] ?? ['inapp'];
+
+    if (SECRET_BEARING_TYPES.has(type)) {
+      return defaults.filter((ch) => ch !== 'inapp');
+    }
+
     const set = new Set<NotificationChannel>(['inapp']); // always include inapp
     for (const ch of defaults) {
       if (ch === 'inapp') continue;

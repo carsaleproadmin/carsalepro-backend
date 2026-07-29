@@ -11,6 +11,7 @@ import { hash, verify } from '@node-rs/argon2';
 import { User } from '@prisma/client';
 import { createHash, randomBytes } from 'node:crypto';
 import { AppConfig } from '../config/configuration';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthUser, JwtPayload } from './jwt.types';
 
@@ -31,6 +32,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService<AppConfig, true>,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ---- token helpers ----
@@ -143,13 +145,41 @@ export class AuthService {
 
   // ---- password reset ----
 
-  async requestPasswordReset(email: string): Promise<VerificationGrant | null> {
+  /**
+   * Mint a reset token and email it. Always resolves void, and does the same
+   * amount of observable work either way, so the response cannot be used to
+   * learn whether an address is registered. The raw token is handed straight to
+   * the notification layer and is never returned to a caller — see SECURITY.md.
+   */
+  async requestPasswordResetAndNotify(email: string): Promise<void> {
     const user = await this.prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
     });
-    // Do not reveal whether the email exists.
-    if (!user || user.deletedAt) return null;
-    return this.createVerificationToken(user.id, user.email, 'password_reset', 60);
+    if (!user || user.deletedAt) return;
+
+    const grant = await this.createVerificationToken(
+      user.id,
+      user.email,
+      'password_reset',
+      60,
+    );
+    await this.notifications.notify(user.id, 'auth.password_reset', {
+      resetUrl: this.buildWebUrl('/reset-password', grant.rawToken),
+      expiresAt: grant.expiresAt.toISOString(),
+    });
+  }
+
+  /** Email the freshly-registered user their single-use verification link. */
+  async sendVerificationEmail(userId: string, grant: VerificationGrant): Promise<void> {
+    await this.notifications.notify(userId, 'auth.verify_email', {
+      verifyUrl: this.buildWebUrl('/verify', grant.rawToken),
+      expiresAt: grant.expiresAt.toISOString(),
+    });
+  }
+
+  private buildWebUrl(path: string, token: string): string {
+    const origin = this.config.get('web', { infer: true }).origin.replace(/\/$/, '');
+    return `${origin}${path}?token=${encodeURIComponent(token)}`;
   }
 
   async confirmPasswordReset(rawToken: string, newPassword: string): Promise<void> {

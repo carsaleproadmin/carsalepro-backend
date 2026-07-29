@@ -37,6 +37,40 @@ function str(p: Record<string, unknown>, key: string, fallback = ''): string {
  * payload reads defensive — a missing field must never throw.
  */
 const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> = {
+  'auth.verify_email': {
+    de: (p) => ({
+      subject: 'E-Mail-Adresse bestätigen',
+      body: `Bitte bestätigen Sie Ihre E-Mail-Adresse: ${str(p, 'verifyUrl')}\n\nDer Link ist bis ${str(p, 'expiresAt')} gültig und kann nur einmal verwendet werden. Falls Sie sich nicht registriert haben, ignorieren Sie diese Nachricht.`,
+      short: 'Bitte bestätigen Sie Ihre E-Mail-Adresse.',
+    }),
+    en: (p) => ({
+      subject: 'Confirm your email address',
+      body: `Please confirm your email address: ${str(p, 'verifyUrl')}\n\nThe link is valid until ${str(p, 'expiresAt')} and can be used once. If you did not sign up, ignore this message.`,
+      short: 'Please confirm your email address.',
+    }),
+    ru: (p) => ({
+      subject: 'Подтвердите адрес электронной почты',
+      body: `Подтвердите ваш адрес электронной почты: ${str(p, 'verifyUrl')}\n\nСсылка действует до ${str(p, 'expiresAt')} и может быть использована один раз. Если вы не регистрировались, просто игнорируйте это сообщение.`,
+      short: 'Подтвердите адрес электронной почты.',
+    }),
+  },
+  'auth.password_reset': {
+    de: (p) => ({
+      subject: 'Passwort zurücksetzen',
+      body: `Sie können Ihr Passwort hier zurücksetzen: ${str(p, 'resetUrl')}\n\nDer Link ist bis ${str(p, 'expiresAt')} gültig und kann nur einmal verwendet werden. Falls Sie das nicht angefordert haben, ist nichts zu tun — Ihr Passwort bleibt unverändert.`,
+      short: 'Link zum Zurücksetzen des Passworts.',
+    }),
+    en: (p) => ({
+      subject: 'Reset your password',
+      body: `You can reset your password here: ${str(p, 'resetUrl')}\n\nThe link is valid until ${str(p, 'expiresAt')} and can be used once. If you did not request this, no action is needed — your password is unchanged.`,
+      short: 'Password reset link.',
+    }),
+    ru: (p) => ({
+      subject: 'Сброс пароля',
+      body: `Вы можете сбросить пароль здесь: ${str(p, 'resetUrl')}\n\nСсылка действует до ${str(p, 'expiresAt')} и может быть использована один раз. Если вы не запрашивали сброс, ничего делать не нужно — пароль останется прежним.`,
+      short: 'Ссылка для сброса пароля.',
+    }),
+  },
   'order.created': {
     de: (p) => ({
       subject: `Bestellung ${str(p, 'orderNumber')} aufgegeben`,
