@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/auth.decorators';
 import { UpdateInspectorProfileDto } from './dto/inspector-profile.dto';
+import { RegisterPushTokenDto, RegisterPushTokenResultDto } from './dto/push-token.dto';
 import {
   EarningsResponse,
   InspectorProfileView,
@@ -31,6 +32,19 @@ export class InspectorController {
     @Body() dto: UpdateInspectorProfileDto,
   ): Promise<InspectorProfileView> {
     return this.inspector.upsertProfile(userId, dto);
+  }
+
+  @Post('push-token')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Register/refresh the caller's FCM push token for push notifications",
+  })
+  async registerPushToken(
+    @CurrentUser('id') userId: string,
+    @Body() dto: RegisterPushTokenDto,
+  ): Promise<RegisterPushTokenResultDto> {
+    await this.inspector.registerPushToken(userId, dto.token);
+    return { ok: true };
   }
 
   @Post('stripe-onboarding')

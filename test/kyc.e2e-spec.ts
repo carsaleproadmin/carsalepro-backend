@@ -38,17 +38,30 @@ async function makeAdmin(app: INestApplication, prisma: PrismaService): Promise<
   return { token: res.body.token as string, userId: u.userId, email: u.email };
 }
 
+/**
+ * A URL that must never appear in a KYC view URL. `createPresignedDownloadUrl`
+ * short-circuits to R2_PUBLIC_URL when it is set, which is right for public
+ * report PDFs and would disclose every identity document if the KYC path ever
+ * shared that code.
+ */
+const PUBLIC_URL_SENTINEL = 'https://kyc-public-leak-sentinel.example.com';
+
 describe('KYC verification (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let r2: R2Service;
   let r2Configured: boolean;
+  /** The bucket a NEW KycDocument row should record: the dedicated one, or NULL. */
+  let expectedBucket: string | null;
 
   const createdUserIds = new Set<string>();
 
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
-    r2Configured = app.get(R2Service).isConfigured();
+    r2 = app.get(R2Service);
+    r2Configured = r2.isConfigured();
+    expectedBucket = r2.isKycDedicated() ? r2.kycBucketName : null;
   });
 
   afterEach(async () => {
@@ -150,6 +163,9 @@ describe('KYC verification (e2e)', () => {
       const doc = await prisma.kycDocument.findFirst({ where: { applicationId: appId, kind } });
       expect(doc).toBeTruthy();
       expect(doc!.s3Key).toContain(`kyc/${user.userId}/${appId}/${kind}-`);
+      // H2: the row records WHICH bucket holds the object — the dedicated
+      // private one when configured, NULL for the shared-bucket dev fallback.
+      expect(doc!.bucket).toBe(expectedBucket);
       firstKeys[kind] = doc!.s3Key;
     }
 
@@ -266,6 +282,9 @@ describe('KYC verification (e2e)', () => {
         expect(d.viewUrl).toContain('X-Amz-Signature');
         expect(d.viewUrl).toContain('X-Amz-Expires');
         expect(d.viewUrl).toContain(`kyc/${user.userId}/`);
+        // H2: signed against whichever bucket the row records. R2 presigns in
+        // virtual-host style, so the bucket is the leading host label.
+        expect(d.viewUrl).toContain(`//${r2.kycBucketName}.`);
       } else {
         expect(d.viewUrl).toBeNull();
       }
@@ -422,5 +441,103 @@ describe('KYC verification (e2e)', () => {
       .send({ kind: 'insurance' })
       .expect(400);
     expect(afterSubmit.body.error.code).toBe('kyc_not_editable');
+  });
+
+  it('13. H2: presigned uploads still work on the dev fallback and target the KYC bucket', async () => {
+    if (!r2Configured) {
+      // Nothing to presign without credentials; test 2 pins the 503 contract there.
+      return;
+    }
+    const user = await makeUser();
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/kyc/applications')
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    const appId = created.body.id as string;
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/documents`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .send({ kind: 'id_front', contentType: 'image/jpeg' })
+      .expect(201);
+
+    // The upload URL is signed and points at the KYC bucket — which IS the main
+    // bucket when the dedicated credentials are absent, so dev/CI keep working.
+    expect(res.body.presignedUploadUrl).toContain('X-Amz-Signature');
+    expect(res.body.presignedUploadUrl).toContain(`//${r2.kycBucketName}.`);
+    expect(res.body.presignedUploadUrl).toContain(res.body.s3Key);
+    if (!r2.isKycDedicated()) {
+      expect(r2.kycBucketName).toBe(r2.bucketName);
+    }
+
+    const doc = await prisma.kycDocument.findFirst({ where: { applicationId: appId } });
+    expect(doc!.bucket).toBe(expectedBucket);
+  });
+
+  it('14. H2 REGRESSION: a KYC view URL is signed and never uses R2_PUBLIC_URL', async () => {
+    if (!r2Configured) return;
+
+    const previous = process.env.R2_PUBLIC_URL;
+    process.env.R2_PUBLIC_URL = PUBLIC_URL_SENTINEL;
+    let leaky: INestApplication | undefined;
+    try {
+      leaky = await createTestApp();
+      const leakyR2 = leaky.get(R2Service);
+
+      // Sanity: the sentinel is live for this app AND the public report path
+      // really does short-circuit to it. That short-circuit is the hazard this
+      // test exists to keep away from KYC.
+      const publicUrl = await leakyR2.createPresignedDownloadUrl('free/dev/report.pdf');
+      expect(publicUrl.url.startsWith(PUBLIC_URL_SENTINEL)).toBe(true);
+
+      // The KYC accessor must ignore it — for a dedicated-bucket row AND for a
+      // legacy row whose bucket column is still NULL.
+      for (const bucket of [null, leakyR2.kycBucketName]) {
+        const signed = await leakyR2.kycSignedDownloadUrl('kyc/u/app/id_front-x.bin', bucket);
+        expect(signed.url).toContain('X-Amz-Signature');
+        expect(signed.url).toContain('X-Amz-Expires');
+        expect(signed.url).not.toContain(PUBLIC_URL_SENTINEL);
+        expect(signed.url).not.toContain('kyc-public-leak-sentinel');
+      }
+
+      // End to end through the admin review endpoint.
+      const user = await registerUser(leaky, 'kyc-leak');
+      createdUserIds.add(user.userId);
+      const admin = await makeAdmin(leaky, leaky.get(PrismaService));
+      createdUserIds.add(admin.userId);
+
+      const application = await request(leaky.getHttpServer())
+        .post('/api/v1/kyc/applications')
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(201);
+      const appId = application.body.id as string;
+      for (const kind of ['id_front', 'id_back', 'selfie', 'gewerbeschein']) {
+        await request(leaky.getHttpServer())
+          .post(`/api/v1/kyc/applications/${appId}/documents`)
+          .set('Authorization', `Bearer ${user.token}`)
+          .send({ kind })
+          .expect(201);
+      }
+      await request(leaky.getHttpServer())
+        .post(`/api/v1/kyc/applications/${appId}/submit`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(201);
+
+      const detail = await request(leaky.getHttpServer())
+        .get(`/api/v1/admin/kyc/${appId}`)
+        .set('Authorization', `Bearer ${admin.token}`)
+        .expect(200);
+
+      expect(detail.body.documents.length).toBe(4);
+      for (const d of detail.body.documents) {
+        expect(d.viewUrl).toContain('X-Amz-Signature');
+        expect(d.viewUrl).not.toContain(PUBLIC_URL_SENTINEL);
+      }
+      expect(JSON.stringify(detail.body)).not.toContain('kyc-public-leak-sentinel');
+    } finally {
+      await leaky?.close();
+      if (previous === undefined) delete process.env.R2_PUBLIC_URL;
+      else process.env.R2_PUBLIC_URL = previous;
+    }
   });
 });

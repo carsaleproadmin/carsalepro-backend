@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Resend } from 'resend';
 import { AppConfig } from '../config/configuration';
+import { renderEmailHtml } from './email-html';
 import { RenderedTemplate } from './notification-templates';
 
 /** A recipient address resolved for a given external channel. */
@@ -28,21 +30,61 @@ export const EMAIL_PROVIDER = Symbol('EMAIL_PROVIDER');
 export const SMS_PROVIDER = Symbol('SMS_PROVIDER');
 export const PUSH_PROVIDER = Symbol('PUSH_PROVIDER');
 
+/** `alice@example.com` → `al***@example.com`. Never log a full address. */
+function maskEmail(address: string): string {
+  const at = address.lastIndexOf('@');
+  if (at <= 0) return '***';
+  const local = address.slice(0, at);
+  const head = local.slice(0, Math.min(2, local.length));
+  return `${head}***${address.slice(at)}`;
+}
+
+/** Show only the tail of an opaque device token — never the whole credential. */
+function maskToken(token: string): string {
+  return token.length <= 8 ? '***' : `***${token.slice(-6)}`;
+}
+
 /**
- * Email provider. Uses SendGrid when SENDGRID_API_KEY is set, otherwise logs to
- * the DevOutbox. The real SDK call is a single gated block — swapping in a key
- * is a one-file change (no other code needs to know which provider is live).
+ * Email provider, backed by **Resend**.
+ *
+ * Live only when `RESEND_API_KEY` is set AND `NODE_ENV !== 'test'`. Everything
+ * else falls through to the DevOutbox (a log line), which is the behaviour local
+ * dev and CI have always had.
+ *
+ * The `NODE_ENV==='test'` override mirrors `StripeService.onModuleInit`: the e2e
+ * suite registers ~50 users per run and every one of them triggers an
+ * `auth.verify_email`. A key that leaks into someone's shell must not turn a
+ * test run into 50 real emails.
+ *
+ * `send()` NEVER throws — `NotificationsService.dispatch` relies on the boolean
+ * to mark the row sent/failed, and a throw there would surface inside whatever
+ * domain flow emitted the notification.
  */
 @Injectable()
 export class EmailProviderImpl implements EmailProvider {
   private readonly logger = new Logger('EmailProvider');
   readonly enabled: boolean;
   private readonly from: string;
+  private readonly replyTo?: string;
+  private readonly client?: Resend;
 
   constructor(config: ConfigService<AppConfig, true>) {
     const email = config.get('email', { infer: true });
-    this.enabled = !!email.sendgridApiKey;
     this.from = email.from;
+    this.replyTo = email.replyTo || undefined;
+
+    const hasKey = !!email.resendApiKey;
+    if (hasKey && process.env.NODE_ENV === 'test') {
+      this.logger.warn('RESEND_API_KEY is set but NODE_ENV=test — forcing the DevOutbox');
+      this.enabled = false;
+      return;
+    }
+
+    this.enabled = hasKey;
+    if (this.enabled) {
+      this.client = new Resend(email.resendApiKey);
+      this.logger.log(`Resend email provider ready (from=${maskEmail(this.from)})`);
+    }
   }
 
   async send(target: DeliveryTarget, message: RenderedTemplate): Promise<boolean> {
@@ -50,20 +92,38 @@ export class EmailProviderImpl implements EmailProvider {
       this.logger.warn('Email send skipped — no recipient address');
       return false;
     }
-    if (!this.enabled) {
+    if (!this.enabled || !this.client) {
       this.logger.log(
         `[DevOutbox:email] to=${target.address} from=${this.from} subject="${message.subject}" — ${message.body}`,
       );
       return true;
     }
-    // TODO(provider): real SendGrid send. Gated on SENDGRID_API_KEY so a key
-    // swap is the only change required to go live:
-    //   const sg = require('@sendgrid/mail'); sg.setApiKey(key);
-    //   await sg.send({ to: target.address, from: this.from,
-    //     subject: message.subject, text: message.body });
-    this.logger.warn('SENDGRID_API_KEY set but SDK not wired — using DevOutbox');
-    this.logger.log(`[DevOutbox:email] to=${target.address} subject="${message.subject}"`);
-    return true;
+
+    try {
+      const { error } = await this.client.emails.send({
+        from: this.from,
+        to: [target.address],
+        subject: message.subject,
+        text: message.body,
+        html: renderEmailHtml(message.subject, message.body),
+        ...(this.replyTo ? { replyTo: this.replyTo } : {}),
+      });
+      if (error) {
+        // Resend reports API-level failures on the response, not as a throw.
+        this.logger.error(
+          `Resend rejected email to ${maskEmail(target.address)}: ` +
+            `${error.name ?? 'error'}: ${error.message ?? 'unknown'}`,
+        );
+        return false;
+      }
+      return true;
+    } catch (err) {
+      // Network/timeout/SDK bug. Same contract: report failure, never throw.
+      this.logger.error(
+        `Resend send threw for ${maskEmail(target.address)}: ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 }
 
@@ -105,6 +165,9 @@ export class SmsProviderImpl implements SmsProvider {
 /**
  * Push provider. Uses Firebase Cloud Messaging when FCM_SERVICE_ACCOUNT_JSON is
  * set, otherwise logs to the DevOutbox. Sends subject + short text.
+ *
+ * The address is the inspector's `InspectorProfile.fcmToken`, registered via
+ * `POST /api/v1/inspector/push-token` and resolved by NotificationsService.
  */
 @Injectable()
 export class PushProviderImpl implements PushProvider {
@@ -124,14 +187,16 @@ export class PushProviderImpl implements PushProvider {
     }
     if (!this.enabled) {
       this.logger.log(
-        `[DevOutbox:push] token=${target.address} title="${message.subject}" — ${message.short}`,
+        `[DevOutbox:push] token=${maskToken(target.address)} title="${message.subject}" — ${message.short}`,
       );
       return true;
     }
     // TODO(provider): real FCM send. Gated on FCM_SERVICE_ACCOUNT_JSON:
     //   const admin = require('firebase-admin'); ... admin.messaging().send({...})
     this.logger.warn('FCM creds set but SDK not wired — using DevOutbox');
-    this.logger.log(`[DevOutbox:push] token=${target.address} title="${message.subject}"`);
+    this.logger.log(
+      `[DevOutbox:push] token=${maskToken(target.address)} title="${message.subject}"`,
+    );
     return true;
   }
 }

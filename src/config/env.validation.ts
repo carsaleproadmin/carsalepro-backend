@@ -19,8 +19,11 @@ export const envValidationSchema = Joi.object({
   R2_SECRET_ACCESS_KEY: Joi.string().allow('').default(''),
   R2_BUCKET: Joi.string().default('carsalepro-reports'),
   R2_PUBLIC_URL: Joi.string().uri().allow('').default(''),
+  // Dedicated PRIVATE bucket + narrowly-scoped token for KYC identity documents
+  // (SECURITY.md H2). Blank in dev/CI => R2Service falls back to the main bucket.
   R2_KYC_ACCESS_KEY_ID: Joi.string().allow('').default(''),
   R2_KYC_SECRET_ACCESS_KEY: Joi.string().allow('').default(''),
+  R2_KYC_BUCKET: Joi.string().allow('').default(''),
   SIGNED_URL_TTL_MINUTES: Joi.number().integer().min(1).max(1440).default(15),
 
   // Auth (shared HS256 secret with the website NextAuth)
@@ -40,9 +43,10 @@ export const envValidationSchema = Joi.object({
   // Mapbox (server-side geocoding)
   MAPBOX_TOKEN: Joi.string().allow('').default(''),
 
-  // Notifications
-  SENDGRID_API_KEY: Joi.string().allow('').default(''),
+  // Notifications — email goes through Resend; blank key => dev outbox (logs).
+  RESEND_API_KEY: Joi.string().allow('').default(''),
   EMAIL_FROM: Joi.string().allow('').default('no-reply@carsalepro.com'),
+  EMAIL_REPLY_TO: Joi.string().allow('').default(''),
   TWILIO_ACCOUNT_SID: Joi.string().allow('').default(''),
   TWILIO_AUTH_TOKEN: Joi.string().allow('').default(''),
   TWILIO_FROM: Joi.string().allow('').default(''),
@@ -73,7 +77,17 @@ export const envValidationSchema = Joi.object({
   SENTRY_TEST_ENABLED: Joi.string().valid('true', 'false').default('false'),
 }).custom((envVars, helpers) => {
   if (envVars.NODE_ENV === 'production') {
-    const requiredInProd = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
+    const requiredInProd = [
+      'R2_ACCOUNT_ID',
+      'R2_ACCESS_KEY_ID',
+      'R2_SECRET_ACCESS_KEY',
+      // SECURITY.md H2: in production KYC documents MUST live in their own
+      // private bucket behind their own scoped token. The dev fallback (share
+      // the reports bucket) is never acceptable for real identity documents.
+      'R2_KYC_ACCESS_KEY_ID',
+      'R2_KYC_SECRET_ACCESS_KEY',
+      'R2_KYC_BUCKET',
+    ];
     for (const key of requiredInProd) {
       if (!envVars[key]) {
         return helpers.error('any.custom', { message: `${key} is required in production` });

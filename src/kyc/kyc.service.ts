@@ -104,6 +104,10 @@ export class KycService {
     }
 
     const s3Key = `kyc/${userId}/${applicationId}/${kind}-${randomUUID()}.bin`;
+    // H2: record WHICH bucket this object goes to. NULL = the legacy shared
+    // reports bucket (dev fallback / pre-migration rows), a value = the
+    // dedicated private KYC bucket. Reads resolve the client from this field.
+    const bucket = this.r2.isKycDedicated() ? this.r2.kycBucketName : null;
 
     // Upsert the document row first so the s3Key is recorded regardless of R2
     // state. Re-uploading the same kind replaces the prior row (and its key).
@@ -113,15 +117,15 @@ export class KycService {
     if (existing) {
       await this.prisma.kycDocument.update({
         where: { id: existing.id },
-        data: { s3Key, uploadedAt: new Date(), purgedAt: null },
+        data: { s3Key, bucket, uploadedAt: new Date(), purgedAt: null },
       });
     } else {
       await this.prisma.kycDocument.create({
-        data: { applicationId, kind, s3Key },
+        data: { applicationId, kind, s3Key, bucket },
       });
     }
 
-    if (!this.r2.isConfigured()) {
+    if (!this.r2.isKycConfigured()) {
       // Storage not configured — the row is recorded but no upload URL can be
       // minted. Mirror the reports suite contract (503).
       throw new HttpException(
@@ -130,7 +134,7 @@ export class KycService {
       );
     }
 
-    const { url, expiresAt } = await this.r2.createPresignedUploadUrl(s3Key, resolvedContentType);
+    const { url, expiresAt } = await this.r2.kycPresignedUploadUrl(s3Key, resolvedContentType);
     this.logger.log(
       `KYC presign app=${applicationId} kind=${kind} user=${this.mask(userId)}`,
     );
@@ -243,11 +247,13 @@ export class KycService {
       application.documents.map(async (d) => {
         let viewUrl: string | null = null;
         let viewUrlExpiresAt: string | null = null;
-        if (!d.purgedAt && this.r2.isConfigured()) {
+        if (!d.purgedAt && this.r2.isKycConfigured()) {
           // KYC docs are sensitive — always serve via a short-lived SIGNED URL,
           // never the public-URL shortcut (which createPresignedDownloadUrl would
           // use for the public reports bucket when R2_PUBLIC_URL is set).
-          const signed = await this.r2.createPrivateSignedUrl(d.s3Key);
+          // `d.bucket` decides which client/bucket the signature is minted for,
+          // so pre-migration rows in the shared bucket keep resolving.
+          const signed = await this.r2.kycSignedDownloadUrl(d.s3Key, d.bucket);
           viewUrl = signed.url;
           viewUrlExpiresAt = signed.expiresAt.toISOString();
         }
@@ -349,7 +355,8 @@ export class KycService {
   // ============================================================
 
   /**
-   * Delete R2 objects (kyc/ prefix) for documents belonging to APPROVED/REJECTED
+   * Delete R2 objects (kyc/ prefix, in whichever bucket each row records) for
+   * documents belonging to APPROVED/REJECTED
    * applications reviewed more than PURGE_AFTER_DAYS ago that haven't been purged
    * yet, and stamp purgedAt on each. Returns the number of documents purged.
    */
@@ -367,8 +374,8 @@ export class KycService {
 
     let purged = 0;
     for (const doc of documents) {
-      if (this.r2.isConfigured()) {
-        await this.r2.deleteObject(doc.s3Key).catch((err) => {
+      if (this.r2.isKycConfigured()) {
+        await this.r2.kycDeleteObject(doc.s3Key, doc.bucket).catch((err) => {
           this.logger.warn(`Failed to delete KYC object ${doc.s3Key}: ${String(err)}`);
         });
       }

@@ -6,6 +6,11 @@ import { StripeService } from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateInspectorProfileDto } from './dto/inspector-profile.dto';
 
+/** Mask an id for logs — never log a full user id. */
+function mask(id: string): string {
+  return id.length <= 8 ? '****' : `${id.slice(0, 4)}…${id.slice(-4)}`;
+}
+
 /**
  * Public projection of an InspectorProfile. The raw geography column is never
  * returned; callers get a `hasLocation` boolean and the eligibility flags so the
@@ -110,6 +115,22 @@ export class InspectorService {
 
     const profile = await this.prisma.inspectorProfile.findUniqueOrThrow({ where: { userId } });
     return this.toView(userId, profile);
+  }
+
+  /**
+   * Register/refresh the caller's push token (E11 push channel). Upserts onto
+   * the inspector profile — `NotificationsService` reads it as the `push`
+   * delivery address. A profile is created on demand (baseAddress is NOT NULL,
+   * so it defaults to empty) because a device may register a token before the
+   * inspector has finished filling in their profile.
+   */
+  async registerPushToken(userId: string, token: string): Promise<void> {
+    await this.prisma.inspectorProfile.upsert({
+      where: { userId },
+      create: { userId, baseAddress: '', fcmToken: token },
+      update: { fcmToken: token },
+    });
+    this.logger.log(`Push token registered for inspector=${mask(userId)}`);
   }
 
   // ============================================================
