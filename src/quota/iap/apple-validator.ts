@@ -162,7 +162,12 @@ export class AppleValidator {
 
     const candidates = [...(body.latest_receipt_info ?? []), ...(body.receipt?.in_app ?? [])];
     if (req.productId) {
-      candidates.sort((a, b) => (a.product_id === req.productId ? -1 : 1));
+      // Stable "requested product first": a real comparator, not a predicate.
+      // The previous form ignored `b`, so ordering was implementation-defined.
+      candidates.sort(
+        (a, b) =>
+          Number(b.product_id === req.productId) - Number(a.product_id === req.productId),
+      );
     }
     const txn = candidates[0];
     if (!txn?.transaction_id) {

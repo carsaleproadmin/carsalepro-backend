@@ -6,7 +6,6 @@ import {
   CONTRACT_TEMPLATES,
   ContractKey,
 } from '../src/legal/legal-contracts.content';
-import { OrdersService } from '../src/orders/orders.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createTestApp } from './helpers/test-app';
 
@@ -28,7 +27,6 @@ interface Registered {
 describe('LegalSync / Order Contract (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
-  let orders: OrdersService;
   let legal: LegalContractService;
 
   const createdOrderIds = new Set<string>();
@@ -40,7 +38,6 @@ describe('LegalSync / Order Contract (e2e)', () => {
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
-    orders = app.get(OrdersService);
     legal = app.get(LegalContractService);
     // Ensure an ACTIVE template exists for each contract key. Sibling suites (the
     // admin legal-templates spec) may wipe e.g. contract_eu rows, so self-heal here
