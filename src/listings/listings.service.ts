@@ -165,6 +165,16 @@ export class ListingsService {
     });
   }
 
+  /**
+   * Read one listing the caller owns, in full.
+   *
+   * `GET /me/listings` is a summary projection and the public route only serves
+   * ACTIVE rows, so neither can rehydrate a DRAFT in the multi-stage editor.
+   */
+  async getOwned(userId: string, id: string): Promise<Listing> {
+    return this.requireOwnedListing(userId, id);
+  }
+
   /** Patch editable fields on an owned, non-deleted listing. */
   async update(userId: string, id: string, dto: UpdateListingDto): Promise<Listing> {
     const listing = await this.requireOwnedListing(userId, id);
