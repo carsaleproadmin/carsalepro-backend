@@ -98,17 +98,3 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   'vinHistoryPriceEur',
 ];
 
-/**
- * Pricing keys the seeder force-updates rather than leaving alone.
- *
- * `prisma/seed.ts` upserts with `update: {}` so an operator's admin edits are
- * never clobbered. That is right for most keys, but the order tariff changed
- * shape in this release: an existing deployment would keep base 50 / 1.50 per km
- * AND gain a per-minute charge, i.e. a silent price rise nobody asked for.
- * These keys are therefore reset to the defaults above exactly once, when the
- * per-minute key is first introduced.
- */
-export const REPRICED_SETTING_KEYS: SettingKey[] = [
-  'orderBaseFeeEur',
-  'orderRatePerKmEur',
-];
