@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Post, Patch } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -34,8 +35,13 @@ export class ListingsController {
     return this.listings.packages();
   }
 
+  // A Report ID is a bearer capability, so this endpoint is the one place a
+  // valid code can be turned into a listing. It answers the same 404 for
+  // unknown and already-claimed codes, and the tighter bucket keeps that
+  // uniform answer from being brute-forced.
   @Post()
-  @ApiOperation({ summary: 'Create a DRAFT listing for a report you own' })
+  @Throttle({ lookup: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Claim a Report ID and open a DRAFT listing (single-use)' })
   create(
     @CurrentUser('id') userId: string,
     @Body() dto: CreateListingDto,

@@ -1,13 +1,12 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Listing } from '@prisma/client';
+import { Listing, Prisma } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentsService } from '../payments/payments.service';
@@ -38,42 +37,67 @@ export class ListingsService {
   }
 
   /**
-   * Create a DRAFT listing for the latest non-deleted report with the given
-   * code. The caller must OWN that report (report.userId match or a DeviceLink).
+   * Claim a Report ID and open a DRAFT listing for it.
+   *
+   * The Report ID is a BEARER CAPABILITY: holding the code is the authorisation.
+   * This replaces the previous device-link ownership check, and it is a
+   * deliberate product trade-off — whoever sees a report code can list that car,
+   * which is what makes the printed code useful to a seller who never installed
+   * the app. The mitigations are that the claim is single-use, irreversible, and
+   * throttled, and that the UI says so before the user commits.
+   *
+   * Single-use is enforced by `Listing.reportId @unique` rather than a second
+   * "claimed" column. One source of truth cannot disagree with itself, and the
+   * unique index is atomic at any isolation level, so concurrent claims resolve
+   * correctly without a transaction or a lock.
+   *
+   * "Not found" and "already claimed" return the SAME 404. Distinguishing them
+   * would turn this endpoint into an oracle for which report codes exist.
    */
   async create(userId: string, reportCode: string): Promise<Listing> {
     const report = await this.prisma.report.findFirst({
       where: { code: reportCode, deletedAt: null },
       orderBy: { createdAt: 'desc' },
     });
-    if (!report) {
-      throw new NotFoundException({
-        error: { code: 'not_found', message: `Report ${reportCode} not found` },
+    if (!report) throw this.unclaimable();
+
+    try {
+      return await this.prisma.listing.create({
+        data: {
+          sellerId: userId,
+          reportId: report.id,
+          status: 'DRAFT',
+          package: 'standard',
+          priceCents: 0,
+          city: '',
+          color: report.color,
+          bodyType: report.bodyType,
+          driveType: report.driveType,
+        },
       });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        // Already claimed — by this user or anyone else. Same answer either way.
+        throw this.unclaimable();
+      }
+      throw err;
     }
+  }
 
-    await this.assertReportOwner(userId, report.userId, report.deviceId);
-
-    const existing = await this.prisma.listing.findUnique({
-      where: { reportId: report.id },
-    });
-    if (existing) {
-      throw new ConflictException({
-        error: { code: 'listing_exists', message: 'A listing already exists for this report' },
-      });
-    }
-
-    return this.prisma.listing.create({
-      data: {
-        sellerId: userId,
-        reportId: report.id,
-        status: 'DRAFT',
-        package: 'standard',
-        priceCents: 0,
-        city: '',
-        color: report.color,
-        bodyType: report.bodyType,
-        driveType: report.driveType,
+  /**
+   * The single response for every unsuccessful claim. Deliberately vague, and
+   * deliberately identical whether the code is unknown, already claimed, or
+   * belongs to someone else.
+   *
+   * Note the report's original owner is NOT reassigned on a claim: the device
+   * that produced the report keeps it in its archive. Claiming grants the right
+   * to sell the car, not ownership of the inspection.
+   */
+  private unclaimable(): NotFoundException {
+    return new NotFoundException({
+      error: {
+        code: 'report_not_claimable',
+        message: 'This Report ID is not available. It may not exist or may already be in use.',
       },
     });
   }
@@ -360,21 +384,4 @@ export class ListingsService {
     return listing;
   }
 
-  /** Verify the user owns the report (direct userId match or via a DeviceLink). */
-  private async assertReportOwner(
-    userId: string,
-    reportUserId: string | null,
-    reportDeviceId: string,
-  ): Promise<void> {
-    if (reportUserId === userId) return;
-
-    const link = await this.prisma.deviceLink.findFirst({
-      where: { userId, deviceId: reportDeviceId },
-    });
-    if (link) return;
-
-    throw new ForbiddenException({
-      error: { code: 'not_report_owner', message: 'You do not own this report' },
-    });
-  }
 }

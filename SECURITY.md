@@ -26,6 +26,23 @@ Each lists *what*, *why*, and *how to finish*.
   14–18, which assert byte-identical responses and that the link still works
   end to end through the notification.
 
+### L2 — Report submitter is now verified against the assigned inspector
+- **Was**: `POST /reports` with an `orderId` advanced that order to SUBMITTED with
+  no check on who was uploading. Any device that knew an order id could do it.
+  The code documented this in a comment rather than enforcing it.
+- **Now**: `ReportsService.assertOrderSubmitter` resolves the submitting device
+  to an account via `DeviceLink` and requires it to match `order.inspectorId`.
+  It runs **before** the quota gate, so a rejected submission never costs the
+  device a free report. Three distinct codes — `device_not_linked` (recoverable
+  through link-codes), `not_order_inspector`, `order_not_assigned` — plus a 404
+  for an unknown order.
+- **Scope**: the check applies **only** when `orderId` is present. Reports
+  without one — every submission the shipped Flutter app makes — are untouched;
+  requiring a device link on `POST /reports` in general would brick the app.
+  `test/order-report-auth.e2e-spec.ts` case 7 is the regression guard for that.
+- The service-level `OrdersService.submitReportForOrder(orderId)` is unchanged,
+  because admin overrides and the auto-approve cron have no device to check.
+
 ## H2 — Dedicated private R2 bucket + scoped credentials for KYC
 - **What**: KYC documents currently live under the `kyc/` prefix of the same
   R2 bucket as public report PDFs. The code already reads dedicated narrow
@@ -52,16 +69,6 @@ Each lists *what*, *why*, and *how to finish*.
   Play (`GOOGLE_PLAY_SA_JSON`, subscription product IDs) credentials, then set
   `IAP_VALIDATION_MODE=server`. Validators already exist under
   `src/quota/iap/`.
-
-## L2 — Verify the uploader is the assigned inspector
-- **What**: `OrdersService.submitReportForOrder` does not yet confirm that the
-  account submitting the report is the inspector actually assigned to the order.
-- **Why**: Prevents another (even KYC-verified) inspector from submitting a
-  report for an order that isn't theirs.
-- **How to finish**: Requires the device↔inspector identity link to be wired
-  (so the submitting principal is known). Once available, assert
-  `order.inspectorId === submitter.id` (403 otherwise) in
-  `submitReportForOrder`.
 
 ## L5 — Strictly validate `X-Device-Id` as UUIDv4
 - **What**: The `X-Device-Id` header is parsed leniently
