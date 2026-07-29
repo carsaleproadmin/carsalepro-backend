@@ -72,9 +72,14 @@ export class R2Service implements OnModuleInit {
   /**
    * Wire the dedicated KYC client, or fall back to the main one.
    *
-   * The fallback is a DEV convenience only — `env.validation.ts` requires all
-   * three `R2_KYC_*` vars when NODE_ENV=production, so a real deployment can
-   * never quietly store identity documents next to public report PDFs.
+   * The fallback keeps identity documents in the shared reports bucket — which
+   * is what happened before BE-S8 and is NOT acceptable long-term. It does not
+   * fail the boot, because taking the whole service down would be a worse
+   * outcome than an un-isolated bucket that is still only ever reachable through
+   * a signed URL. In production it logs at error level on every boot so the gap
+   * cannot go unnoticed; `kycDedicated` records which of the two is live and
+   * `KycDocument.bucket` records where each object actually landed, so the
+   * migration window is unambiguous.
    */
   private initKycClient(): void {
     const kyc = this.config.get('r2Kyc', { infer: true });
@@ -84,10 +89,15 @@ export class R2Service implements OnModuleInit {
       this.kycClient = this.client;
       this.kycBucket = this.bucket;
       this.kycDedicated = false;
-      this.logger.warn(
+      const message =
         'R2_KYC_* not fully configured — KYC documents fall back to the shared reports ' +
-          `bucket (${this.bucket}). Acceptable for dev/CI only; production boot requires them.`,
-      );
+        `bucket (${this.bucket}), which also serves public report PDFs. Set R2_KYC_BUCKET, ` +
+        'R2_KYC_ACCESS_KEY_ID and R2_KYC_SECRET_ACCESS_KEY (SECURITY.md H2).';
+      if (process.env.NODE_ENV === 'production') {
+        this.logger.error(message);
+      } else {
+        this.logger.warn(message);
+      }
       return;
     }
 

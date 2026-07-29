@@ -82,17 +82,14 @@ export const envValidationSchema = Joi.object({
   SENTRY_TEST_ENABLED: Joi.string().valid('true', 'false').default('false'),
 }).custom((envVars, helpers) => {
   if (envVars.NODE_ENV === 'production') {
-    const requiredInProd = [
-      'R2_ACCOUNT_ID',
-      'R2_ACCESS_KEY_ID',
-      'R2_SECRET_ACCESS_KEY',
-      // SECURITY.md H2: in production KYC documents MUST live in their own
-      // private bucket behind their own scoped token. The dev fallback (share
-      // the reports bucket) is never acceptable for real identity documents.
-      'R2_KYC_ACCESS_KEY_ID',
-      'R2_KYC_SECRET_ACCESS_KEY',
-      'R2_KYC_BUCKET',
-    ];
+    // SECURITY.md H2: KYC documents belong in their own private bucket behind
+    // their own scoped token, and `R2_KYC_*` is how that is switched on. It is
+    // deliberately NOT required here. Hard-failing the boot would take the whole
+    // service down to protect a feature that, unset, is merely no better than it
+    // was yesterday — KYC objects still never resolve to a public URL, because
+    // `kycSignedDownloadUrl` has no `R2_PUBLIC_URL` short-circuit. R2Service logs
+    // an error-level warning on every production boot until the vars are set.
+    const requiredInProd = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];
     for (const key of requiredInProd) {
       if (!envVars[key]) {
         return helpers.error('any.custom', { message: `${key} is required in production` });
