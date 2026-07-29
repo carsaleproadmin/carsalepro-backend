@@ -864,30 +864,35 @@ export class OrdersService {
   // ============================================================
 
   /**
-   * Release the escrowed inspector share for an APPROVED order (escrow → 80% to
-   * the inspector's connected account). Idempotent: a Payout already on the
-   * order short-circuits. Non-throwing — wired into approve() / autoApprove(),
-   * a failure here must never undo the approval.
+   * Release the escrowed inspector share for an APPROVED order (escrow → the
+   * inspector's connected account). Non-throwing — wired into approve() /
+   * autoApprove(), a failure here must never undo the approval.
    *
    * - Stripe configured: retrieve the PaymentIntent → latest_charge, transfer
    *   the inspector share via source_transaction, record a 'paid' Payout, then
    *   transition APPROVED → COMPLETED.
    * - MOCK mode: record a 'paid' Payout with a synthetic transfer id + COMPLETE.
-   * - Inspector not onboarded / no connected account: record a 'pending' Payout,
-   *   leave the order APPROVED, log a warning.
+   * - Not eligible / transfer failed: park the Payout with a retry schedule and
+   *   alert operators. `retryStuckPayouts` picks it up later.
+   *
+   * Idempotency is "already PAID short-circuits", not "a row exists". The
+   * previous `if (existing) return` made retrying structurally impossible: the
+   * first failure parked a pending row, and that row then blocked every
+   * subsequent attempt forever.
    */
   async releasePayout(orderId: string): Promise<void> {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) return;
-    if (order.status !== OrderStatus.APPROVED) return;
+    // COMPLETED is allowed so a retry can finish an order whose earlier attempt
+    // transitioned it but failed to transfer. `transition` no-ops on from===to.
+    if (order.status !== OrderStatus.APPROVED && order.status !== OrderStatus.COMPLETED) return;
     if (!order.inspectorId) {
       this.logger.warn(`releasePayout: order ${orderId} has no inspector — skipping`);
       return;
     }
 
-    // Idempotency: a payout already exists for this order → no-op.
     const existing = await this.prisma.payout.findUnique({ where: { orderId } });
-    if (existing) return;
+    if (existing?.status === 'paid') return;
 
     const amountCents = order.inspectorShareCents;
     const profile = await this.prisma.inspectorProfile.findUnique({
@@ -896,16 +901,7 @@ export class OrdersService {
 
     // Not eligible to receive funds yet → park a pending payout, stay APPROVED.
     if (!profile?.stripeOnboarded || !profile.stripeAccountId) {
-      await this.createPayoutSafe({
-        orderId,
-        inspectorId: order.inspectorId,
-        amountCents,
-        status: 'pending',
-        stripeTransferId: null,
-      });
-      this.logger.warn(
-        `releasePayout: inspector ${order.inspectorId} not onboarded for order ${orderId} — payout pending`,
-      );
+      await this.parkPayout(order, amountCents, 'inspector is not onboarded for payouts');
       return;
     }
 
@@ -913,16 +909,7 @@ export class OrdersService {
     if (this.stripe.configured) {
       const payment = await this.prisma.payment.findUnique({ where: { orderId } });
       if (!payment?.stripePaymentIntentId) {
-        await this.createPayoutSafe({
-          orderId,
-          inspectorId: order.inspectorId,
-          amountCents,
-          status: 'pending',
-          stripeTransferId: null,
-        });
-        this.logger.warn(
-          `releasePayout: order ${orderId} has no PaymentIntent — payout pending`,
-        );
+        await this.parkPayout(order, amountCents, 'order has no Stripe PaymentIntent');
         return;
       }
       try {
@@ -938,30 +925,20 @@ export class OrdersService {
         });
         stripeTransferId = transfer.id;
       } catch (err) {
-        // Transfer failed → park a pending payout for retry, stay APPROVED.
-        await this.createPayoutSafe({
-          orderId,
-          inspectorId: order.inspectorId,
-          amountCents,
-          status: 'pending',
-          stripeTransferId: null,
-        });
-        this.logger.warn(
-          `releasePayout: transfer failed for order ${orderId}: ${(err as Error).message} — payout pending`,
-        );
+        // Transfer failed → park with a retry schedule, stay APPROVED.
+        await this.parkPayout(order, amountCents, (err as Error).message);
         return;
       }
     }
 
-    const created = await this.createPayoutSafe({
+    const wasAlreadyPaid = await this.markPayoutPaid(
       orderId,
-      inspectorId: order.inspectorId,
+      order.inspectorId,
       amountCents,
-      status: 'paid',
       stripeTransferId,
-    });
-    // If a concurrent caller already created the payout, don't double-complete.
-    if (created) {
+    );
+    // If a concurrent caller already settled the payout, don't double-notify.
+    if (!wasAlreadyPaid) {
       // E11: notify the inspector their payout was sent (non-throwing). Emitted
       // before COMPLETED so it reflects the payout event specifically.
       await this.notifications.notify(order.inspectorId, 'payout.sent', {
@@ -974,28 +951,248 @@ export class OrdersService {
   }
 
   /**
-   * Create a Payout, swallowing the unique-violation race (another caller beat
-   * us to the order's single Payout). Returns true only when this call inserted.
+   * Backoff schedule by attempt number. After the last entry the payout is
+   * terminal and needs an operator — an automated retry that never gives up
+   * turns one broken transfer into a permanent hourly alert.
    */
-  private async createPayoutSafe(data: {
-    orderId: string;
-    inspectorId: string;
-    amountCents: number;
-    status: string;
-    stripeTransferId: string | null;
-  }): Promise<boolean> {
+  private static readonly PAYOUT_BACKOFF_MINUTES = [5, 15, 60, 360, 1440, 4320];
+
+  /** Attempts after which a payout stops retrying by itself. */
+  private static readonly PAYOUT_MAX_ATTEMPTS = OrdersService.PAYOUT_BACKOFF_MINUTES.length;
+
+  /**
+   * Record a payout that could not be settled, schedule the next attempt, and
+   * tell someone. `orderId` is unique on Payout, so this upserts — the retry
+   * path must update the parked row, never try to insert a second one.
+   */
+  private async parkPayout(
+    order: { id: string; number: string; inspectorId: string | null },
+    amountCents: number,
+    reason: string,
+  ): Promise<void> {
+    if (!order.inspectorId) return;
+
+    const existing = await this.prisma.payout.findUnique({ where: { orderId: order.id } });
+    const attempts = (existing?.attempts ?? 0) + 1;
+    const exhausted = attempts >= OrdersService.PAYOUT_MAX_ATTEMPTS;
+    const backoffMinutes =
+      OrdersService.PAYOUT_BACKOFF_MINUTES[
+        Math.min(attempts - 1, OrdersService.PAYOUT_BACKOFF_MINUTES.length - 1)
+      ];
+
+    const data = {
+      status: exhausted ? 'failed' : 'pending',
+      attempts,
+      lastError: reason.slice(0, 500),
+      lastAttemptAt: new Date(),
+      nextRetryAt: exhausted ? null : new Date(Date.now() + backoffMinutes * 60_000),
+    };
+
+    await this.prisma.payout.upsert({
+      where: { orderId: order.id },
+      create: {
+        orderId: order.id,
+        inspectorId: order.inspectorId,
+        amountCents,
+        stripeTransferId: null,
+        ...data,
+      },
+      update: data,
+    });
+
+    this.logger.warn(
+      `releasePayout: order ${order.id} payout ${data.status} (attempt ${attempts}): ${reason}`,
+    );
+
+    // Alert on the FIRST parking and on going terminal — not on every retry, or
+    // one stuck payout spams operators around the clock.
+    if (attempts === 1 || exhausted) {
+      await this.notifyAdminsOfStuckPayout(order, amountCents, reason, attempts, exhausted);
+      // Tell the inspector once, so they are not left wondering where the money is.
+      if (attempts === 1) {
+        await this.notifications.notify(order.inspectorId, 'payout.delayed', {
+          orderId: order.id,
+          orderNumber: order.number,
+          amountCents,
+        });
+      }
+    }
+  }
+
+  private async notifyAdminsOfStuckPayout(
+    order: { id: string; number: string },
+    amountCents: number,
+    reason: string,
+    attempts: number,
+    exhausted: boolean,
+  ): Promise<void> {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
+      select: { id: true },
+    });
+    for (const admin of admins) {
+      await this.notifications.notify(admin.id, 'payout.failed', {
+        orderId: order.id,
+        orderNumber: order.number,
+        amountCents,
+        reason,
+        attempts,
+        terminal: exhausted,
+      });
+    }
+  }
+
+  /**
+   * Settle the order's single payout. Returns true when it was ALREADY paid, so
+   * the caller can skip the notify/transition it has already done.
+   */
+  private async markPayoutPaid(
+    orderId: string,
+    inspectorId: string,
+    amountCents: number,
+    stripeTransferId: string | null,
+  ): Promise<boolean> {
+    const existing = await this.prisma.payout.findUnique({ where: { orderId } });
+    if (existing?.status === 'paid') return true;
+
+    const paid = {
+      status: 'paid',
+      stripeTransferId,
+      lastAttemptAt: new Date(),
+      nextRetryAt: null,
+      lastError: null,
+      attempts: (existing?.attempts ?? 0) + 1,
+    };
+
     try {
-      await this.prisma.payout.create({ data });
-      return true;
+      await this.prisma.payout.upsert({
+        where: { orderId },
+        create: { orderId, inspectorId, amountCents, ...paid },
+        update: paid,
+      });
+      return false;
     } catch (err) {
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002'
-      ) {
-        return false;
+      // A concurrent caller inserted the row between our read and our write.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        return true;
       }
       throw err;
     }
+  }
+
+  /**
+   * Retry payouts whose backoff has elapsed. Driven by a cron; also reachable
+   * from the admin panel for a single order.
+   */
+  async retryStuckPayouts(limit = 25): Promise<{ retried: number; settled: number }> {
+    const due = await this.prisma.payout.findMany({
+      where: {
+        status: { in: ['pending', 'failed'] },
+        nextRetryAt: { not: null, lte: new Date() },
+        attempts: { lt: OrdersService.PAYOUT_MAX_ATTEMPTS },
+      },
+      orderBy: { nextRetryAt: 'asc' },
+      take: limit,
+      select: { orderId: true },
+    });
+
+    let settled = 0;
+    for (const { orderId } of due) {
+      try {
+        await this.releasePayout(orderId);
+        const after = await this.prisma.payout.findUnique({ where: { orderId } });
+        if (after?.status === 'paid') settled += 1;
+      } catch (err) {
+        // One bad order must not stop the batch.
+        this.logger.error(`retryStuckPayouts: ${orderId} threw: ${(err as Error).message}`);
+      }
+    }
+    return { retried: due.length, settled };
+  }
+
+  /**
+   * Operator action: attempt a stuck payout right now, ignoring the backoff and
+   * the attempt cap. Returns the resulting payout row.
+   */
+  async adminRetryPayout(orderId: string) {
+    const payout = await this.prisma.payout.findUnique({ where: { orderId } });
+    if (!payout) {
+      throw new NotFoundException({
+        error: { code: 'payout_not_found', message: `No payout for order ${orderId}` },
+      });
+    }
+    if (payout.status === 'paid') return payout;
+
+    // Reset the counter so an operator retry is never refused by the cap, and so
+    // the schedule restarts from the short end if it fails again.
+    await this.prisma.payout.update({
+      where: { orderId },
+      data: { attempts: 0, nextRetryAt: new Date() },
+    });
+    await this.releasePayout(orderId);
+    return this.prisma.payout.findUnique({ where: { orderId } });
+  }
+
+  /**
+   * Operator action: record a payout settled outside Stripe (a bank transfer,
+   * typically, when a connected account can no longer receive funds).
+   */
+  async adminMarkPayoutPaid(orderId: string, reference: string) {
+    const payout = await this.prisma.payout.findUnique({ where: { orderId } });
+    if (!payout) {
+      throw new NotFoundException({
+        error: { code: 'payout_not_found', message: `No payout for order ${orderId}` },
+      });
+    }
+    const updated = await this.prisma.payout.update({
+      where: { orderId },
+      data: {
+        status: 'paid',
+        nextRetryAt: null,
+        lastError: `settled out of band: ${reference}`.slice(0, 500),
+        lastAttemptAt: new Date(),
+      },
+    });
+    await this.transition(orderId, OrderStatus.COMPLETED, 'admin');
+    return updated;
+  }
+
+  /** Payout queue for the admin finance view. */
+  async listPayouts(status?: string, page = 1, pageSize = 50) {
+    const where = status ? { status } : {};
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.payout.findMany({
+        where,
+        orderBy: [{ nextRetryAt: 'asc' }, { createdAt: 'desc' }],
+        skip: (Math.max(1, page) - 1) * pageSize,
+        take: pageSize,
+        include: {
+          order: { select: { number: true, status: true } },
+          inspector: { select: { userId: true, companyName: true } },
+        },
+      }),
+      this.prisma.payout.count({ where }),
+    ]);
+
+    return {
+      total,
+      items: rows.map((p) => ({
+        orderId: p.orderId,
+        orderNumber: p.order.number,
+        orderStatus: p.order.status,
+        inspectorId: p.inspectorId,
+        inspectorCompany: p.inspector.companyName,
+        amountCents: p.amountCents,
+        currency: 'EUR',
+        status: p.status,
+        attempts: p.attempts,
+        lastError: p.lastError,
+        lastAttemptAt: p.lastAttemptAt?.toISOString() ?? null,
+        nextRetryAt: p.nextRetryAt?.toISOString() ?? null,
+        stripeTransferId: p.stripeTransferId,
+        createdAt: p.createdAt.toISOString(),
+      })),
+    };
   }
 
   // ============================================================

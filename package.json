@@ -54,8 +54,10 @@
     "helmet": "^8.0.0",
     "ioredis": "^5.11.1",
     "joi": "^17.13.3",
+    "pdfkit": "^0.15.2",
     "prisma": "6.19.3",
     "reflect-metadata": "^0.2.2",
+    "resend": "^6.18.1",
     "rxjs": "^7.8.1",
     "sharp": "^0.34.5",
     "stripe": "^22.2.1"
@@ -69,6 +71,7 @@
     "@types/jest": "^29.5.13",
     "@types/multer": "^2.2.0",
     "@types/node": "^22.7.4",
+    "@types/pdfkit": "^0.17.6",
     "@types/supertest": "^6.0.2",
     "@typescript-eslint/eslint-plugin": "^8.8.0",
     "@typescript-eslint/parser": "^8.8.0",

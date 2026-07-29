@@ -63,6 +63,20 @@ export class OrdersController {
     return this.legalContract.getContractForOrder(id, userId, role);
   }
 
+  @Get(':id/contract/pdf')
+  @ApiOperation({
+    summary: 'Short-lived signed URL for the archived contract PDF (customer / inspector / admin)',
+  })
+  async getContractPdf(
+    @CurrentUser('id') userId: string,
+    @CurrentUser('role') role: Role,
+    @Param('id') id: string,
+  ) {
+    // Privately signed — a contract names both parties and their addresses, so
+    // it must never be reachable through the bucket's public URL.
+    return this.legalContract.getContractPdfUrl(id, userId, role);
+  }
+
   @Post(':id/cancel')
   @HttpCode(200)
   @ApiOperation({ summary: 'Cancel an order (100% / 80% refund per status)' })

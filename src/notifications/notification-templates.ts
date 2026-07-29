@@ -258,6 +258,40 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Выплата ${formatEur(p.amountCents)} отправлена.`,
     }),
   },
+  'payout.delayed': {
+    de: (p) => ({
+      subject: `Auszahlung verzögert`,
+      body: `Ihre Auszahlung von ${formatEur(p.amountCents)} für Bestellung ${str(p, 'orderNumber')} konnte noch nicht gesendet werden. Wir versuchen es automatisch erneut. Bitte prüfen Sie, ob Ihr Stripe-Konto vollständig eingerichtet ist.`,
+      short: `Auszahlung ${formatEur(p.amountCents)} verzögert.`,
+    }),
+    en: (p) => ({
+      subject: `Payout delayed`,
+      body: `Your payout of ${formatEur(p.amountCents)} for order ${str(p, 'orderNumber')} could not be sent yet. We will retry automatically. Please check that your Stripe account setup is complete.`,
+      short: `Payout ${formatEur(p.amountCents)} delayed.`,
+    }),
+    ru: (p) => ({
+      subject: `Выплата задерживается`,
+      body: `Выплату ${formatEur(p.amountCents)} по заказу ${str(p, 'orderNumber')} пока отправить не удалось. Мы повторим попытку автоматически. Проверьте, полностью ли настроен ваш аккаунт Stripe.`,
+      short: `Выплата ${formatEur(p.amountCents)} задерживается.`,
+    }),
+  },
+  'payout.failed': {
+    de: (p) => ({
+      subject: `${p.terminal ? 'Auszahlung endgültig fehlgeschlagen' : 'Auszahlung fehlgeschlagen'} — ${str(p, 'orderNumber')}`,
+      body: `Die Auszahlung von ${formatEur(p.amountCents)} für Bestellung ${str(p, 'orderNumber')} ist fehlgeschlagen (Versuch ${str(p, 'attempts')}): ${str(p, 'reason')}.${p.terminal ? ' Es werden keine automatischen Wiederholungen mehr ausgeführt — bitte manuell prüfen.' : ''}`,
+      short: `Auszahlung ${str(p, 'orderNumber')} fehlgeschlagen.`,
+    }),
+    en: (p) => ({
+      subject: `${p.terminal ? 'Payout permanently failed' : 'Payout failed'} — ${str(p, 'orderNumber')}`,
+      body: `The payout of ${formatEur(p.amountCents)} for order ${str(p, 'orderNumber')} failed (attempt ${str(p, 'attempts')}): ${str(p, 'reason')}.${p.terminal ? ' No further automatic retries will run — this needs manual attention.' : ''}`,
+      short: `Payout ${str(p, 'orderNumber')} failed.`,
+    }),
+    ru: (p) => ({
+      subject: `${p.terminal ? 'Выплата окончательно не прошла' : 'Выплата не прошла'} — ${str(p, 'orderNumber')}`,
+      body: `Выплата ${formatEur(p.amountCents)} по заказу ${str(p, 'orderNumber')} не прошла (попытка ${str(p, 'attempts')}): ${str(p, 'reason')}.${p.terminal ? ' Автоматических повторов больше не будет — требуется ручная проверка.' : ''}`,
+      short: `Выплата ${str(p, 'orderNumber')} не прошла.`,
+    }),
+  },
   'kyc.approved': {
     de: () => ({
       subject: `Verifizierung genehmigt`,

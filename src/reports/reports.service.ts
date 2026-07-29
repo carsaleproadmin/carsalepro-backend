@@ -50,8 +50,13 @@ export class ReportsService {
 
   async create(deviceId: string, dto: CreateReportDto): Promise<CreateReportResponseDto> {
     // Structured-payload validation runs BEFORE any quota is consumed so a 400
-    // never burns a free credit.
+    // never burns a free credit. The submitter check below is here for the same
+    // reason — a 403 must not cost the device a report either.
     const extracted = this.validatePayload(dto.reportSchemaVersion, dto.reportData);
+
+    if (dto.orderId) {
+      await this.assertOrderSubmitter(deviceId, dto.orderId);
+    }
 
     // Idempotent create: a UUID code re-posted by the same device (mobile retry
     // after a network drop, or a re-finish) returns the existing report with a
@@ -299,10 +304,64 @@ export class ReportsService {
   }
 
   /**
+   * A report filed against an order must come from the assigned inspector.
+   *
+   * The check lives here rather than in `OrdersService.submitReportForOrder`
+   * because this is where the submitting `deviceId` is in scope — the order
+   * service is also called by admin and system paths that have no device.
+   * Identity comes from `DeviceLink`, which maps a device to an account.
+   *
+   * Reports WITHOUT an `orderId` — every legacy mobile submission, and the
+   * shipped Flutter app never sends one — are deliberately untouched. Requiring
+   * a device link on `POST /reports` in general would brick the mobile app.
+   *
+   * Errors use the flat `{error, message}` shape of the legacy mobile surface,
+   * not the nested `/api/v1` envelope. The three codes are distinct so the app
+   * can tell an unlinked device (recoverable via link-codes) from a genuinely
+   * wrong inspector.
+   */
+  private async assertOrderSubmitter(deviceId: string, orderId: string): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { inspectorId: true },
+    });
+    if (!order) {
+      throw new NotFoundException({
+        error: 'order_not_found',
+        message: `Order ${orderId} not found`,
+      });
+    }
+    if (!order.inspectorId) {
+      throw new ForbiddenException({
+        error: 'order_not_assigned',
+        message: 'This order has no assigned inspector yet',
+      });
+    }
+
+    const link = await this.prisma.deviceLink.findUnique({ where: { deviceId } });
+    if (!link) {
+      throw new ForbiddenException({
+        error: 'device_not_linked',
+        message:
+          'This device is not linked to an account. Link it in your web cabinet, then retry.',
+      });
+    }
+    if (link.userId !== order.inspectorId) {
+      throw new ForbiddenException({
+        error: 'not_order_inspector',
+        message: 'This device is not linked to the inspector assigned to this order',
+      });
+    }
+  }
+
+  /**
    * Advance the linked order to SUBMITTED via OrdersService (the single place
    * for order transitions). Resolved lazily through ModuleRef to avoid a
    * circular module dependency. Best-effort: a failure here must never break the
    * report-create contract, so errors are swallowed (logged).
+   *
+   * The caller has already proved the submitter is the assigned inspector — see
+   * `assertOrderSubmitter`.
    */
   private async submitOrderForReport(orderId: string): Promise<void> {
     try {

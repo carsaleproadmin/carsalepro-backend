@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { KycService } from '../kyc/kyc.service';
 import { ListingsService } from '../listings/listings.service';
+import { LegalContractService } from '../legal/legal-contract.service';
 import { OrdersService } from '../orders/orders.service';
 
 /**
@@ -25,6 +26,7 @@ export class SchedulerService {
     private readonly orders: OrdersService,
     private readonly listings: ListingsService,
     private readonly kyc: KycService,
+    private readonly legalContract: LegalContractService,
   ) {
     if (this.disabled) {
       this.logger.log('Scheduler disabled (NODE_ENV=test or SCHEDULER_ENABLED=false)');
@@ -60,6 +62,33 @@ export class SchedulerService {
       if (expired > 0) this.logger.log(`expireOverdue: ${expired} listing(s) expired`);
     } catch (err) {
       this.logger.error(`listing expireOverdue failed: ${(err as Error).message}`);
+    }
+    try {
+      // Contracts whose inline PDF render failed (R2 blip, transient error).
+      const { attempted, rendered } = await this.legalContract.backfillMissingPdfs();
+      if (attempted > 0) {
+        this.logger.log(`backfillMissingPdfs: ${rendered}/${attempted} contract PDF(s) rendered`);
+      }
+    } catch (err) {
+      this.logger.error(`backfillMissingPdfs failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Every ten minutes: retry payouts whose backoff has elapsed. Separate from
+   * the hourly sweep because a stuck payout is money owed — the first retry
+   * should land in minutes, not at the top of the next hour.
+   */
+  @Cron(CronExpression.EVERY_10_MINUTES, { name: 'retry-stuck-payouts' })
+  async retryStuckPayouts(): Promise<void> {
+    if (this.disabled) return;
+    try {
+      const { retried, settled } = await this.orders.retryStuckPayouts();
+      if (retried > 0) {
+        this.logger.log(`retryStuckPayouts: ${retried} attempted, ${settled} settled`);
+      }
+    } catch (err) {
+      this.logger.error(`retryStuckPayouts failed: ${(err as Error).message}`);
     }
   }
 

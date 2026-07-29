@@ -7,7 +7,15 @@ import {
 import { OrderContract, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
+import { renderContractPdf } from './contract-pdf.renderer';
 import { CONTRACT_TEMPLATES, ContractKey } from './legal-contracts.content';
+
+/**
+ * Render attempts after which the backfill gives up on a contract. A template
+ * that cannot be rendered will not start working on the hundredth try, and an
+ * unbounded retry turns one bad row into a permanent hourly job.
+ */
+const MAX_PDF_ATTEMPTS = 5;
 
 /** ISO codes of the EU member states (used to resolve the EU contract template). */
 const EU_MEMBER_STATES = new Set([
@@ -120,10 +128,12 @@ export class LegalContractService {
     const html = markdownToHtmlDocument(substituted, template.title, template.locale);
 
     // Best-effort storage to R2 — never break the flow if storage is unavailable.
-    const s3Key = `contracts/${orderId}/v${template.version}.html`;
+    const htmlKey = `contracts/${orderId}/v${template.version}.html`;
+    let htmlS3Key: string | null = null;
     if (this.r2.isConfigured()) {
       try {
-        await this.r2.putObject(s3Key, html, 'text/html; charset=utf-8');
+        await this.r2.putObject(htmlKey, html, 'text/html; charset=utf-8');
+        htmlS3Key = htmlKey;
       } catch (err) {
         this.logger.warn(
           `Failed to store contract HTML for order ${orderId}: ${(err as Error).message}`,
@@ -131,12 +141,17 @@ export class LegalContractService {
       }
     }
 
-    // TODO(E11): render PDF in worker (set pdfS3Key once the PDF exists).
     const contract = await this.prisma.orderContract.create({
       data: {
         templateKey: template.key,
         templateVersion: template.version, // FROZEN — the template version at render time
         renderedHtml: html,
+        // Frozen source for BOTH renderings, so the PDF cannot say something
+        // different from the HTML, now or on a later re-render.
+        bodyMd: substituted,
+        // The key used to be computed and then thrown away, leaving the archived
+        // object unreachable. Persist it only when the upload actually happened.
+        htmlS3Key,
         pdfS3Key: null,
       },
     });
@@ -145,7 +160,142 @@ export class LegalContractService {
       data: { contractId: contract.id },
     });
 
-    return contract;
+    // Inline, best-effort. ~80 ms, and a PDF failure must leave the HTML
+    // contract and the assignment untouched — the hourly backfill picks it up.
+    await this.renderPdfForContract(contract.id);
+
+    return this.prisma.orderContract.findUniqueOrThrow({ where: { id: contract.id } });
+  }
+
+  /**
+   * Render and archive the PDF for a contract. Idempotent — a contract that
+   * already has a `pdfS3Key` is left alone. Never throws: the caller is either
+   * the ASSIGNED transition (which must not be undone by a rendering problem) or
+   * a cron batch (which must not stop on one bad row).
+   *
+   * @returns true when a PDF exists after this call.
+   */
+  async renderPdfForContract(contractId: string): Promise<boolean> {
+    const contract = await this.prisma.orderContract.findUnique({
+      where: { id: contractId },
+      include: { order: { select: { id: true, number: true } } },
+    });
+    if (!contract) return false;
+    if (contract.pdfS3Key) return true;
+    if (!this.r2.isConfigured()) return false;
+    if (!contract.bodyMd) {
+      // Pre-dates the frozen-markdown column. Re-substituting from today's order
+      // data could produce a document that differs from the signed HTML, so
+      // refuse rather than archive something misleading.
+      this.logger.warn(
+        `Contract ${contractId} has no frozen markdown — skipping PDF (created before body_md)`,
+      );
+      return false;
+    }
+
+    const orderId = contract.order?.id ?? contractId;
+    try {
+      const template = await this.prisma.legalTemplate.findFirst({
+        where: { key: contract.templateKey, version: contract.templateVersion },
+        select: { title: true, locale: true },
+      });
+      const fallback = CONTRACT_TEMPLATES[contract.templateKey as ContractKey];
+
+      const pdf = await renderContractPdf(contract.bodyMd, {
+        title: template?.title ?? fallback?.title ?? 'Contract',
+        orderNumber: contract.order?.number ?? '—',
+        locale: template?.locale ?? fallback?.locale ?? 'en',
+        renderedAt: new Date(),
+      });
+
+      const key = `contracts/${orderId}/v${contract.templateVersion}.pdf`;
+      await this.r2.putObject(key, pdf, 'application/pdf');
+      await this.prisma.orderContract.update({
+        where: { id: contractId },
+        data: {
+          pdfS3Key: key,
+          pdfRenderedAt: new Date(),
+          pdfLastError: null,
+        },
+      });
+      return true;
+    } catch (err) {
+      const message = (err as Error).message;
+      await this.prisma.orderContract
+        .update({
+          where: { id: contractId },
+          data: {
+            pdfAttempts: { increment: 1 },
+            pdfLastError: message.slice(0, 500),
+          },
+        })
+        .catch(() => undefined);
+      this.logger.warn(`Contract PDF render failed for ${contractId}: ${message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Re-render contracts whose PDF is missing. Driven by the hourly cron.
+   * Skips anything past the attempt cap so a permanently broken template does
+   * not get retried forever.
+   */
+  async backfillMissingPdfs(limit = 50): Promise<{ attempted: number; rendered: number }> {
+    if (!this.r2.isConfigured()) return { attempted: 0, rendered: 0 };
+
+    const pending = await this.prisma.orderContract.findMany({
+      where: {
+        pdfS3Key: null,
+        pdfAttempts: { lt: MAX_PDF_ATTEMPTS },
+        // Contracts predating the frozen-markdown column can never render (see
+        // renderPdfForContract). Excluding them is not just an optimisation:
+        // they are the OLDEST rows, so with `orderBy: createdAt asc` they would
+        // fill every batch forever and starve contracts that could succeed.
+        bodyMd: { not: null },
+        // Give the inline attempt a chance to have finished first.
+        createdAt: { lt: new Date(Date.now() - 5 * 60_000) },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+      select: { id: true },
+    });
+
+    let rendered = 0;
+    for (const { id } of pending) {
+      if (await this.renderPdfForContract(id)) rendered += 1;
+    }
+    return { attempted: pending.length, rendered };
+  }
+
+  /**
+   * A short-lived signed URL for the archived PDF. Uses the PRIVATE signer: a
+   * contract names both parties and their addresses, so it must never be served
+   * from the bucket's public URL even if one is configured.
+   */
+  async getContractPdfUrl(
+    orderId: string,
+    userId: string,
+    role?: Role,
+  ): Promise<{ signedUrl: string; expiresAt: string }> {
+    // Reuse the access check — customer, assigned inspector or admin only.
+    const view = await this.getContractForOrder(orderId, userId, role);
+    if (!view.pdfReady) {
+      throw new NotFoundException({
+        error: { code: 'pdf_not_ready', message: 'The contract PDF is not available yet' },
+      });
+    }
+
+    const order = await this.prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+      select: { contractId: true },
+    });
+    const contract = await this.prisma.orderContract.findUniqueOrThrow({
+      where: { id: order.contractId! },
+      select: { pdfS3Key: true },
+    });
+
+    const { url, expiresAt } = await this.r2.createPrivateSignedUrl(contract.pdfS3Key!);
+    return { signedUrl: url, expiresAt: expiresAt.toISOString() };
   }
 
   /**

@@ -468,4 +468,158 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
 
     await prisma.stripeWebhookEvent.deleteMany({ where: { id: event.id } });
   });
+
+  // ============================================================
+  // BE-S9 — a failed payout must be retryable, visible and alerted
+  // ============================================================
+  describe('BE-S9: stuck payout retry', () => {
+    /** Approve an order with a de-onboarded inspector, so the payout parks. */
+    async function stuckPayout(): Promise<{ orderId: string; inspectorId: string }> {
+      const customer = await makeCustomer();
+      const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+      const { orderId } = await driveToSubmitted(customer);
+      await orders.transition(orderId, OrderStatus.APPROVED, 'system');
+      await prisma.inspectorProfile.update({
+        where: { userId: inspector.userId },
+        data: { stripeOnboarded: false, stripeAccountId: null },
+      });
+      await orders.releasePayout(orderId);
+      return { orderId, inspectorId: inspector.userId };
+    }
+
+    it('12. parking a payout records an attempt, a reason and a retry time', async () => {
+      const { orderId } = await stuckPayout();
+      const payout = await prisma.payout.findUnique({ where: { orderId } });
+
+      expect(payout!.status).toBe('pending');
+      expect(payout!.attempts).toBe(1);
+      expect(payout!.lastError).toContain('not onboarded');
+      expect(payout!.lastAttemptAt).toBeTruthy();
+      // First backoff step is five minutes.
+      const delayMs = payout!.nextRetryAt!.getTime() - Date.now();
+      expect(delayMs).toBeGreaterThan(4 * 60_000);
+      expect(delayMs).toBeLessThan(6 * 60_000);
+    });
+
+    it('13. the inspector is told once, and admins are alerted', async () => {
+      const { inspectorId } = await stuckPayout();
+
+      const delayed = await prisma.notification.findFirst({
+        where: { userId: inspectorId, type: 'payout.delayed' },
+      });
+      expect(delayed).toBeTruthy();
+
+      const adminAlerts = await prisma.notification.count({ where: { type: 'payout.failed' } });
+      expect(adminAlerts).toBeGreaterThan(0);
+    });
+
+    it('14. a second failure increments attempts without creating a second row', async () => {
+      const { orderId } = await stuckPayout();
+      await orders.releasePayout(orderId);
+
+      const rows = await prisma.payout.findMany({ where: { orderId } });
+      expect(rows.length).toBe(1); // orderId is unique — the retry must UPDATE
+      expect(rows[0].attempts).toBe(2);
+
+      // No second inspector notification: one "your money is late" is enough.
+      // Counted on the inapp channel only — each notify() also writes an email row.
+      const delayed = await prisma.notification.count({
+        where: { type: 'payout.delayed', channel: 'inapp' },
+      });
+      expect(delayed).toBe(1);
+    });
+
+    it('15. the cron settles a payout once the inspector is onboarded again', async () => {
+      const { orderId, inspectorId } = await stuckPayout();
+
+      await prisma.inspectorProfile.update({
+        where: { userId: inspectorId },
+        data: { stripeOnboarded: true, stripeAccountId: `acct_fixed_${inspectorId}` },
+      });
+      // Make the backoff due.
+      await prisma.payout.update({
+        where: { orderId },
+        data: { nextRetryAt: new Date(Date.now() - 1000) },
+      });
+
+      const { retried, settled } = await orders.retryStuckPayouts();
+      expect(retried).toBeGreaterThanOrEqual(1);
+      expect(settled).toBeGreaterThanOrEqual(1);
+
+      const payout = await prisma.payout.findUnique({ where: { orderId } });
+      expect(payout!.status).toBe('paid');
+      expect(payout!.nextRetryAt).toBeNull();
+      expect(await prisma.payout.count({ where: { orderId } })).toBe(1);
+
+      const order = await prisma.order.findUnique({ where: { id: orderId } });
+      expect(order!.status).toBe('COMPLETED');
+    });
+
+    it('16. the cron ignores payouts whose backoff has not elapsed', async () => {
+      const { orderId, inspectorId } = await stuckPayout();
+      await prisma.inspectorProfile.update({
+        where: { userId: inspectorId },
+        data: { stripeOnboarded: true, stripeAccountId: `acct_fixed_${inspectorId}` },
+      });
+      // nextRetryAt is ~5 minutes out and untouched.
+      await orders.retryStuckPayouts();
+
+      const payout = await prisma.payout.findUnique({ where: { orderId } });
+      expect(payout!.status).toBe('pending');
+    });
+
+    it('17. a payout at the attempt cap goes terminal and stops retrying', async () => {
+      const { orderId } = await stuckPayout();
+      await prisma.payout.update({
+        where: { orderId },
+        data: { attempts: 5, nextRetryAt: new Date(Date.now() - 1000) },
+      });
+
+      await orders.releasePayout(orderId);
+      const payout = await prisma.payout.findUnique({ where: { orderId } });
+      expect(payout!.status).toBe('failed');
+      expect(payout!.attempts).toBe(6);
+      expect(payout!.nextRetryAt).toBeNull(); // terminal — needs a human
+
+      const { retried } = await orders.retryStuckPayouts();
+      expect(retried).toBe(0);
+    });
+
+    it('18. an admin can force a retry past the cap', async () => {
+      const { orderId, inspectorId } = await stuckPayout();
+      await prisma.payout.update({
+        where: { orderId },
+        data: { attempts: 6, status: 'failed', nextRetryAt: null },
+      });
+      await prisma.inspectorProfile.update({
+        where: { userId: inspectorId },
+        data: { stripeOnboarded: true, stripeAccountId: `acct_fixed_${inspectorId}` },
+      });
+
+      const payout = await orders.adminRetryPayout(orderId);
+      expect(payout!.status).toBe('paid');
+    });
+
+    it('19. an admin can settle a payout out of band', async () => {
+      const { orderId } = await stuckPayout();
+      const payout = await orders.adminMarkPayoutPaid(orderId, 'SEPA ref 88213');
+
+      expect(payout.status).toBe('paid');
+      expect(payout.lastError).toContain('SEPA ref 88213');
+      const order = await prisma.order.findUnique({ where: { id: orderId } });
+      expect(order!.status).toBe('COMPLETED');
+    });
+
+    it('20. the payout queue lists retry state for operators', async () => {
+      const { orderId } = await stuckPayout();
+      const queue = await orders.listPayouts('pending');
+
+      const row = queue.items.find((i) => i.orderId === orderId);
+      expect(row).toBeTruthy();
+      expect(row!.attempts).toBe(1);
+      expect(row!.lastError).toBeTruthy();
+      expect(row!.nextRetryAt).toBeTruthy();
+      expect(row!.orderNumber).toMatch(/^ORD-/);
+    });
+  });
 });

@@ -273,6 +273,10 @@ model KycDocument {
   applicationId String    @map("application_id")
   kind          String // id_front | id_back | selfie | gewerbeschein | insurance
   s3Key         String    @map("s3_key")
+  /// Which R2 bucket holds the object. NULL means the legacy shared reports
+  /// bucket; a value means the dedicated private KYC bucket. Recorded per row so
+  /// the migration window is unambiguous rather than "everything moved at once".
+  bucket        String?
   uploadedAt    DateTime  @default(now())
   purgedAt      DateTime? @map("purged_at")
 
@@ -436,12 +440,20 @@ model Payout {
   amountCents      Int      @map("amount_cents")
   stripeTransferId String?  @unique @map("stripe_transfer_id")
   status           String // pending|paid|failed
+  /// Transfer attempts. Retries stop at a cap so a permanently broken payout
+  /// becomes an operator task instead of an hourly loop.
+  attempts         Int      @default(0)
+  lastError        String?  @map("last_error")
+  lastAttemptAt    DateTime? @map("last_attempt_at")
+  /// When the retry cron may try again. Null = terminal, needs a human.
+  nextRetryAt      DateTime? @map("next_retry_at")
   createdAt        DateTime @default(now())
 
   order     Order            @relation(fields: [orderId], references: [id])
   inspector InspectorProfile @relation(fields: [inspectorId], references: [userId])
 
   @@index([inspectorId])
+  @@index([status, nextRetryAt])
   @@map("payout")
 }
 
@@ -532,11 +544,23 @@ model OrderContract {
   templateKey     String   @map("template_key")
   templateVersion Int      @map("template_version")
   renderedHtml    String   @map("rendered_html")
+  /// The placeholder-substituted markdown the HTML was rendered from, frozen at
+  /// render time. The PDF renders from this same string, so the two documents
+  /// cannot disagree, and a later re-render cannot pick up changed order data.
+  bodyMd          String?  @map("body_md")
+  /// R2 key of the archived HTML. The key was computed and the object uploaded,
+  /// but the key itself was never persisted, so the archive was unreachable.
+  htmlS3Key       String?  @map("html_s3_key")
   pdfS3Key        String?  @map("pdf_s3_key")
+  pdfRenderedAt   DateTime? @map("pdf_rendered_at")
+  /// Render attempts, so the backfill cron can give up instead of looping.
+  pdfAttempts     Int      @default(0) @map("pdf_attempts")
+  pdfLastError    String?  @map("pdf_last_error")
   createdAt       DateTime @default(now())
 
   order Order?
 
+  @@index([pdfS3Key, pdfAttempts])
   @@map("order_contract")
 }
 

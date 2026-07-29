@@ -500,8 +500,14 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .send({ status: 'IN_PROGRESS' })
       .expect(200);
 
-    // Inspector's device files the report against the order.
+    // Inspector's device files the report against the order. The device must be
+    // linked to the assigned inspector's account — filing a report against
+    // someone else's order is now a 403 (BE-S7), so the link is part of the
+    // happy path rather than an optional extra.
     const deviceId = uniqueDeviceId('insp-dev');
+    await prisma.deviceLink.create({
+      data: { deviceId, userId: assignedId, linkedVia: 'e2e' },
+    });
     const code = `CSP-${Date.now().toString().slice(-6)}`;
     const r2Off = !(
       process.env.R2_ACCOUNT_ID &&

@@ -18,6 +18,8 @@ export type NotificationType =
   | 'order.cancelled'
   | 'order.disputed'
   | 'payout.sent'
+  | 'payout.delayed'
+  | 'payout.failed'
   | 'kyc.approved'
   | 'kyc.rejected'
   | 'ppv.purchased'
@@ -53,6 +55,10 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   'order.cancelled': ['inapp', 'email'],
   'order.disputed': ['inapp', 'email'],
   'payout.sent': ['inapp', 'email'],
+  /** Inspector-facing: their money is late. Sent once, not on every retry. */
+  'payout.delayed': ['inapp', 'email'],
+  /** Operator-facing: a transfer is stuck and needs attention. */
+  'payout.failed': ['inapp', 'email'],
   'kyc.approved': ['inapp', 'email'],
   'kyc.rejected': ['inapp', 'email'],
   'ppv.purchased': ['inapp', 'email'],

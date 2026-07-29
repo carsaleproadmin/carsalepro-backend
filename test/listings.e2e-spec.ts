@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { ListingsService } from '../src/listings/listings.service';
@@ -98,25 +99,69 @@ describe('Listings (e2e)', () => {
     }
   });
 
-  it('2. POST /listings for a report the user does NOT own returns 403 not_report_owner', async () => {
-    await registerUser(app); // unrelated
+  it('2. BE-S1: a stranger holding the code CAN claim it — the code is the authorisation', async () => {
+    // Deliberate product change. The Report ID is now a bearer capability, so a
+    // seller who never installed the app can list their car from the printed
+    // code. Previously this returned 403 not_report_owner.
     const code = uniqueCode();
     const report = await seedReport({ code }); // device-owned, no user
     const stranger = await registerUser(app);
+    let listingId: string | undefined;
     try {
       const res = await request(app.getHttpServer())
         .post('/api/v1/listings')
         .set('Authorization', `Bearer ${stranger.token}`)
         .send({ reportCode: code })
-        .expect(403);
-      expect(res.body.error.code).toBe('not_report_owner');
+        .expect(201);
+      listingId = res.body.id;
+      expect(res.body.sellerId).toBe(stranger.userId);
     } finally {
-      await cleanup({ reportId: report.id });
+      await cleanup({ listingId, reportId: report.id });
     }
   });
 
-  it('3. POST /listings twice for the same report returns 409 listing_exists', async () => {
+  it('3. BE-S1: claiming is single-use, and a second claim looks like "not found"', async () => {
     const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    try {
+      const first = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = first.body.id;
+
+      const claimed = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(404);
+      expect(claimed.body.error.code).toBe('report_not_claimable');
+
+      // A code that never existed must be INDISTINGUISHABLE from a claimed one,
+      // or this endpoint becomes an oracle for which report codes are real.
+      const missing = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: uniqueCode() })
+        .expect(404);
+      // Everything but the timestamp, which the exception filter stamps on every
+      // error and which says nothing about the code.
+      const withoutTimestamp = (b: Record<string, unknown>) => {
+        const { timestamp: _timestamp, ...rest } = b;
+        return rest;
+      };
+      expect(withoutTimestamp(missing.body)).toEqual(withoutTimestamp(claimed.body));
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
+  it('3b. BE-S1: a different user claiming an already-claimed code gets the same 404', async () => {
+    const owner = await registerUser(app);
+    const stranger = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code, userId: owner.userId });
     let listingId: string | undefined;
@@ -130,10 +175,63 @@ describe('Listings (e2e)', () => {
 
       const res = await request(app.getHttpServer())
         .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .send({ reportCode: code })
+        .expect(404); // not 403 — a 403 would confirm the code exists
+      expect(res.body.error.code).toBe('report_not_claimable');
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
+  it('3c. BE-S1: concurrent claims resolve to exactly one listing', async () => {
+    const code = uniqueCode();
+    const report = await seedReport({ code });
+    const users = await Promise.all([
+      registerUser(app),
+      registerUser(app),
+      registerUser(app),
+      registerUser(app),
+      registerUser(app),
+    ]);
+    try {
+      const results = await Promise.all(
+        users.map((u) =>
+          request(app.getHttpServer())
+            .post('/api/v1/listings')
+            .set('Authorization', `Bearer ${u.token}`)
+            .send({ reportCode: code }),
+        ),
+      );
+
+      const created = results.filter((r) => r.status === 201);
+      const refused = results.filter((r) => r.status === 404);
+      expect(created).toHaveLength(1);
+      expect(refused).toHaveLength(4);
+
+      // The unique index is the claim marker, so the database agrees.
+      const rows = await prisma.listing.findMany({ where: { reportId: report.id } });
+      expect(rows).toHaveLength(1);
+    } finally {
+      await prisma.listing.deleteMany({ where: { reportId: report.id } });
+      await cleanup({ reportId: report.id });
+    }
+  });
+
+  it('3d. BE-S1: a modern CSP-<uuid> code can be claimed', async () => {
+    // The old regex only matched CSP-###, so every report the current mobile
+    // app produces was un-listable.
+    const owner = await registerUser(app);
+    const code = `CSP-${randomUUID()}`;
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/listings')
         .set('Authorization', `Bearer ${owner.token}`)
         .send({ reportCode: code })
-        .expect(409);
-      expect(res.body.error.code).toBe('listing_exists');
+        .expect(201);
+      listingId = res.body.id;
     } finally {
       await cleanup({ listingId, reportId: report.id });
     }

@@ -6,9 +6,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
-import { OrderStatus, Prisma, Report } from '@prisma/client';
+import { OrderStatus, Prisma, Report, Role } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
 import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/notification-types';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { PpvCheckoutResponseDto, ReportPurchaseListDto } from './dto/ppv-response.dto';
@@ -281,17 +282,56 @@ export class PaymentsService {
     }
   }
 
-  /** Mark the Payout behind a failed/reversed transfer 'failed'. Idempotent. */
+  /**
+   * Stripe told us a transfer failed or was reversed AFTER we recorded it as
+   * paid. Put the payout back in the retry queue rather than leaving it in a
+   * terminal 'failed' state nothing ever revisits, and alert operators — money
+   * is owed and it is no longer moving.
+   */
   async failTransfer(transfer: StripeTransfer): Promise<void> {
     const payout = await this.prisma.payout.findUnique({
       where: { stripeTransferId: transfer.id },
+      include: { order: { select: { id: true, number: true, inspectorId: true } } },
     });
-    if (payout) {
-      await this.prisma.payout
-        .update({ where: { id: payout.id }, data: { status: 'failed' } })
-        .catch(() => undefined);
-      this.logger.warn(`Payout ${payout.id} marked failed (transfer failed/reversed)`);
-      // E11: alert ops + retry path.
+    if (!payout) return;
+
+    await this.prisma.payout
+      .update({
+        where: { id: payout.id },
+        data: {
+          status: 'failed',
+          stripeTransferId: null, // freed so a retry can record its own transfer
+          lastError: 'stripe reported the transfer failed or was reversed',
+          lastAttemptAt: new Date(),
+          // Short backoff: this is a live money problem, not a cold queue item.
+          nextRetryAt: new Date(Date.now() + 15 * 60_000),
+          attempts: { increment: 1 },
+        },
+      })
+      .catch(() => undefined);
+
+    this.logger.warn(`Payout ${payout.id} marked failed (transfer failed/reversed)`);
+    await this.alertAdmins('payout.failed', {
+      orderId: payout.orderId,
+      orderNumber: payout.order.number,
+      amountCents: payout.amountCents,
+      reason: 'Stripe reported the transfer failed or was reversed',
+      attempts: payout.attempts + 1,
+      terminal: false,
+    });
+  }
+
+  /** Fan a notification out to every active admin. Never throws. */
+  private async alertAdmins(
+    type: NotificationType,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
+      select: { id: true },
+    });
+    for (const admin of admins) {
+      await this.notifications.notify(admin.id, type, payload);
     }
   }
 

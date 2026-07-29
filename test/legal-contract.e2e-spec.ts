@@ -116,6 +116,15 @@ describe('LegalSync / Order Contract (e2e)', () => {
     await app.close();
   });
 
+  /** Several assertions below only mean something when object storage is on. */
+  function r2Configured(): boolean {
+    return Boolean(
+      process.env.R2_ACCOUNT_ID &&
+        process.env.R2_ACCESS_KEY_ID &&
+        process.env.R2_SECRET_ACCESS_KEY,
+    );
+  }
+
   // ---- seeding helpers ----
 
   async function registerUser(prefix = 'usr'): Promise<Registered> {
@@ -259,7 +268,8 @@ describe('LegalSync / Order Contract (e2e)', () => {
     const contract = await prisma.orderContract.findUnique({ where: { id: order!.contractId! } });
     expect(contract).toBeTruthy();
     expect(contract!.templateKey).toBe('contract_de');
-    expect(contract!.pdfS3Key).toBeNull();
+    // The PDF now renders inline on the ASSIGNED transition.
+    expect(contract!.pdfS3Key === null).toBe(!r2Configured());
 
     // templateVersion is frozen to the ACTIVE template's version.
     const activeTpl = await prisma.legalTemplate.findFirst({
@@ -334,7 +344,8 @@ describe('LegalSync / Order Contract (e2e)', () => {
       .expect(200);
     expect(res.body.orderId).toBe(orderId);
     expect(res.body.templateKey).toBe('contract_de');
-    expect(res.body.pdfReady).toBe(false);
+    // The PDF renders inline on ASSIGNED, so it is ready whenever R2 is.
+    expect(res.body.pdfReady).toBe(r2Configured());
     expect(typeof res.body.templateVersion).toBe('number');
     expect(res.body.locale).toBe('de');
     expect(res.body.html).toContain('<!doctype html>');
@@ -458,5 +469,130 @@ describe('LegalSync / Order Contract (e2e)', () => {
     const contract = await prisma.orderContract.findUnique({ where: { id: order!.contractId! } });
     expect(contract!.renderedHtml).toContain('DE555000111');
     expect(contract!.renderedHtml).toContain('DE777000222');
+  });
+
+  // ============================================================
+  // BE-S6 — the contract PDF is rendered, archived and reachable
+  // ============================================================
+  describe('BE-S6: contract PDF', () => {
+    it('14. assignment archives both the HTML key and a rendered PDF', async () => {
+      if (!r2Configured()) return; // storage-dependent
+      const customer = await makeCustomer();
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const { orderId } = await createPaidOrder(customer);
+      await assignOrder(orderId);
+      await trackContractForOrder(orderId);
+
+      const order = await prisma.order.findUnique({ where: { id: orderId } });
+      const contract = await prisma.orderContract.findUnique({
+        where: { id: order!.contractId! },
+      });
+
+      // The HTML key used to be computed and thrown away.
+      expect(contract!.htmlS3Key).toBe(`contracts/${orderId}/v${contract!.templateVersion}.html`);
+      expect(contract!.pdfS3Key).toBe(`contracts/${orderId}/v${contract!.templateVersion}.pdf`);
+      expect(contract!.pdfRenderedAt).toBeTruthy();
+      expect(contract!.pdfLastError).toBeNull();
+      // Both documents render from one frozen string.
+      expect(contract!.bodyMd).toBeTruthy();
+      expect(contract!.bodyMd).not.toMatch(/\{\{.*?\}\}/);
+    });
+
+    it('15. the customer gets a privately signed URL for the PDF', async () => {
+      if (!r2Configured()) return;
+      const customer = await makeCustomer();
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const { orderId } = await createPaidOrder(customer);
+      await assignOrder(orderId);
+      await trackContractForOrder(orderId);
+
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/contract/pdf`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+
+      expect(res.body.signedUrl).toContain('X-Amz-Signature');
+      expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('16. an unrelated user cannot fetch the PDF', async () => {
+      if (!r2Configured()) return;
+      const customer = await makeCustomer();
+      const stranger = await makeCustomer();
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const { orderId } = await createPaidOrder(customer);
+      await assignOrder(orderId);
+      await trackContractForOrder(orderId);
+
+      await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/contract/pdf`)
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .expect(403);
+    });
+
+    it('17. before assignment there is no contract, so no PDF', async () => {
+      const customer = await makeCustomer();
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const { orderId } = await createPaidOrder(customer);
+
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/contract/pdf`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(404);
+      expect(res.body.error.code).toBe('contract_not_ready');
+    });
+
+    it('18. the backfill re-renders a missing PDF and is idempotent', async () => {
+      if (!r2Configured()) return;
+      const customer = await makeCustomer();
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const { orderId } = await createPaidOrder(customer);
+      await assignOrder(orderId);
+      await trackContractForOrder(orderId);
+
+      const order = await prisma.order.findUnique({ where: { id: orderId } });
+      const contractId = order!.contractId!;
+
+      // Simulate the inline render having failed, and age the row past the
+      // five-minute grace window the backfill waits out.
+      await prisma.orderContract.update({
+        where: { id: contractId },
+        data: {
+          pdfS3Key: null,
+          pdfRenderedAt: null,
+          createdAt: new Date(Date.now() - 10 * 60_000),
+        },
+      });
+
+      const first = await legal.backfillMissingPdfs();
+      expect(first.rendered).toBeGreaterThanOrEqual(1);
+      const after = await prisma.orderContract.findUnique({ where: { id: contractId } });
+      expect(after!.pdfS3Key).toBeTruthy();
+
+      // Second pass must not re-render what is already archived.
+      const second = await legal.renderPdfForContract(contractId);
+      expect(second).toBe(true);
+      const unchanged = await prisma.orderContract.findUnique({ where: { id: contractId } });
+      expect(unchanged!.pdfRenderedAt!.getTime()).toBe(after!.pdfRenderedAt!.getTime());
+    });
+
+    it('19. a contract created before the frozen-markdown column is skipped, not guessed', async () => {
+      if (!r2Configured()) return;
+      const customer = await makeCustomer();
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const { orderId } = await createPaidOrder(customer);
+      await assignOrder(orderId);
+      await trackContractForOrder(orderId);
+
+      const order = await prisma.order.findUnique({ where: { id: orderId } });
+      const contractId = order!.contractId!;
+      await prisma.orderContract.update({
+        where: { id: contractId },
+        data: { pdfS3Key: null, bodyMd: null },
+      });
+
+      // Re-substituting from today's data could differ from the signed HTML.
+      expect(await legal.renderPdfForContract(contractId)).toBe(false);
+    });
   });
 });
