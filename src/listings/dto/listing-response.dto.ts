@@ -57,9 +57,38 @@ export class MyListingsListDto {
   items!: MyListingItemDto[];
 }
 
+export class ListingPackageDto {
+  @ApiProperty({ example: 'gold', enum: ['standard', 'gold'] })
+  package!: 'standard' | 'gold';
+
+  @ApiProperty({ example: 999, description: 'Integer cents. 0 means free.' })
+  amountCents!: number;
+
+  @ApiProperty({ example: 'EUR' })
+  currency!: string;
+
+  @ApiProperty({ example: 30 })
+  durationDays!: number;
+}
+
+/**
+ * Package prices, so the seller-facing picker renders live tariffs instead of
+ * copy baked into the translation files.
+ */
+export class ListingPackagesDto {
+  @ApiProperty({ type: [ListingPackageDto] })
+  items!: ListingPackageDto[];
+}
+
 export class PublishResultDto {
   @ApiPropertyOptional({ example: 'ACTIVE' })
   status?: string;
+
+  @ApiPropertyOptional({ example: 999, description: 'What this publish charged, in cents.' })
+  amountCents?: number;
+
+  @ApiPropertyOptional({ example: 'EUR' })
+  currency?: string;
 
   @ApiPropertyOptional({ example: '2026-07-13T10:00:00.000Z' })
   expiresAt?: string;

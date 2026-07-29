@@ -4,6 +4,8 @@ import request from 'supertest';
 import { OrdersService } from '../src/orders/orders.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SettingsService } from '../src/settings/settings.service';
+import { PLATFORM_SETTING_DEFAULTS } from '../src/settings/platform-settings.constants';
+import { PinnedTariff, colocatedQuote, pinTariff } from './helpers/tariff';
 import {
   CONTRACT_TEMPLATES,
   type ContractKey,
@@ -37,11 +39,17 @@ describe('Admin panel (E9) (e2e)', () => {
   const createdLegalKeys = new Set<string>();
   const inspectorTokens = new Map<string, string>();
 
+  // Inspector co-located with the order: fare is base + one minute, floored at
+  // the minimum fare. Derived so a retuned default cannot silently break this.
+  const FARE = colocatedQuote();
+  let tariff: PinnedTariff;
+
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
     orders = app.get(OrdersService);
     settings = app.get(SettingsService);
+    tariff = await pinTariff(app);
   });
 
   afterEach(async () => {
@@ -102,6 +110,9 @@ describe('Admin panel (E9) (e2e)', () => {
   });
 
   afterAll(async () => {
+    // Test 25 deliberately PATCHes orderBaseFeeEur and leaves it changed; without
+    // this restore every suite that runs afterwards prices against it.
+    await tariff.restore();
     await app.close();
   });
 
@@ -519,7 +530,8 @@ describe('Admin panel (E9) (e2e)', () => {
       const admin = await makeAdmin();
       const customer = await makeUser('cust');
       await makeInspector(ORDER_LAT, ORDER_LNG);
-      const orderId = await createPaidOrder(customer); // total 5000
+      const orderId = await createPaidOrder(customer);
+      const half = Math.round(FARE.totalCents * 0.5);
 
       const res = await bearer(
         request(app.getHttpServer())
@@ -528,10 +540,10 @@ describe('Admin panel (E9) (e2e)', () => {
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('CANCELLED');
-      expect(res.body.refundCents).toBe(2500);
+      expect(res.body.refundCents).toBe(half);
 
       const refund = await prisma.refund.findFirst({ where: { orderId } });
-      expect(refund!.amountCents).toBe(2500);
+      expect(refund!.amountCents).toBe(half);
       expect(refund!.reason).toBe('admin');
       const order = await prisma.order.findUnique({ where: { id: orderId } });
       expect(order!.status).toBe('CANCELLED');
@@ -564,10 +576,10 @@ describe('Admin panel (E9) (e2e)', () => {
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('REFUNDED');
-      expect(res.body.refundCents).toBe(5000);
+      expect(res.body.refundCents).toBe(FARE.totalCents);
 
       const refund = await prisma.refund.findFirst({ where: { orderId } });
-      expect(refund!.amountCents).toBe(5000);
+      expect(refund!.amountCents).toBe(FARE.totalCents);
       expect(refund!.reason).toBe('dispute');
       const order = await prisma.order.findUnique({ where: { id: orderId } });
       expect(order!.status).toBe('REFUNDED');
@@ -589,11 +601,11 @@ describe('Admin panel (E9) (e2e)', () => {
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('COMPLETED');
-      expect(res.body.payoutCents).toBe(4000);
+      expect(res.body.payoutCents).toBe(FARE.inspectorShareCents);
 
       const payout = await prisma.payout.findUnique({ where: { orderId } });
       expect(payout!.status).toBe('paid');
-      expect(payout!.amountCents).toBe(4000);
+      expect(payout!.amountCents).toBe(FARE.inspectorShareCents);
       const order = await prisma.order.findUnique({ where: { id: orderId } });
       expect(order!.status).toBe('COMPLETED');
       const dispute = await prisma.dispute.findUnique({ where: { orderId } });
@@ -731,7 +743,10 @@ describe('Admin panel (E9) (e2e)', () => {
   describe('settings', () => {
     afterEach(async () => {
       // Restore the base fee so other suites' quote assertions stay green.
-      await settings.set('orderBaseFeeEur', 50);
+      // This used to be a hardcoded 50, which meant the "restore" quietly
+      // installed a value of its own choosing and every later suite priced
+      // against it. Restore the actual default.
+      await settings.set('orderBaseFeeEur', PLATFORM_SETTING_DEFAULTS.orderBaseFeeEur);
     });
 
     it('22. GET settings returns values + defaults', async () => {
@@ -741,7 +756,9 @@ describe('Admin panel (E9) (e2e)', () => {
         admin.token,
       ).expect(200);
       expect(res.body.values.orderBaseFeeEur).toBeDefined();
-      expect(res.body.defaults.orderBaseFeeEur).toBe(50);
+      expect(res.body.defaults.orderBaseFeeEur).toBe(
+        PLATFORM_SETTING_DEFAULTS.orderBaseFeeEur,
+      );
     });
 
     it('23. PATCH unknown key → 404 unknown_setting', async () => {
@@ -771,7 +788,7 @@ describe('Admin panel (E9) (e2e)', () => {
         .set('Authorization', `Bearer ${customer.token}`)
         .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
         .expect(200);
-      expect(before.body.breakdown.baseFeeCents).toBe(5000);
+      expect(before.body.breakdown.baseFeeCents).toBe(FARE.baseFeeCents);
 
       await bearer(
         request(app.getHttpServer()).patch('/api/v1/admin/settings/orderBaseFeeEur').send({ value: 75 }),
@@ -877,7 +894,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const admin = await makeAdmin();
       const customer = await makeUser('cust');
       await makeInspector(ORDER_LAT, ORDER_LNG);
-      // Completed order → succeeded order payment (5000) + paid payout (4000).
+      // Completed order → one succeeded order payment and one paid payout.
       const orderId = await driveToSubmitted(customer);
       await request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/approve`)
@@ -889,9 +906,9 @@ describe('Admin panel (E9) (e2e)', () => {
         admin.token,
       ).expect(200);
       expect(res.body.currency).toBe('EUR');
-      expect(res.body.payments.grossCents).toBeGreaterThanOrEqual(5000);
-      expect(res.body.byPurpose.order.cents).toBeGreaterThanOrEqual(5000);
-      expect(res.body.payouts.cents).toBeGreaterThanOrEqual(4000);
+      expect(res.body.payments.grossCents).toBeGreaterThanOrEqual(FARE.totalCents);
+      expect(res.body.byPurpose.order.cents).toBeGreaterThanOrEqual(FARE.totalCents);
+      expect(res.body.payouts.cents).toBeGreaterThanOrEqual(FARE.inspectorShareCents);
       expect(typeof res.body.platformNetCents).toBe('number');
     });
 
@@ -919,8 +936,8 @@ describe('Admin panel (E9) (e2e)', () => {
       );
       const row = lines.find((l) => l.includes(inspector.userId));
       expect(row).toBeTruthy();
-      expect(row).toContain('"4000"');
-      expect(row).toContain('"40.00"');
+      expect(row).toContain(`"${FARE.inspectorShareCents}"`);
+      expect(row).toContain(`"${(FARE.inspectorShareCents / 100).toFixed(2)}"`);
       expect(row).toContain('"Hans Müller"');
     });
   });

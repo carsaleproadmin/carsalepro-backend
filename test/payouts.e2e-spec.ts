@@ -5,6 +5,7 @@ import { OrdersService } from '../src/orders/orders.service';
 import { PaymentsService } from '../src/payments/payments.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createTestApp } from './helpers/test-app';
+import { PinnedTariff, colocatedQuote, pinTariff } from './helpers/tariff';
 
 // Berlin Mitte — order/customer + inspector location used across the suite.
 const ORDER_LAT = 52.52;
@@ -42,11 +43,18 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
   // userId → bearer token, so we can accept an offer as whoever actually holds it.
   const inspectorTokens = new Map<string, string>();
 
+  // Inspector sits at the order location, so the fare is base + one minute of
+  // travel, floored at the minimum fare. Derived, not hardcoded.
+  const FARE = colocatedQuote();
+  let tariff: PinnedTariff;
+
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
     orders = app.get(OrdersService);
     payments = app.get(PaymentsService);
+    // Sibling suites mutate the tariff; pin it so these amounts mean something.
+    tariff = await pinTariff(app);
   });
 
   afterEach(async () => {
@@ -83,6 +91,7 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
   });
 
   afterAll(async () => {
+    await tariff.restore();
     await app.close();
   });
 
@@ -242,7 +251,7 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
     await orders.transition(orderId, OrderStatus.APPROVED, 'system');
 
     const order = await prisma.order.findUnique({ where: { id: orderId } });
-    expect(order!.inspectorShareCents).toBe(4000); // 80% of 5000
+    expect(order!.inspectorShareCents).toBe(FARE.inspectorShareCents);
 
     await orders.releasePayout(orderId);
 
@@ -290,7 +299,7 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
 
     const payout = await prisma.payout.findUnique({ where: { orderId } });
     expect(payout!.status).toBe('paid');
-    expect(payout!.amountCents).toBe(4000);
+    expect(payout!.amountCents).toBe(FARE.inspectorShareCents);
   });
 
   // ============================================================
@@ -313,7 +322,7 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
     expect(after!.status).toBe('COMPLETED');
     const payout = await prisma.payout.findUnique({ where: { orderId } });
     expect(payout!.status).toBe('paid');
-    expect(payout!.amountCents).toBe(4000);
+    expect(payout!.amountCents).toBe(FARE.inspectorShareCents);
   });
 
   // ============================================================
@@ -373,8 +382,8 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
       .set('Authorization', `Bearer ${inspector.token}`)
       .expect(200);
 
-    expect(res.body.paidCents).toBe(4000);
-    expect(res.body.pendingCents).toBe(4000);
+    expect(res.body.paidCents).toBe(FARE.inspectorShareCents);
+    expect(res.body.pendingCents).toBe(FARE.inspectorShareCents);
     expect(Array.isArray(res.body.payouts)).toBe(true);
     expect(res.body.payouts.length).toBe(2);
     const statuses = res.body.payouts.map((p: { status: string }) => p.status).sort();

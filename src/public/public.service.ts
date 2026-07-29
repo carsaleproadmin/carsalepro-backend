@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, Report } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
+import { SettingsService } from '../settings/settings.service';
 import { ListingQueryDto } from './dto/listing-query.dto';
 
 const PAGE_SIZE = 12;
@@ -13,6 +14,7 @@ export class PublicService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly r2: R2Service,
+    private readonly settings: SettingsService,
   ) {}
 
   /** Showroom search — ACTIVE verified listings only, Gold first. */
@@ -90,6 +92,9 @@ export class PublicService {
       verified: true,
       photos,
       views: listing.viewsCount + 1,
+      // What unlocking the full report costs, so the page never hardcodes it.
+      reportUnlockPriceCents: await this.settings.getCents('payPerViewPriceEur'),
+      currency: 'EUR',
     };
   }
 
@@ -135,6 +140,8 @@ export class PublicService {
       damageCount: damages.length,
       photos: await this.signPhotos(report.photosManifest, 2),
       vinMasked: report.vin ? this.maskVin(report.vin) : null,
+      unlockPriceCents: await this.settings.getCents('payPerViewPriceEur'),
+      currency: 'EUR',
       // PII (signatures, addresses, phones) is intentionally never included here.
     };
   }

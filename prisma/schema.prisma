@@ -318,8 +318,20 @@ model Order {
 
   // money (integer cents)
   baseFeeCents        Int    @map("base_fee_cents")
+  /// Distance the fare was calculated on. ROAD kilometres when the routing
+  /// provider answered, great-circle × orderDetourFactor otherwise — see
+  /// `routingSource`. Was purely great-circle before the ride-hailing tariff.
   distanceKm          Decimal @map("distance_km")
   distanceFeeCents    Int    @map("distance_fee_cents")
+  /// Driving minutes the time component was calculated on.
+  durationMin         Int?   @map("duration_min")
+  timeFeeCents        Int    @default(0) @map("time_fee_cents")
+  /// surge × peak, frozen at quote time. 1 when neither applied.
+  surgeMultiplier     Decimal @default(1) @db.Decimal(4, 2) @map("surge_multiplier")
+  /// True when the minimum fare floor raised the total.
+  minimumFareApplied  Boolean @default(false) @map("minimum_fare_applied")
+  /// 'mapbox' | 'haversine' — how distanceKm/durationMin were obtained.
+  routingSource       String? @map("routing_source")
   totalCents          Int    @map("total_cents")
   platformFeeCents    Int    @map("platform_fee_cents")
   inspectorShareCents Int    @map("inspector_share_cents")

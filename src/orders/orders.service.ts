@@ -9,6 +9,7 @@ import {
 import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { GeoService, NearestInspector } from '../geo/geo.service';
+import { RouteEstimate, RoutingService } from '../geo/routing.service';
 import { LegalContractService } from '../legal/legal-contract.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
@@ -23,12 +24,38 @@ import {
   QuoteOrderDto,
 } from './dto/order.dto';
 import { canTransition } from './order-state-machine';
+import { PriceBreakdown, computePrice } from './order-pricing';
 
-/** Result of a server-side quote. */
+/**
+ * Result of a server-side quote.
+ *
+ * `breakdown` is additive-only: `baseFeeCents`, `distanceFeeCents`, `distanceKm`
+ * and `totalCents` are the shape the website has always read, and every new
+ * field sits alongside them. `minimumFareTopUpCents` and `surgeFeeCents` are
+ * separate named lines on purpose — a floor or a multiplier that silently
+ * inflates the total is the exact dark pattern an itemised quote exists to
+ * avoid.
+ */
 export interface QuoteResult {
   available: boolean;
+  currency?: string;
   totalCents?: number;
-  breakdown?: { baseFeeCents: number; distanceFeeCents: number; distanceKm: number };
+  breakdown?: {
+    baseFeeCents: number;
+    distanceFeeCents: number;
+    distanceKm: number;
+    /** 'road' when a routing provider answered, 'straight_line' when estimated. */
+    distanceSource: 'road' | 'straight_line';
+    durationMin: number;
+    timeFeeCents: number;
+    subtotalCents: number;
+    surgeMultiplier: number;
+    surgeFeeCents: number;
+    peakApplied: boolean;
+    minimumFareCents: number;
+    minimumFareTopUpCents: number;
+    minimumFareApplied: boolean;
+  };
   nearestKm?: number;
   candidates?: Array<{ displayName: string | null; company: string | null; distanceKm: number }>;
 }
@@ -38,12 +65,8 @@ interface PricedQuote {
   available: boolean;
   nearest?: NearestInspector;
   candidates: NearestInspector[];
-  baseFeeCents: number;
-  distanceKm: number;
-  distanceFeeCents: number;
-  totalCents: number;
-  platformFeeCents: number;
-  inspectorShareCents: number;
+  price: PriceBreakdown;
+  routingSource: RouteEstimate['source'];
 }
 
 @Injectable()
@@ -53,6 +76,7 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly geo: GeoService,
+    private readonly routing: RoutingService,
     private readonly settings: SettingsService,
     private readonly stripe: StripeService,
     private readonly payments: PaymentsService,
@@ -65,15 +89,56 @@ export class OrdersService {
   // ============================================================
 
   /**
-   * Single source of truth for pricing. `distanceKm` is the distance to the
-   * NEAREST eligible inspector. All money is integer cents; rounding happens
-   * only at the cents boundary.
+   * Single source of truth for pricing.
+   *
+   * Candidates are RANKED by PostGIS great-circle distance (cheap, indexed), but
+   * the winner is then PRICED on a road route where one is available — routing
+   * every candidate would cost three provider calls to change an ordering that
+   * straight-line distance already gets right.
+   *
+   * The arithmetic itself lives in the pure `computePrice`; this method only
+   * gathers inputs. All money is integer cents.
    */
-  private async priceQuote(lat: number, lng: number): Promise<PricedQuote> {
-    const baseFeeCents = await this.settings.getCents('orderBaseFeeEur');
-    const ratePerKmCents = await this.settings.getCents('orderRatePerKmEur');
-    const platformFeePercent = await this.settings.getNumber('platformFeePercent');
-    const radiusKm = await this.settings.getNumber('expertSearchRadiusKm');
+  private async priceQuote(lat: number, lng: number, scheduledAt: Date): Promise<PricedQuote> {
+    const [
+      baseFeeCents,
+      ratePerKmCents,
+      ratePerMinuteCents,
+      minimumFareCents,
+      platformFeePercent,
+      radiusKm,
+      surgeMultiplier,
+      peakMultiplier,
+      peakStartHour,
+      peakEndHour,
+      detourFactor,
+      cacheHours,
+    ] = await Promise.all([
+      this.settings.getCents('orderBaseFeeEur'),
+      this.settings.getCents('orderRatePerKmEur'),
+      this.settings.getCents('orderRatePerMinuteEur'),
+      this.settings.getCents('orderMinimumFareEur'),
+      this.settings.getNumber('platformFeePercent'),
+      this.settings.getNumber('expertSearchRadiusKm'),
+      this.settings.getNumber('orderSurgeMultiplier'),
+      this.settings.getNumber('orderPeakMultiplier'),
+      this.settings.getNumber('orderPeakStartHour'),
+      this.settings.getNumber('orderPeakEndHour'),
+      this.settings.getNumber('orderDetourFactor'),
+      this.settings.getNumber('orderRoutingCacheHours'),
+    ]);
+
+    const tariff = {
+      baseFeeCents,
+      ratePerKmCents,
+      ratePerMinuteCents,
+      minimumFareCents,
+      platformFeePercent,
+      surgeMultiplier,
+      peakMultiplier,
+      peakStartHour,
+      peakEndHour,
+    };
 
     const candidates = await this.geo.findNearestInspectors(lat, lng, radiusKm, 3);
 
@@ -81,52 +146,64 @@ export class OrdersService {
       return {
         available: false,
         candidates: [],
-        baseFeeCents,
-        distanceKm: 0,
-        distanceFeeCents: 0,
-        totalCents: 0,
-        platformFeeCents: 0,
-        inspectorShareCents: 0,
+        routingSource: 'haversine',
+        price: computePrice({ distanceKm: 0, durationMin: 0, scheduledAt, tariff }),
       };
     }
 
     const nearest = candidates[0];
-    const distanceKm = nearest.distanceKm;
-    const distanceFeeCents = Math.round(distanceKm * ratePerKmCents);
-    const totalCents = baseFeeCents + distanceFeeCents;
-    const platformFeeCents = Math.round((totalCents * platformFeePercent) / 100);
-    const inspectorShareCents = totalCents - platformFeeCents;
+    const route = await this.routing.estimate(
+      { lat: nearest.lat, lng: nearest.lng },
+      { lat, lng },
+      detourFactor,
+      cacheHours,
+    );
 
     return {
       available: true,
       nearest,
       candidates,
-      baseFeeCents,
-      distanceKm,
-      distanceFeeCents,
-      totalCents,
-      platformFeeCents,
-      inspectorShareCents,
+      routingSource: route.source,
+      price: computePrice({
+        distanceKm: route.distanceKm,
+        durationMin: route.durationMin,
+        scheduledAt,
+        tariff,
+      }),
     };
   }
 
   /** Public quote. On no coverage, records a WaitlistEntry from the user email. */
   async quote(userId: string, dto: QuoteOrderDto): Promise<QuoteResult> {
-    const priced = await this.priceQuote(dto.lat, dto.lng);
+    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt));
 
     if (!priced.available) {
       await this.addToWaitlist(userId, dto.lat, dto.lng);
       return { available: false };
     }
 
+    const p = priced.price;
     return {
       available: true,
-      totalCents: priced.totalCents,
+      currency: 'EUR',
+      totalCents: p.totalCents,
       breakdown: {
-        baseFeeCents: priced.baseFeeCents,
-        distanceFeeCents: priced.distanceFeeCents,
-        distanceKm: priced.distanceKm,
+        baseFeeCents: p.baseFeeCents,
+        distanceFeeCents: p.distanceFeeCents,
+        distanceKm: p.distanceKm,
+        distanceSource: priced.routingSource === 'mapbox' ? 'road' : 'straight_line',
+        durationMin: p.durationMin,
+        timeFeeCents: p.timeFeeCents,
+        subtotalCents: p.subtotalCents,
+        surgeMultiplier: p.surgeMultiplier,
+        surgeFeeCents: p.surgeFeeCents,
+        peakApplied: p.peakApplied,
+        minimumFareCents: p.minimumFareCents,
+        minimumFareTopUpCents: p.minimumFareTopUpCents,
+        minimumFareApplied: p.minimumFareApplied,
       },
+      // Straight-line distance to each candidate — this is a "who is near you"
+      // list, not a priced figure, so it stays on the cheap measure.
       nearestKm: priced.nearest!.distanceKm,
       candidates: priced.candidates.slice(0, 3).map((c) => ({
         displayName: c.displayName,
@@ -154,8 +231,10 @@ export class OrdersService {
     userId: string,
     dto: CreateOrderDto,
   ): Promise<{ orderId: string; paymentClientSecret: string | null; mock?: boolean }> {
-    // Re-run the quote server-side; the client price is never trusted.
-    const priced = await this.priceQuote(dto.lat, dto.lng);
+    // Re-run the quote server-side; the client price is never trusted. This
+    // also re-evaluates surge and the peak window against the scheduled time,
+    // so a stale quote cannot lock in yesterday's multiplier.
+    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt));
     if (!priced.available) {
       throw new ConflictException({
         error: { code: 'no_coverage', message: 'No inspector available in your area' },
@@ -173,7 +252,7 @@ export class OrdersService {
         purpose: 'order',
         orderId,
         userId,
-        amountCents: priced.totalCents,
+        amountCents: priced.price.totalCents,
         currency: 'EUR',
         status: 'pending',
       },
@@ -185,12 +264,12 @@ export class OrdersService {
       orderNumber: number,
       make: dto.make,
       model: dto.model,
-      totalCents: priced.totalCents,
+      totalCents: priced.price.totalCents,
     });
 
     if (this.stripe.configured) {
       const pi = await this.stripe.createOrderPaymentIntent({
-        amountCents: priced.totalCents,
+        amountCents: priced.price.totalCents,
         orderId,
         paymentId: payment.id,
         userId,
@@ -224,21 +303,25 @@ export class OrdersService {
     // `@default(cuid())` never runs and we mint the id here. The column is a
     // plain text PK, so any unique string works.
     const id = randomUUID();
-    const distanceKm = new Prisma.Decimal(priced.distanceKm);
+    const p = priced.price;
+    const distanceKm = new Prisma.Decimal(p.distanceKm);
+    const surgeMultiplier = new Prisma.Decimal(p.surgeMultiplier.toFixed(2));
     await this.prisma.$executeRaw`
       INSERT INTO "order" (
         id, number, customer_id, status, vin, make, model, listing_url, address,
         location, scheduled_at, country_code,
-        base_fee_cents, distance_km, distance_fee_cents, total_cents,
-        platform_fee_cents, inspector_share_cents, currency, "createdAt"
+        base_fee_cents, distance_km, distance_fee_cents, duration_min,
+        time_fee_cents, surge_multiplier, minimum_fare_applied, routing_source,
+        total_cents, platform_fee_cents, inspector_share_cents, currency, "createdAt"
       ) VALUES (
         ${id}, ${number}, ${customerId}, 'CREATED'::"OrderStatus",
         ${dto.vin?.toUpperCase() ?? null}, ${dto.make}, ${dto.model},
         ${dto.listingUrl ?? null}, ${dto.address},
         ST_SetSRID(ST_MakePoint(${dto.lng}, ${dto.lat}), 4326)::geography,
         ${new Date(dto.scheduledAt)}, 'DE',
-        ${priced.baseFeeCents}, ${distanceKm}, ${priced.distanceFeeCents},
-        ${priced.totalCents}, ${priced.platformFeeCents}, ${priced.inspectorShareCents},
+        ${p.baseFeeCents}, ${distanceKm}, ${p.distanceFeeCents}, ${p.durationMin},
+        ${p.timeFeeCents}, ${surgeMultiplier}, ${p.minimumFareApplied}, ${priced.routingSource},
+        ${p.totalCents}, ${p.platformFeeCents}, ${p.inspectorShareCents},
         'EUR', ${new Date()}
       )
     `;
@@ -722,6 +805,11 @@ export class OrdersService {
         baseFeeCents: order.baseFeeCents,
         distanceKm: Number(order.distanceKm),
         distanceFeeCents: order.distanceFeeCents,
+        durationMin: order.durationMin,
+        timeFeeCents: order.timeFeeCents,
+        surgeMultiplier: Number(order.surgeMultiplier),
+        minimumFareApplied: order.minimumFareApplied,
+        distanceSource: order.routingSource === 'mapbox' ? 'road' : 'straight_line',
         totalCents: order.totalCents,
         platformFeeCents: order.platformFeeCents,
         inspectorShareCents: order.inspectorShareCents,
@@ -1151,6 +1239,13 @@ export interface OrderDetail {
     baseFeeCents: number;
     distanceKm: number;
     distanceFeeCents: number;
+    /** Null for orders placed before the ride-hailing tariff. */
+    durationMin: number | null;
+    timeFeeCents: number;
+    surgeMultiplier: number;
+    minimumFareApplied: boolean;
+    /** Pre-tariff orders report 'straight_line', which is what they were. */
+    distanceSource: 'road' | 'straight_line';
     totalCents: number;
     platformFeeCents: number;
     inspectorShareCents: number;
