@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { KycModule } from '../kyc/kyc.module';
+import { LegalModule } from '../legal/legal.module';
 import { ListingsModule } from '../listings/listings.module';
 import { OrdersModule } from '../orders/orders.module';
 import { SchedulerService } from './scheduler.service';
@@ -11,7 +12,7 @@ import { SchedulerService } from './scheduler.service';
  * SCHEDULER_ENABLED=false (see SchedulerService).
  */
 @Module({
-  imports: [OrdersModule, ListingsModule, KycModule],
+  imports: [OrdersModule, ListingsModule, KycModule, LegalModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

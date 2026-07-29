@@ -150,7 +150,8 @@ describe('Listings (e2e)', () => {
       // Everything but the timestamp, which the exception filter stamps on every
       // error and which says nothing about the code.
       const withoutTimestamp = (b: Record<string, unknown>) => {
-        const { timestamp: _timestamp, ...rest } = b;
+        const { timestamp: _ts, ...rest } = b;
+        void _ts;
         return rest;
       };
       expect(withoutTimestamp(missing.body)).toEqual(withoutTimestamp(claimed.body));
