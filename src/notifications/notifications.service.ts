@@ -28,6 +28,14 @@ interface NotifyOptions {
   locale?: string;
 }
 
+/** The recipient addresses for the three external channels, resolved once per notify(). */
+interface ContactAddresses {
+  email: string | null;
+  phone: string | null;
+  /** InspectorProfile.fcmToken — null for users without a registered device. */
+  pushToken: string | null;
+}
+
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
@@ -60,7 +68,14 @@ export class NotificationsService {
     try {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { email: true, phone: true, locale: true, notificationPrefs: true },
+        select: {
+          email: true,
+          phone: true,
+          locale: true,
+          notificationPrefs: true,
+          // The push address lives on the inspector profile, not the user row.
+          inspector: { select: { fcmToken: true } },
+        },
       });
       if (!user) {
         this.logger.warn(`notify(${type}): user ${userId} not found — skipping`);
@@ -77,6 +92,7 @@ export class NotificationsService {
         await this.emitChannel(userId, type, channel, safePayload, message, {
           email: user.email,
           phone: user.phone,
+          pushToken: user.inspector?.fcmToken ?? null,
         });
       }
     } catch (err) {
@@ -99,7 +115,7 @@ export class NotificationsService {
     channel: NotificationChannel,
     payload: Prisma.InputJsonValue,
     message: RenderedTemplate,
-    contact: { email: string | null; phone: string | null },
+    contact: ContactAddresses,
   ): Promise<void> {
     let row: Notification;
     try {
@@ -137,12 +153,11 @@ export class NotificationsService {
     notificationId: string,
     channel: NotificationChannel,
     message: RenderedTemplate,
-    contact: { email: string | null; phone: string | null },
+    contact: ContactAddresses,
   ): Promise<void> {
     try {
       const provider = this.providerFor(channel);
-      const address =
-        channel === 'email' ? contact.email : channel === 'sms' ? contact.phone : null;
+      const address = this.addressFor(channel, contact);
       const ok = await provider.send({ address }, message);
       await this.markStatus(notificationId, ok ? 'sent' : 'failed');
     } catch (err) {
@@ -150,6 +165,24 @@ export class NotificationsService {
         `dispatch(${channel}) failed for notification ${notificationId}: ${(err as Error).message}`,
       );
       await this.markStatus(notificationId, 'failed');
+    }
+  }
+
+  /**
+   * The provider-specific recipient address for a channel. `push` resolves to
+   * the inspector's registered FCM token (POST /api/v1/inspector/push-token);
+   * a user without one yields null, which PushProvider treats as a benign no-op.
+   */
+  private addressFor(channel: NotificationChannel, contact: ContactAddresses): string | null {
+    switch (channel) {
+      case 'email':
+        return contact.email;
+      case 'sms':
+        return contact.phone;
+      case 'push':
+        return contact.pushToken;
+      default:
+        return null;
     }
   }
 

@@ -1,6 +1,6 @@
 # Security — remaining hardening (infra / credentials / design)
 
-The E14 audit's server-side code remediations (H1, H3, M4, M5, L3, L4) are
+The E14 audit's server-side code remediations (H1, H2, H3, M4, M5, L3, L4) are
 implemented in this repo. The items below are **not code-complete** here because
 they require provisioning, external credentials, or product/design decisions.
 Each lists *what*, *why*, and *how to finish*.
@@ -19,6 +19,12 @@ Each lists *what*, *why*, and *how to finish*.
   `NotificationsService` (`auth.verify_email` / `auth.password_reset`) and never
   crosses the API boundary. `AuthService.requestPasswordResetAndNotify` resolves
   `void` for known and unknown addresses alike.
+- **Delivery**: that made email the *only* route for both tokens, and until
+  BE-S5 no provider was actually wired — `EmailProviderImpl` logged to the
+  DevOutbox and returned success even with credentials set. It now sends through
+  **Resend** whenever `RESEND_API_KEY` is present and `NODE_ENV !== 'test'`.
+  Setting that key in each real environment is therefore a prerequisite for
+  self-service verification and password reset.
 - **Residual**: a known address performs one extra INSERT, so a determined
   attacker behind the 5 req/min throttle could in principle time the difference.
   An artificial delay was considered and rejected — it would make the endpoint
@@ -43,20 +49,50 @@ Each lists *what*, *why*, and *how to finish*.
 - The service-level `OrdersService.submitReportForOrder(orderId)` is unchanged,
   because admin overrides and the auto-approve cron have no device to check.
 
-## H2 — Dedicated private R2 bucket + scoped credentials for KYC
-- **What**: KYC documents currently live under the `kyc/` prefix of the same
-  R2 bucket as public report PDFs. The code already reads dedicated narrow
-  credentials (`R2_KYC_ACCESS_KEY_ID` / `R2_KYC_SECRET_ACCESS_KEY` in
-  `src/config/configuration.ts`), but no separate private bucket or scoped token
-  is wired up yet.
-- **Why**: Sensitive identity documents must be isolated from public objects and
-  served only via short-lived signed URLs (now enforced in code by
-  `R2Service.createPrivateSignedUrl`, used by the KYC admin view path). A scoped
-  token limits blast radius if the public bucket's credentials leak.
-- **How to finish**: In the Cloudflare dashboard create a private bucket (no
-  public access, no `R2_PUBLIC_URL`) and an R2 API token scoped to that bucket /
-  the `kyc/` prefix. Point a dedicated R2 client at it using the
-  `R2_KYC_*` creds, and route KYC put/get/delete through that client.
+### H2 — Dedicated private R2 bucket + scoped credentials for KYC
+- **Was**: identity documents lived under the `kyc/` prefix of
+  `carsalepro-reports`, the same bucket as public report PDFs, reachable with the
+  same credentials. `R2_KYC_ACCESS_KEY_ID` / `R2_KYC_SECRET_ACCESS_KEY` were read
+  into config and never used. Worse, `R2Service.createPresignedDownloadUrl`
+  short-circuits to `R2_PUBLIC_URL` when that variable is set — the day an
+  operator set it, anything sharing that code path became world-readable.
+- **Now, enforced in code**:
+  - `R2Service` holds a **second `S3Client`** built from the `R2_KYC_*`
+    credentials against `R2_KYC_BUCKET`, plus KYC-only methods —
+    `kycPresignedUploadUrl`, `kycSignedDownloadUrl`, `kycDeleteObject`,
+    `kycDeletePrefix`, `isKycConfigured()`, `isKycDedicated()`. They are separate
+    methods rather than a `scope` argument with a default, because a defaulted
+    scope is exactly how a KYC object ends up in the public bucket.
+  - `kycSignedDownloadUrl` **never** consults `R2_PUBLIC_URL`. `test/kyc.e2e-spec.ts`
+    case 14 boots an app with `R2_PUBLIC_URL` set to a sentinel, proves the public
+    report path really does short-circuit to it, and then asserts every KYC view
+    URL carries `X-Amz-Signature` and contains no trace of the sentinel.
+  - `KycDocument.bucket` (migration `20260729040000_…`) records where each object
+    lives: NULL = the legacy shared bucket, a value = the dedicated one. Reads
+    resolve the client from that column, so pre-migration rows keep working
+    through the whole migration window.
+  - `env.validation.ts` requires `R2_KYC_ACCESS_KEY_ID`,
+    `R2_KYC_SECRET_ACCESS_KEY` and `R2_KYC_BUCKET` when `NODE_ENV=production`;
+    the boot fails without them. When they are absent outside production the KYC
+    methods fall back to the main client/bucket and log a warning at startup, so
+    local dev and CI are unaffected.
+  - `MeService.erase` now sweeps `kyc/<userId>/` (resolved through `DeviceLink`)
+    via `kycDeletePrefix`, in **both** buckets, and stamps `purgedAt` on the
+    matching rows. Previously a GDPR erasure removed reports and photos and left
+    the passport scans behind.
+- **Still needs a human** (dashboard actions, not code):
+  1. Create the private bucket — no public access, **no** custom domain, and it
+     must never be given an `R2_PUBLIC_URL`.
+  2. Create an R2 API token **scoped to that bucket alone** (object read/write).
+     This is a Cloudflare dashboard action; there is no API for scoped-token
+     creation. Set `R2_KYC_ACCESS_KEY_ID` / `R2_KYC_SECRET_ACCESS_KEY` /
+     `R2_KYC_BUCKET` on Render before the next production deploy — the Joi
+     validator will otherwise refuse to boot.
+  3. Move the existing objects with
+     `npx ts-node scripts/migrate-kyc-objects.ts --dry-run` and then without the
+     flag. It copies → verifies with `HeadObject` → updates `kyc_document.bucket`
+     → and only then deletes the source, so an interrupted run always leaves the
+     document readable. Idempotent and resumable.
 
 ## L1 — Switch IAP validation from client-trust to server-side
 - **What**: `IAP_VALIDATION_MODE` defaults to `client-trust` — the backend

@@ -2,6 +2,10 @@ import { INestApplication } from '@nestjs/common';
 import { KycStatus } from '@prisma/client';
 import request from 'supertest';
 import { KycService } from '../src/kyc/kyc.service';
+import {
+  PUSH_PROVIDER,
+  PushProvider,
+} from '../src/notifications/notification-providers';
 import { NotificationsService } from '../src/notifications/notifications.service';
 import { OrdersService } from '../src/orders/orders.service';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -475,5 +479,85 @@ describe('Notifications (e2e)', () => {
     await expect(
       notifications.notify('does-not-exist', 'order.created', { orderNumber: 'X' }),
     ).resolves.toBeUndefined();
+  });
+
+  it('18. a registered FCM token becomes the push delivery address and the row reaches sent', async () => {
+    const inspector = await makeUser('push');
+    const token = `fcm-test-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+    const registered = await request(app.getHttpServer())
+      .post('/api/v1/inspector/push-token')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ token })
+      .expect(200);
+    expect(registered.body).toEqual({ ok: true });
+
+    const profile = await prisma.inspectorProfile.findUnique({
+      where: { userId: inspector.userId },
+    });
+    expect(profile!.fcmToken).toBe(token);
+
+    await notifications.updatePreferences(inspector.userId, { push: true });
+
+    // The point of the test: dispatch used to hand `push` a null address
+    // unconditionally, so the provider could never have delivered anything.
+    const push = app.get<PushProvider>(PUSH_PROVIDER);
+    const spy = jest.spyOn(push, 'send');
+    // Snapshot the calls BEFORE restoring — mockRestore() also clears them.
+    let calls: unknown[][] = [];
+    try {
+      await notifications.notify(inspector.userId, 'offer.received', {
+        orderNumber: 'ORD-PUSH',
+        make: 'VW',
+        model: 'Golf',
+        inspectorShareCents: 4000,
+      });
+      calls = spy.mock.calls.map((c) => [...c]);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toEqual({ address: token });
+
+    const pushRows = await prisma.notification.findMany({
+      where: { userId: inspector.userId, type: 'offer.received', channel: 'push' },
+    });
+    expect(pushRows.length).toBe(1);
+    expect(pushRows[0].status).toBe('sent');
+  });
+
+  it('19. push-token registration requires auth and caps the token at 4096 chars', async () => {
+    const inspector = await makeUser('push');
+
+    await request(app.getHttpServer())
+      .post('/api/v1/inspector/push-token')
+      .send({ token: 'no-auth' })
+      .expect(401);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/inspector/push-token')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ token: 'x'.repeat(4097) })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/inspector/push-token')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ token: '' })
+      .expect(400);
+
+    // A re-register replaces the token rather than accumulating profiles.
+    for (const t of ['token-a', 'token-b']) {
+      await request(app.getHttpServer())
+        .post('/api/v1/inspector/push-token')
+        .set('Authorization', `Bearer ${inspector.token}`)
+        .send({ token: t })
+        .expect(200);
+    }
+    const profile = await prisma.inspectorProfile.findUnique({
+      where: { userId: inspector.userId },
+    });
+    expect(profile!.fcmToken).toBe('token-b');
   });
 });

@@ -53,9 +53,15 @@ export interface AppConfig {
     internalApiKey: string;
   };
   signedUrlTtlMinutes: number;
+  /**
+   * Dedicated PRIVATE bucket for KYC identity documents (SECURITY.md H2), with
+   * its own narrowly-scoped R2 API token. When any of the three is blank the
+   * R2Service falls back to the main bucket so local dev / CI keep working.
+   */
   r2Kyc: {
     accessKeyId: string;
     secretAccessKey: string;
+    bucket: string;
   };
   stripe: {
     secretKey: string;
@@ -68,8 +74,9 @@ export interface AppConfig {
     token: string;
   };
   email: {
-    sendgridApiKey: string;
+    resendApiKey: string;
     from: string;
+    replyTo?: string;
   };
   sms: {
     twilioAccountSid: string;
@@ -142,6 +149,7 @@ export default (): AppConfig => ({
   r2Kyc: {
     accessKeyId: process.env.R2_KYC_ACCESS_KEY_ID ?? '',
     secretAccessKey: process.env.R2_KYC_SECRET_ACCESS_KEY ?? '',
+    bucket: process.env.R2_KYC_BUCKET ?? '',
   },
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY ?? '',
@@ -154,8 +162,9 @@ export default (): AppConfig => ({
     token: process.env.MAPBOX_TOKEN ?? '',
   },
   email: {
-    sendgridApiKey: process.env.SENDGRID_API_KEY ?? '',
+    resendApiKey: process.env.RESEND_API_KEY ?? '',
     from: process.env.EMAIL_FROM ?? 'no-reply@carsalepro.com',
+    replyTo: process.env.EMAIL_REPLY_TO || undefined,
   },
   sms: {
     twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ?? '',
