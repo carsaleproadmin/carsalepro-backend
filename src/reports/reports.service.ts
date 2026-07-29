@@ -390,7 +390,7 @@ export class ReportsService {
     dto: UploadPhotoDto,
     file: Express.Multer.File,
   ): Promise<ReportPhotoDto> {
-    const report = await this.requireOwned(deviceId, reportId);
+    await this.requireOwned(deviceId, reportId);
 
     if (!this.r2.isConfigured()) {
       throw new HttpException(

@@ -1,5 +1,5 @@
 import { INestApplication } from '@nestjs/common';
-import { OrderStatus, Role } from '@prisma/client';
+import { Role } from '@prisma/client';
 import request from 'supertest';
 import { OrdersService } from '../src/orders/orders.service';
 import { PrismaService } from '../src/prisma/prisma.service';

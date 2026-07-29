@@ -69,7 +69,7 @@ export class VinService {
     try {
       const { data } = await firstValueFrom(this.http.get<NhtsaPayload>(url, { timeout: 5000 }));
       return data;
-    } catch (err) {
+    } catch {
       this.logger.warn(`NHTSA fetch failed for ${vin}, retrying once`);
       const { data } = await firstValueFrom(this.http.get<NhtsaPayload>(url, { timeout: 8000 }));
       return data;

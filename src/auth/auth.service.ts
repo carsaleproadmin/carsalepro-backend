@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { hash, verify } from '@node-rs/argon2';
-import { Role, User } from '@prisma/client';
+import { User } from '@prisma/client';
 import { createHash, randomBytes } from 'node:crypto';
 import { AppConfig } from '../config/configuration';
 import { PrismaService } from '../prisma/prisma.service';
