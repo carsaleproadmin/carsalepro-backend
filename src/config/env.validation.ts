@@ -55,7 +55,11 @@ export const envValidationSchema = Joi.object({
   // Scheduler (E11) — 'false' disables the in-process cron jobs.
   SCHEDULER_ENABLED: Joi.string().valid('true', 'false').default('true'),
 
-  FREE_REPORTS_LIMIT: Joi.number().integer().min(0).default(3),
+  // The FREE-tier cap is OFF by default (FREE is unlimited since 2026-08). The
+  // limit itself stays configurable for the rare case the gate is switched back
+  // on, and is `.min(1)` so it can never double as an accidental kill switch.
+  FREE_REPORTS_LIMIT: Joi.number().integer().min(1).default(3),
+  ENFORCE_FREE_REPORT_LIMIT: Joi.boolean().default(false),
   PRESIGNED_UPLOAD_TTL: Joi.number().integer().min(60).max(86400).default(900),
   PRESIGNED_DOWNLOAD_TTL: Joi.number().integer().min(60).max(86400).default(3600),
 

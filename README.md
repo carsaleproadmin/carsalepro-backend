@@ -29,7 +29,7 @@ The shared NestJS backend for the **CarSalePro** ecosystem. One service, one Pos
 | Notifications | Channel providers (email/SMS/push) with a **dev-outbox** fallback; in-process `@nestjs/schedule` cron |
 | Validation / docs | class-validator + global `ValidationPipe` · Joi env schema · `@nestjs/swagger` |
 | Observability | helmet · pino-style logging interceptor · Sentry (optional, when `SENTRY_DSN` set) |
-| Testing | Jest unit + Supertest e2e (**298 e2e across 22 suites**, 87 unit) |
+| Testing | Jest unit + Supertest e2e (**301 e2e across 22 suites**, 87 unit) |
 | Deploy | Render (auto-deploy from `main`) |
 
 ## Run locally
@@ -51,7 +51,7 @@ $env:PORT=3001; npm run start:dev                      # website dev on :3001 (m
 
 ```bash
 npm test                                               # unit tests
-npm run test:e2e -- --forceExit                        # 298 e2e / 22 suites (needs Postgres+PostGIS on :5433)
+npm run test:e2e -- --forceExit                        # 301 e2e / 22 suites (needs Postgres+PostGIS on :5433)
 node scripts/verify-deployed.mjs https://carsalepro-backend.onrender.com   # deployed smoke
 ```
 
@@ -61,12 +61,13 @@ Always pass `--forceExit` (open Redis/handles otherwise keep Jest alive) and run
 
 Two route families share the app; the global `JwtAuthGuard` enforces a Bearer JWT **only** for paths starting with `/api/v1` (and re-checks the user in the DB on every request for ban/erasure/role), while `RolesGuard` gates `@Roles(Role.ADMIN)` routes. Legacy root routes stay on `X-Device-Id`. `@Public()` opts a route out of JWT (auth endpoints, `/api/v1/public/*`, `/api/v1/settings/public`, `/webhooks/stripe`).
 
-**Mobile (root, `X-Device-Id`, frozen — extended additively by report-sync v2):** `GET /health` · `GET /vin/:vin` · `GET|POST /quota` · `POST|GET /reports` (+`PUT /:id` quota-free re-sync, `/:id/complete`, `DELETE /:id`; `POST /reports` returns **402** when the FREE 3-report quota is exhausted; accepts globally unique `CSP-<uuid>` codes as an idempotency key and a validated **structured `reportData` payload, contract v1**) · `POST /reports/:id/photos/upload` (multipart — **server-side sharp compression** to 1920 px / mozjpeg q80, slot-keyed replace + hash short-circuit) + `GET /reports/:id/photos`, `DELETE /reports/:id/photos/:photoId` (legacy presigned `POST /reports/:id/photos` still works) · `DELETE /me` (GDPR erasure incl. photo prefixes) · `GET /catalog` · `GET /legal/:doc`.
+**Mobile (root, `X-Device-Id`, frozen — extended additively by report-sync v2):** `GET /health` · `GET /vin/:vin` · `GET|POST /quota` · `POST|GET /reports` (+`PUT /:id` quota-free re-sync, `/:id/complete`, `DELETE /:id`; `POST /reports` is **unlimited for FREE and PRO alike** — the 3-report lifetime cap was retired 2026-08 and only comes back with `ENFORCE_FREE_REPORT_LIMIT=true`, in which case the frozen 402 body returns; accepts globally unique `CSP-<uuid>` codes as an idempotency key and a validated **structured `reportData` payload, contract v1**) · `POST /reports/:id/photos/upload` (multipart — **server-side sharp compression** to 1920 px / mozjpeg q80, slot-keyed replace + hash short-circuit) + `GET /reports/:id/photos`, `DELETE /reports/:id/photos/:photoId` (legacy presigned `POST /reports/:id/photos` still works) · `DELETE /me` (GDPR erasure incl. photo prefixes) · `GET /catalog` · `GET /legal/:doc`.
 
 **Website (`/api/v1`, JWT):** `auth` (login/register/verify/reset/oauth-upsert) · `users` (+ device-links) · `me/reports` archive · `public` (showroom/inspectors/report-check) · `reports` (PPV access + download) · `payments` (Stripe Checkout/PPV/gold) + `/webhooks/stripe` · `listings` (report-claimed **and** `POST /listings/manual` — a seller-declared listing with no inspection, its own photo gallery, badged `verified:false` in the showroom) · `vin-history` (paid provenance check: free `GET /:vin/preview` with counts only, `POST /:vin/unlock`, `me/vin-checks`) · `orders` (quote/create/transition/contract) + `offers` + `geo` matching · `inspector` (profile, Stripe Connect onboarding, earnings) · `kyc` · `legal-templates` + per-order contracts · `notifications` (+ preferences) · `settings/public` · `admin/*` (users, orders, listings, settings, legal, finance + DAC7 CSV, dashboard, audit, KYC queue). **Swagger at `/docs` is the authoritative endpoint reference.**
 
 ## Cross-cutting conventions
 
+- **FREE tier is unlimited.** `DeviceQuota` still records `freeReportsUsed` / `freeReportsLimit` (historical counters) and, more importantly, `isPro`; `GET /quota` exposes `freeLimitEnforced` so a client can tell a counter from a paywall.
 - **Money is integer cents** end to end; tariffs/fees live in the `PlatformSetting` table (read via `SettingsService` — never hardcoded).
 - **Order lifecycle** flows through a single state machine (`src/orders/order-state-machine.ts`); refunds/transfers/payouts fire only from legal transitions; the contract is auto-rendered on `ASSIGNED`.
 - **Stripe** runs in **mock mode** when no key is set or `NODE_ENV==='test'`; the webhook needs the raw body and records its idempotency row only after successful handling.

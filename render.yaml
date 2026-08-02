@@ -20,6 +20,9 @@ services:
         value: info
       - key: FREE_REPORTS_LIMIT
         value: "3"
+      # FREE is unlimited since 2026-08; PRO sells no-ads + branding
+      - key: ENFORCE_FREE_REPORT_LIMIT
+        value: "false"
       - key: PRESIGNED_UPLOAD_TTL
         value: "900"
       - key: PRESIGNED_DOWNLOAD_TTL

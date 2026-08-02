@@ -1,5 +1,7 @@
 # CarSalePro Backend — Development Report
 
+> **Historical** — the FREE 3-report cap was retired 2026-08; see README + CLAUDE.md.
+
 **Scope:** MVP backend for the CarSalePro Flutter mobile app (Week 7 deliverable from `docs/06_Mobile_MVP_План_2_месяца.md`).
 **Status:** ✅ Deployed and verified end-to-end.
 **Date:** 2026-05-15.

@@ -12,13 +12,16 @@ import { IapValidationError } from './iap/iap.types';
 export class QuotaService {
   private readonly logger = new Logger(QuotaService.name);
   private readonly defaultLimit: number;
+  private readonly enforceFreeLimit: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
     config: ConfigService<AppConfig, true>,
     private readonly iap: IapValidatorService,
   ) {
-    this.defaultLimit = config.get('quota', { infer: true }).freeReportsLimit;
+    const quotaConfig = config.get('quota', { infer: true });
+    this.defaultLimit = quotaConfig.freeReportsLimit;
+    this.enforceFreeLimit = quotaConfig.enforceFreeLimit;
   }
 
   async getOrInit(deviceId: string): Promise<DeviceQuota> {
@@ -35,9 +38,17 @@ export class QuotaService {
       freeReportsUsed: quota.freeReportsUsed,
       freeReportsLimit: quota.freeReportsLimit,
       isPro: quota.isPro,
-      // PRO is unlimited, but the shipped mobile app gates on `isPro` and parses
-      // `remaining` as a number — it has always received 0 here. Keep the value.
+      // `freeReportsLimit` and `remaining` are HISTORICAL COUNTERS, not a gate:
+      // FREE has been unlimited since 2026-08 (see `enforceFreeLimit`), so
+      // `remaining` reaching 0 blocks nothing. They are still emitted verbatim —
+      // stored values, `remaining` clamped at 0 — because the shipped Flutter
+      // app parses this response through a freezed DTO that declares all three
+      // as non-nullable `int`s: nulling or dropping one crashes old clients.
+      // PRO is unlimited and has always received 0 here. Keep the value.
       remaining: quota.isPro ? 0 : Math.max(0, quota.freeReportsLimit - quota.freeReportsUsed),
+      // Additive — json_serializable ignores unknown keys, so old clients are
+      // unaffected; new ones can tell a real paywall from a stale counter.
+      freeLimitEnforced: this.enforceFreeLimit,
     };
   }
 

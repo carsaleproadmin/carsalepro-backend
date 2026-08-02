@@ -58,11 +58,17 @@ export class ReportsController {
   @ApiOperation({
     summary: 'Reserve a report and obtain a presigned R2 upload URL',
     description:
-      'Atomically checks the FREE-tier quota (3 reports lifetime). PRO devices have no limit. ' +
-      'On quota exhaustion returns 402 Payment Required and does NOT create a report row.',
+      'FREE and PRO devices alike may reserve an unlimited number of reports. The FREE ' +
+      'counter is still recorded on DeviceQuota, but it no longer gates this endpoint ' +
+      'unless ENFORCE_FREE_REPORT_LIMIT=true.',
   })
   @ApiOkResponse({ type: CreateReportResponseDto })
-  @ApiResponse({ status: 402, type: ErrorResponseDto, description: 'FREE-tier limit reached' })
+  @ApiResponse({
+    status: 402,
+    type: ErrorResponseDto,
+    description:
+      'Only when `ENFORCE_FREE_REPORT_LIMIT=true`. Disabled in production since 2026-08 — FREE is unlimited.',
+  })
   async create(
     @DeviceId() deviceId: string,
     @Body() dto: CreateReportDto,

@@ -89,9 +89,9 @@ describe('Mobile link + report archive (e2e)', () => {
     expect(saved!.photosManifest).toEqual(photosManifest);
   });
 
-  it('3. 4th POST /reports from a FREE device returns 402 (quota contract intact)', async () => {
+  it('3. a FREE device at the old 3-report cap is no longer blocked', async () => {
     const did = uniqueDeviceId();
-    // Park the device at the FREE limit without depending on R2.
+    // Park the device at the retired FREE limit without depending on R2.
     await prisma.deviceQuota.upsert({
       where: { deviceId: did },
       update: { freeReportsUsed: 3, freeReportsLimit: 3, isPro: false },
@@ -101,8 +101,10 @@ describe('Mobile link + report archive (e2e)', () => {
       .post('/reports')
       .set('x-device-id', did)
       .send({ code: 'CSP-4' });
-    expect(res.status).toBe(402);
-    expect(res.body.message).toMatch(/FREE-tier limit/);
+    // 201 with R2, 503 without it (create() rolls the quota back and refuses
+    // because cloud storage is unconfigured) — but never the retired 402.
+    expect(res.status).not.toBe(402);
+    expect([201, 503]).toContain(res.status);
   });
 
   it('4. POST /link-codes returns a 6-digit code + expiresAt', async () => {

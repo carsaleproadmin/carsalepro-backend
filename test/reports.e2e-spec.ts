@@ -1,4 +1,5 @@
-﻿import { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { cleanDb, createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -6,6 +7,11 @@ import { PrismaService } from '../src/prisma/prisma.service';
 const r2Configured = Boolean(
   process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY,
 );
+
+/** Fresh globally-unique idempotency key (`CSP-<uuid v4>`) per create. */
+function uniqueCode(): string {
+  return `CSP-${randomUUID()}`;
+}
 
 describe('Reports (e2e)', () => {
   let app: INestApplication;
@@ -24,50 +30,140 @@ describe('Reports (e2e)', () => {
     await cleanDb(app);
   });
 
-  it('402 after 3 FREE reports, then PRO unblocks (quota logic, R2-independent)', async () => {
+  it('a FREE device can create an unbounded number of reports (no 402)', async () => {
     const did = uniqueDeviceId();
 
     if (r2Configured) {
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 5; i++) {
         const res = await request(app.getHttpServer())
           .post('/reports')
           .set('x-device-id', did)
-          .send({ code: `CSP-${i + 1}`, vin: '1HGBH41JXMN109186' })
-          .expect(201);
+          .send({ code: uniqueCode(), vin: '1HGBH41JXMN109186' });
+        expect(res.status).toBe(201);
         expect(res.body.tier).toBe('free');
       }
-      // 4th must fail with 402
-      const fourth = await request(app.getHttpServer())
-        .post('/reports')
-        .set('x-device-id', did)
-        .send({ code: 'CSP-4' });
-      expect(fourth.status).toBe(402);
-      expect(fourth.body.message).toMatch(/FREE-tier limit/);
-
-      // Upgrade and retry
-      await request(app.getHttpServer())
-        .post('/quota/upgrade')
-        .set('x-device-id', did)
-        .send({ platform: 'android', receipt: 'play-token' })
-        .expect(200);
-      const fifth = await request(app.getHttpServer())
-        .post('/reports')
-        .set('x-device-id', did)
-        .send({ code: 'CSP-5' })
-        .expect(201);
-      expect(fifth.body.tier).toBe('pro');
+      // The counter still advances (free analytics + it keeps `remaining`
+      // consistent should ENFORCE_FREE_REPORT_LIMIT ever be switched on again),
+      // it simply no longer gates anything.
+      const quota = await prisma.deviceQuota.findUnique({ where: { deviceId: did } });
+      expect(quota!.freeReportsUsed).toBe(5);
     } else {
-      // Without R2, exercise the quota gate directly via DB
+      // Without R2 the create path cannot finish, so park the device far past
+      // the retired cap and assert on the status code instead. 503 is the
+      // correct R2-less answer — consumeQuota() succeeds, create() then rolls
+      // the quota back and throws SERVICE_UNAVAILABLE. What matters is that the
+      // old paywall no longer fires.
       await prisma.deviceQuota.upsert({
         where: { deviceId: did },
-        update: { freeReportsUsed: 3 },
-        create: { deviceId: did, freeReportsUsed: 3 },
+        update: { freeReportsUsed: 9, freeReportsLimit: 3, isPro: false },
+        create: { deviceId: did, freeReportsUsed: 9, freeReportsLimit: 3 },
       });
-      const fourth = await request(app.getHttpServer())
+      const res = await request(app.getHttpServer())
         .post('/reports')
         .set('x-device-id', did)
-        .send({ code: 'CSP-4' });
-      expect(fourth.status).toBe(402);
+        .send({ code: uniqueCode() });
+      expect(res.status).toBe(503);
+      expect(res.status).not.toBe(402);
+    }
+  });
+
+  it('the Nth report never 402s', async () => {
+    const did = uniqueDeviceId();
+    let previousUsed = 0;
+
+    for (let i = 0; i < 30; i++) {
+      const res = await request(app.getHttpServer())
+        .post('/reports')
+        .set('x-device-id', did)
+        .send({ code: uniqueCode() });
+      expect(res.status).not.toBe(402);
+      expect(res.status).toBe(r2Configured ? 201 : 503);
+
+      const quota = await prisma.deviceQuota.findUnique({ where: { deviceId: did } });
+      const used = quota?.freeReportsUsed ?? 0;
+      expect(used).toBeGreaterThanOrEqual(previousUsed);
+      // With R2 the counter climbs one per report; without it every create is
+      // rolled back, so it legitimately stays flat — never decreasing either way.
+      if (r2Configured) expect(used).toBe(i + 1);
+      previousUsed = used;
+    }
+  });
+
+  it('PRO device still gets tier "pro" (R2 key layout unchanged)', async () => {
+    const did = uniqueDeviceId();
+    await request(app.getHttpServer())
+      .post('/quota/upgrade')
+      .set('x-device-id', did)
+      .send({ platform: 'android', receipt: 'play-token' })
+      .expect(200);
+
+    const res = await request(app.getHttpServer())
+      .post('/reports')
+      .set('x-device-id', did)
+      .send({ code: uniqueCode() });
+
+    if (r2Configured) {
+      expect(res.status).toBe(201);
+      expect(res.body.tier).toBe('pro');
+      expect(res.body.s3Key).toMatch(new RegExp(`^pro/${did}/`));
+    } else {
+      expect(res.status).toBe(503);
+      const quota = await prisma.deviceQuota.findUnique({ where: { deviceId: did } });
+      expect(quota!.isPro).toBe(true);
+    }
+  });
+
+  it('ENFORCE_FREE_REPORT_LIMIT=true still produces the documented 402 shape', async () => {
+    // The whole point of keeping the gate behind a flag: the shipped Flutter app
+    // still ships its 402 handling, so the body must stay frozen even though the
+    // flag is off everywhere. Build one isolated app with the flag on (the same
+    // pattern test/quota.e2e-spec.ts uses for IAP_VALIDATION_MODE) and pin it.
+    const previous = process.env.ENFORCE_FREE_REPORT_LIMIT;
+    process.env.ENFORCE_FREE_REPORT_LIMIT = 'true';
+    const isolated = await createTestApp();
+    try {
+      const did = uniqueDeviceId();
+      await prisma.deviceQuota.upsert({
+        where: { deviceId: did },
+        update: { freeReportsUsed: 3, freeReportsLimit: 3, isPro: false },
+        create: { deviceId: did, freeReportsUsed: 3, freeReportsLimit: 3 },
+      });
+
+      const res = await request(isolated.getHttpServer())
+        .post('/reports')
+        .set('x-device-id', did)
+        .send({ code: uniqueCode() });
+
+      expect(res.status).toBe(402);
+      expect(res.body.error).toBe('PaymentRequired');
+      expect(res.body.message).toMatch(/FREE-tier limit/);
+      // NB: AllExceptionsFilter projects every 4xx onto
+      // {statusCode, error, message, path, timestamp}, so the freeReportsUsed /
+      // freeReportsLimit keys the service puts on the thrown payload never reach
+      // the wire — the limit only survives inside `message`. That has always been
+      // true; the mobile client parses the message-bearing shape asserted here.
+      expect(res.body.statusCode).toBe(402);
+      expect(res.body.message).toBe(
+        'FREE-tier limit of 3 reports reached. Upgrade to PRO to continue.',
+      );
+      expect(res.body).not.toHaveProperty('freeReportsUsed');
+
+      // Nothing was created and the counter was not touched by the refusal.
+      const quota = await prisma.deviceQuota.findUnique({ where: { deviceId: did } });
+      expect(quota!.freeReportsUsed).toBe(3);
+      expect(await prisma.report.count({ where: { deviceId: did } })).toBe(0);
+
+      // The flag is read once at boot: the ambient app (built with it off) is
+      // unaffected while this test runs.
+      const ambient = await request(app.getHttpServer())
+        .post('/reports')
+        .set('x-device-id', did)
+        .send({ code: uniqueCode() });
+      expect(ambient.status).not.toBe(402);
+    } finally {
+      await isolated.close();
+      if (previous === undefined) delete process.env.ENFORCE_FREE_REPORT_LIMIT;
+      else process.env.ENFORCE_FREE_REPORT_LIMIT = previous;
     }
   });
 
@@ -124,7 +220,7 @@ describe('Reports (e2e)', () => {
     expect(res.body.reportId).toBeTruthy();
   });
 
-  it('forbids deleting another device\'s report', async () => {
+  it("forbids deleting another device's report", async () => {
     const did = uniqueDeviceId();
     const otherDid = uniqueDeviceId('other');
     const rep = await prisma.report.create({
@@ -136,4 +232,3 @@ describe('Reports (e2e)', () => {
       .expect(403);
   });
 });
-

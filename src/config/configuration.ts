@@ -14,6 +14,18 @@ export interface AppConfig {
   };
   quota: {
     freeReportsLimit: number;
+    /**
+     * Master switch for the legacy FREE-tier report cap. Defaults to **false** —
+     * FREE has been unlimited since 2026-08 (PRO sells no-ads + branding, not a
+     * report count). When true, `POST /reports` again answers 402 once
+     * `freeReportsUsed >= freeReportsLimit`.
+     *
+     * Deliberately a separate boolean rather than `FREE_REPORTS_LIMIT=0`: a `0`
+     * also reads as "zero free reports" and, with `used >= limit`, would reject
+     * the very first report. `FREE_REPORTS_LIMIT` is Joi-validated `>= 1` to
+     * keep that foot-gun closed.
+     */
+    enforceFreeLimit: boolean;
     presignedUploadTtl: number;
     presignedDownloadTtl: number;
   };
@@ -112,6 +124,7 @@ export default (): AppConfig => ({
   },
   quota: {
     freeReportsLimit: parseInt(process.env.FREE_REPORTS_LIMIT ?? '3', 10),
+    enforceFreeLimit: (process.env.ENFORCE_FREE_REPORT_LIMIT ?? 'false') === 'true',
     presignedUploadTtl: parseInt(process.env.PRESIGNED_UPLOAD_TTL ?? '900', 10),
     presignedDownloadTtl: parseInt(process.env.PRESIGNED_DOWNLOAD_TTL ?? '3600', 10),
   },
