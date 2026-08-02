@@ -15,7 +15,14 @@ Single source of truth for `GET /catalog`, exported to the mobile bundle via `np
 
 ## Hard rules
 
-- **Never break the mobile contract.** Don't change root routes, their `X-Device-Id` behavior, the `POST /reports` → **402 `free_limit_reached`** paywall shape, or the R2 key layout `<tier>/<deviceId>/<reportId>.pdf` (GDPR erasure in `MeService.erase` + `R2Service.deletePrefix` depend on it). Extensions must be additive (like report-sync v2 was). Legacy mobile e2e (`mobile-link`, `vin`, `quota`, `reports`, `report-sync`, `report-photos`, `me`) must stay green.
+- **Never break the mobile contract.** Don't change root routes, their `X-Device-Id` behavior, or the R2 key layout `<tier>/<deviceId>/<reportId>.pdf` (GDPR erasure in `MeService.erase` + `R2Service.deletePrefix` depend on it). Extensions must be additive (like report-sync v2 was). Legacy mobile e2e (`mobile-link`, `vin`, `quota`, `reports`, `report-sync`, `report-photos`, `me`) must stay green.
+- **FREE is unlimited (since 2026-08) — but the 402 shape is still frozen.** `POST /reports` no longer caps anything: enforcement sits behind `ENFORCE_FREE_REPORT_LIMIT`, which **defaults to false** (`quota.enforceFreeLimit`, `render.yaml` pins `"false"`). Never "disable" it via `FREE_REPORTS_LIMIT=0` — Joi rejects that (`.min(1)`), because `used >= limit` would then reject the *first* report. When the flag is true, `consumeQuota()` throws exactly this and nothing else (pinned by `test/reports.e2e-spec.ts`; the shipped Flutter app still handles it, and `AllExceptionsFilter` projects it to `{statusCode, error, message, path, timestamp}` on the wire):
+  ```json
+  { "error": "PaymentRequired",
+    "message": "FREE-tier limit of 3 reports reached. Upgrade to PRO to continue.",
+    "freeReportsUsed": 3, "freeReportsLimit": 3 }
+  ```
+  Keep the machinery: `DeviceQuota` is still the storage for **`isPro`** (drives the PDF watermark and the ad gate), `freeReportsUsed` still increments (with `rollbackQuota()`), `GET /quota` still returns all five legacy fields verbatim — the mobile freezed DTO declares them non-nullable `int`s — plus the additive `freeLimitEnforced`, and `Report.tier` still drives the R2 key layout. Don't churn any of it.
 - **Report sync v2 invariants** (`src/reports/`): `CSP-<uuid v4>` codes are the create-idempotency key — re-posting the same code from the same device returns the existing report and **never consumes quota twice** (partial unique index `report_code_uuid_unique` backs the cross-device 409). `reportData` with `reportSchemaVersion: 1` is validated **before** quota is consumed (a 400 never burns a credit) via `report-data.validator.ts` — lenient, unknown keys allowed. `PUT /reports/:id` is quota-free. Photo uploads (`POST /reports/:id/photos/upload`, multipart) are compressed server-side by `photo-processing.service.ts` (sharp, 1920 px, mozjpeg q80, 2-transform semaphore) and slot-keyed `(reportId, kind, position)` with a content-hash short-circuit; `photosManifest` is mirrored from `ReportPhoto` rows so website consumers stay untouched. Photo keys live under `report-photos/<deviceId>/<reportId>/`.
 - **`reportData` v1 array caps are sized for the worst report, not the average one** (`dto/report-data-v1.dto.ts`): `photos` 300, `damages`/`checklist` 200, `thickness.panels` 60, `recipients` 20, `wheels` 4, plus a 1 MiB payload cap in the validator. Hitting a cap is a 400 `invalid_report_data`, which **blocks the mobile Finish flow** — raise a cap before it can bite, never tighten one.
 - **Money in `reportData` is plain EUR numbers** — a documented, contained deviation from the integer-cents rule (archival inspection JSON, never ledger input).
@@ -41,7 +48,7 @@ Use `npx prisma migrate deploy` (non-interactive) to apply, and `prisma migrate 
 npx tsc --noEmit -p tsconfig.build.json
 npm run lint                               # ESLint 9 flat config (eslint.config.mjs)
 npm test                                   # 87 unit / 9 suites
-npm run test:e2e -- --forceExit            # 298 e2e / 22 suites must stay green; ONE jest at a time
+npm run test:e2e -- --forceExit            # 301 e2e / 22 suites must stay green; ONE jest at a time
 ```
 
 Always pass `--forceExit` (Redis/handles keep Jest alive otherwise). e2e reads

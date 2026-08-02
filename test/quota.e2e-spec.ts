@@ -21,7 +21,10 @@ describe('Quota (e2e)', () => {
     await request(app.getHttpServer()).get('/quota').expect(400);
   });
 
-  it('initial quota is 0/3, not pro', async () => {
+  it('initial quota reports 0/3 as historical counters, unenforced, not pro', async () => {
+    // The five legacy fields must stay byte-identical: the shipped Flutter app
+    // parses them through a freezed DTO with non-nullable ints. They are now
+    // just counters — `freeLimitEnforced: false` is what says the cap is dead.
     const did = uniqueDeviceId();
     const res = await request(app.getHttpServer())
       .get('/quota')
@@ -33,6 +36,7 @@ describe('Quota (e2e)', () => {
       freeReportsLimit: 3,
       isPro: false,
       remaining: 3,
+      freeLimitEnforced: false,
     });
   });
 

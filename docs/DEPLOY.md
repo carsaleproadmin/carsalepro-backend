@@ -1,5 +1,7 @@
 # Deploy
 
+> **Historical** — the FREE 3-report cap was retired 2026-08; see README + CLAUDE.md.
+
 This document covers the exact steps used to bring CarSalePro Backend MVP into production on Render + Cloudflare R2. Subsequent deploys are automatic on every push to `main`.
 
 ## Architecture

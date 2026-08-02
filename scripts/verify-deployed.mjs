@@ -127,27 +127,34 @@ async function jsonFetch(method, path, { body, headers, raw = false } = {}) {
     `${t2ms}ms cached=${vin2.body?.cached}`,
   );
 
-  // 4. Quota init
+  // 4. Quota init — FREE is unlimited since 2026-08, so the counters are just
+  // counters; `freeLimitEnforced` is the field that must read false in prod.
   const quota1 = await jsonFetch('GET', '/quota', { headers: { 'X-Device-Id': did } });
   record(
-    'quota: init 0/3 not pro',
+    'quota: init used=0, not pro, FREE cap not enforced',
     quota1.status === 200 &&
       quota1.body.freeReportsUsed === 0 &&
-      quota1.body.freeReportsLimit === 3 &&
-      quota1.body.isPro === false,
+      quota1.body.isPro === false &&
+      quota1.body.freeLimitEnforced === false,
     JSON.stringify(quota1.body),
   );
 
-  // 5. Three reports allowed, fourth 402
+  // 5. FREE tier is unlimited: four reservations, all 201, no 402 anywhere
   const reservedIds = [];
   let firstS3Key, firstUploadUrl;
-  for (let i = 0; i < 3; i++) {
+  let sawPaymentRequired = false;
+  for (let i = 0; i < 4; i++) {
     const r = await jsonFetch('POST', '/reports', {
       headers: { 'X-Device-Id': did },
       body: { code: `CSP-${i + 1}`, vin: sampleVin },
     });
     const ok = r.status === 201 && r.body?.reportId && r.body?.presignedUploadUrl;
-    record(`reports: reservation ${i + 1}/3 (201)`, ok, `status=${r.status} tier=${r.body?.tier}`);
+    if (r.status === 402) sawPaymentRequired = true;
+    record(
+      `reports: FREE reservation ${i + 1}/4 (201, no cap)`,
+      ok,
+      `status=${r.status} tier=${r.body?.tier}`,
+    );
     if (ok) {
       reservedIds.push(r.body.reportId);
       if (i === 0) {
@@ -156,14 +163,10 @@ async function jsonFetch(method, path, { body, headers, raw = false } = {}) {
       }
     }
   }
-  const fourth = await jsonFetch('POST', '/reports', {
-    headers: { 'X-Device-Id': did },
-    body: { code: 'CSP-4' },
-  });
   record(
-    'reports: 4th reservation returns 402',
-    fourth.status === 402,
-    `status=${fourth.status} msg=${fourth.body?.message?.slice?.(0, 80) ?? fourth.body}`,
+    'reports: no 402 for a FREE device (cap retired 2026-08)',
+    sawPaymentRequired === false,
+    sawPaymentRequired ? 'ENFORCE_FREE_REPORT_LIMIT is on in this environment' : '4/4 accepted',
   );
 
   // 6. PDF roundtrip on the first reservation

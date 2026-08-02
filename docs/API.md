@@ -1,5 +1,7 @@
 # API reference
 
+> **Historical** — the FREE 3-report cap was retired 2026-08; see README + CLAUDE.md.
+
 > Generated from the live OpenAPI spec at `/docs-json`. Re-generate with:
 > ```bash
 > curl https://carsalepro-backend.onrender.com/docs-json -o .ai-kit/tmp/openapi.json

@@ -1,5 +1,7 @@
 # Architecture
 
+> **Historical** — the FREE 3-report cap was retired 2026-08; see README + CLAUDE.md.
+
 ## Module map
 
 ```

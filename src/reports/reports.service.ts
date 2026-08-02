@@ -37,6 +37,8 @@ const UUID_CODE_RE =
 export class ReportsService {
   private readonly logger = new Logger(ReportsService.name);
   private readonly defaultLimit: number;
+  /** See `consumeQuota()` — false (the default) makes the FREE tier unlimited. */
+  private readonly enforceFreeLimit: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -45,7 +47,9 @@ export class ReportsService {
     private readonly photoProcessing: PhotoProcessingService,
     config: ConfigService<AppConfig, true>,
   ) {
-    this.defaultLimit = config.get('quota', { infer: true }).freeReportsLimit;
+    const quotaConfig = config.get('quota', { infer: true });
+    this.defaultLimit = quotaConfig.freeReportsLimit;
+    this.enforceFreeLimit = quotaConfig.enforceFreeLimit;
   }
 
   async create(deviceId: string, dto: CreateReportDto): Promise<CreateReportResponseDto> {
@@ -604,7 +608,17 @@ export class ReportsService {
 
   /**
    * Atomically pick a tier and increment the FREE counter when applicable.
-   * 402 Payment Required is returned when the device is non-PRO and has hit the limit.
+   *
+   * The FREE tier is **unlimited**: the 402 below is conditional on
+   * `ENFORCE_FREE_REPORT_LIMIT=true`, and that flag defaults to false, so in
+   * production every non-PRO device can file any number of reports. The gate is
+   * kept rather than deleted because the shipped Flutter app still handles the
+   * 402 body and `test/reports.e2e-spec.ts` pins that exact shape behind the
+   * flag — nothing about the thrown body may change.
+   *
+   * `freeReportsUsed` keeps incrementing regardless: free analytics, and it
+   * keeps `remaining` on `GET /quota` internally consistent if the flag is ever
+   * switched back on.
    */
   private async consumeQuota(
     deviceId: string,
@@ -627,7 +641,7 @@ export class ReportsService {
         };
       }
 
-      if (existing.freeReportsUsed >= existing.freeReportsLimit) {
+      if (this.enforceFreeLimit && existing.freeReportsUsed >= existing.freeReportsLimit) {
         throw new HttpException(
           {
             error: 'PaymentRequired',

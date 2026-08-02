@@ -15,4 +15,13 @@ export class QuotaDto {
 
   @ApiProperty({ example: 2, description: 'reports remaining in FREE tier (0 if PRO)' })
   remaining!: number;
+
+  @ApiProperty({
+    example: false,
+    description:
+      'Whether the FREE-tier report cap is actually enforced (ENFORCE_FREE_REPORT_LIMIT). ' +
+      'False since 2026-08 — FREE is unlimited, and freeReportsUsed/freeReportsLimit/remaining ' +
+      'are historical counters rather than a paywall.',
+  })
+  freeLimitEnforced!: boolean;
 }
