@@ -138,6 +138,18 @@ const ANGLES: AngleDef[] = [
   // Walk-around order dictated by the inspector: diagonal (near front wheel
   // turned outward) → side (wheels straight) → front, then the same on the
   // right half and finally the rear. Ids/labels are unchanged; only `order` is.
+  //
+  // All eight required angles carry a `hint`, and the two kinds carry different
+  // guidance on purpose — that difference IS the instruction. The four rear and
+  // straight angles shipped without one until 2026-08-05, so the capture screen
+  // showed no wheel guidance on half the walk-around (QA scenario 10).
+  //
+  // The diagonal hint deliberately does NOT name a side ("near front wheel",
+  // not "left front wheel"): on a diagonal the near wheel is the one closest to
+  // the camera and the label already says which corner you are standing at, and
+  // the longer wording wrapped to a second line in RU/UK, which pushed the
+  // capture screen's instruction box past what a 320 dp screen can host at the
+  // 1.3 font clamp (`capture_instruction_budget_test.dart`).
   {
     id: 'diag_front_left',
     group: 'exterior',
@@ -150,10 +162,10 @@ const ANGLES: AngleDef[] = [
       uk: 'Діагональ спереду-зліва',
     },
     hint: {
-      de: 'Schlagen Sie das linke Vorderrad nach außen ein.',
+      de: 'Schlagen Sie das Vorderrad nach außen ein.',
       en: 'Turn the near front wheel outward.',
-      ru: 'Поверните переднее левое колесо наружу.',
-      uk: 'Поверніть переднє ліве колесо назовні.',
+      ru: 'Поверните переднее колесо наружу.',
+      uk: 'Поверніть переднє колесо назовні.',
     },
   },
   {
@@ -175,6 +187,12 @@ const ANGLES: AngleDef[] = [
     order: 3,
     required: true,
     label: { de: 'Vorderansicht', en: 'Front view', ru: 'Вид спереди', uk: 'Вид спереду' },
+    hint: {
+      de: 'Stellen Sie die Räder gerade.',
+      en: 'Keep the wheels straight.',
+      ru: 'Поставьте колёса прямо.',
+      uk: 'Поставте колеса прямо.',
+    },
   },
   {
     id: 'diag_front_right',
@@ -188,10 +206,10 @@ const ANGLES: AngleDef[] = [
       uk: 'Діагональ спереду-справа',
     },
     hint: {
-      de: 'Schlagen Sie das rechte Vorderrad nach außen ein.',
+      de: 'Schlagen Sie das Vorderrad nach außen ein.',
       en: 'Turn the near front wheel outward.',
-      ru: 'Поверните переднее правое колесо наружу.',
-      uk: 'Поверніть переднє праве колесо назовні.',
+      ru: 'Поверните переднее колесо наружу.',
+      uk: 'Поверніть переднє колесо назовні.',
     },
   },
   {
@@ -218,6 +236,12 @@ const ANGLES: AngleDef[] = [
       ru: 'Диагональ сзади-справа',
       uk: 'Діагональ ззаду-справа',
     },
+    hint: {
+      de: 'Schlagen Sie das Vorderrad nach außen ein.',
+      en: 'Turn the near front wheel outward.',
+      ru: 'Поверните переднее колесо наружу.',
+      uk: 'Поверніть переднє колесо назовні.',
+    },
   },
   {
     id: 'rear',
@@ -225,6 +249,12 @@ const ANGLES: AngleDef[] = [
     order: 7,
     required: true,
     label: { de: 'Rückansicht', en: 'Rear view', ru: 'Задняя часть', uk: 'Задня частина' },
+    hint: {
+      de: 'Stellen Sie die Räder gerade.',
+      en: 'Keep the wheels straight.',
+      ru: 'Поставьте колёса прямо.',
+      uk: 'Поставте колеса прямо.',
+    },
   },
   {
     id: 'diag_rear_left',
@@ -236,6 +266,12 @@ const ANGLES: AngleDef[] = [
       en: 'Rear left (3/4)',
       ru: 'Диагональ сзади-слева',
       uk: 'Діагональ ззаду-зліва',
+    },
+    hint: {
+      de: 'Schlagen Sie das Vorderrad nach außen ein.',
+      en: 'Turn the near front wheel outward.',
+      ru: 'Поверните переднее колесо наружу.',
+      uk: 'Поверніть переднє колесо назовні.',
     },
   },
   {
