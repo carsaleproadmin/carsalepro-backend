@@ -14,8 +14,22 @@ const REQUIRED_EXTERIOR_ORDER = [
   'diag_rear_left',
 ];
 
-/** Angles whose hint explains the front-wheel position. */
-const HINTED_ANGLES = ['diag_front_left', 'left', 'diag_front_right', 'right'];
+/**
+ * Every required exterior angle carries a wheel-position hint, and the two
+ * kinds of shot carry DIFFERENT guidance: on a diagonal the near front wheel is
+ * turned outward so the rim reads, on a straight view the wheels are square.
+ * QA scenario 10 checks exactly that difference on all eight angles, so the
+ * four rear/straight angles that shipped without a hint are no longer allowed
+ * to be empty.
+ */
+const DIAGONAL_ANGLES = [
+  'diag_front_left',
+  'diag_front_right',
+  'diag_rear_right',
+  'diag_rear_left',
+];
+const STRAIGHT_ANGLES = ['left', 'right', 'front', 'rear'];
+const HINTED_ANGLES = [...DIAGONAL_ANGLES, ...STRAIGHT_ANGLES];
 
 interface Label {
   de?: string;
@@ -161,7 +175,7 @@ describe('Catalog (e2e)', () => {
       expect(required.map((a) => a.order)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     });
 
-    it('exposes a four-locale hint on exactly the four wheel-position angles', async () => {
+    it('exposes a four-locale hint on every required exterior angle', async () => {
       const catalog = await getCatalog();
       const hinted = catalog.angles.filter((a) => a.hint);
       expect(hinted.map((a) => a.id).sort()).toEqual([...HINTED_ANGLES].sort());
@@ -171,11 +185,34 @@ describe('Catalog (e2e)', () => {
         expect(angle.hint?.ru).toBeTruthy();
         expect(angle.hint?.uk).toBeTruthy();
       }
-      // The diagonals mention the turned wheel, the sides the straight wheels.
-      expect(catalog.angles.find((a) => a.id === 'diag_front_left')?.hint?.de).toContain(
-        'Vorderrad',
-      );
-      expect(catalog.angles.find((a) => a.id === 'left')?.hint?.de).toContain('gerade');
+    });
+
+    it('gives diagonals and straight views different wheel guidance', async () => {
+      const catalog = await getCatalog();
+      const hintOf = (id: string) => catalog.angles.find((a) => a.id === id)?.hint;
+
+      // Diagonals: turn the near front wheel out. Straight views: wheels square.
+      // Asserted per locale, because a half-translated hint is what QA sees.
+      for (const id of DIAGONAL_ANGLES) {
+        expect(hintOf(id)?.de).toContain('Vorderrad');
+        expect(hintOf(id)?.en?.toLowerCase()).toContain('outward');
+        expect(hintOf(id)?.ru).toContain('наружу');
+        expect(hintOf(id)?.uk).toContain('назовні');
+      }
+      for (const id of STRAIGHT_ANGLES) {
+        expect(hintOf(id)?.de).toContain('gerade');
+        expect(hintOf(id)?.en?.toLowerCase()).toContain('straight');
+        expect(hintOf(id)?.ru).toContain('прямо');
+        expect(hintOf(id)?.uk).toContain('прямо');
+      }
+
+      // The two sets must not collide — the whole point of scenario 10 is that
+      // an inspector can tell from the instruction which shot they are on.
+      const diagonalTexts = new Set(DIAGONAL_ANGLES.map((id) => hintOf(id)?.en));
+      const straightTexts = new Set(STRAIGHT_ANGLES.map((id) => hintOf(id)?.en));
+      for (const text of diagonalTexts) {
+        expect(straightTexts.has(text)).toBe(false);
+      }
     });
   });
 
