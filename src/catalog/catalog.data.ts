@@ -22,12 +22,29 @@
  *  - `thicknessPanels` — the 13 guided paint-thickness (Lackdicke) stations.
  */
 
+/**
+ * A catalog label, keyed by app language tag.
+ *
+ * `de`/`en`/`ru`/`uk` are authored by hand in this file — they are the four
+ * human-translated locales. The other 26 the app ships live in
+ * `src/catalog/i18n/catalog.<tag>.json` and are merged in by
+ * `scripts/export-catalog.ts` and by `CatalogService`.
+ *
+ * Why sidecars rather than 26 more fields here: this file is 3 000+ lines of
+ * hand-authored automotive terminology carrying ~100 explanatory comments.
+ * Splicing 26 machine-translated strings into each of 292 label objects would
+ * quadruple it, bury those comments, and make the human-vs-machine provenance
+ * of any given string invisible. A separate file per locale keeps the diff
+ * reviewable and regeneration idempotent.
+ */
 export interface LocalizedLabel {
   de: string;
   en: string;
   ru: string;
   /** Ukrainian — added incrementally; checklist items carry it first. */
   uk?: string;
+  /** Machine-translated locales, merged from the i18n sidecars. */
+  [tag: string]: string | undefined;
 }
 
 export interface AngleDef {
