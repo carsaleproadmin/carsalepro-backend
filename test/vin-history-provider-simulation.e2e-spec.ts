@@ -7,6 +7,7 @@ import { PaymentsService } from '../src/payments/payments.service';
 import { StripeEvent } from '../src/payments/stripe.service';
 import { SettingsService } from '../src/settings/settings.service';
 import { VIN_HISTORY_PROVIDER } from '../src/vin-history/vin-history.provider';
+import { VinHistoryService } from '../src/vin-history/vin-history.service';
 import {
   RAW_DIRTY,
   RAW_EMPTY,
@@ -732,6 +733,111 @@ describe('VIN history — simulated real provider (e2e)', () => {
 
       await expect(app.get(PaymentsService).handleWebhook(event)).resolves.not.toThrow();
       await prisma.stripeWebhookEvent.deleteMany({ where: { id: eventId } });
+    });
+
+    /**
+     * 4.5–4.7 guard the fix for DEN-71.
+     *
+     * The idempotency row stops the SAME event id twice, which is what 4.2
+     * covers. These go a layer deeper and call `fulfillFromWebhook` directly,
+     * the way a genuine redelivery arrives: same payment, same purchase, no
+     * event id left to deduplicate on. Before the fix only `ready` stopped it,
+     * so a refunded purchase ran the whole path again — and if the provider had
+     * recovered in between, handed over the report the buyer had been refunded
+     * for.
+     */
+    it('4.5 a redelivery for a refunded purchase is a no-op, even once the provider recovers', async () => {
+      const user = await newUser();
+      const vin = track(uniqueVin('w5'));
+      provider.failWith(providerErrors.serverError());
+
+      const { purchaseId, paymentId, eventId } = await purchaseViaWebhook(user.userId, vin);
+      const refunded = await prisma.vinHistoryPurchase.findUniqueOrThrow({
+        where: { id: purchaseId },
+      });
+      expect(refunded.status).toBe('refunded');
+
+      // The outage clears — exactly the window that used to give the report away.
+      provider.respondWith(RAW_RICH_DE);
+      provider.resetCounters();
+      await app.get(VinHistoryService).fulfillFromWebhook(paymentId, purchaseId, vin);
+
+      const after = await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } });
+      expect(after.status).toBe('refunded');
+      expect(after.payload).toBeNull();
+      expect(after.readyAt).toBeNull();
+      // Not billed a second time: the provider was never asked.
+      expect(provider.fetchCalls).toEqual([]);
+      expect(await prisma.refund.count({ where: { paymentId } })).toBe(1);
+
+      await prisma.stripeWebhookEvent.deleteMany({ where: { id: eventId } });
+    });
+
+    it('4.6 a refunded payment is never walked back to succeeded', async () => {
+      const user = await newUser();
+      const vin = track(uniqueVin('w6'));
+      provider.failWith(providerErrors.timeout());
+
+      const { purchaseId, paymentId, eventId } = await purchaseViaWebhook(user.userId, vin);
+      expect((await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } })).status).toBe(
+        'refunded',
+      );
+
+      provider.respondWith(RAW_RICH_DE);
+      await app.get(VinHistoryService).fulfillFromWebhook(paymentId, purchaseId, vin);
+
+      // The ledger and the processor must not disagree: Stripe says the money
+      // went back, so our row cannot claim the charge succeeded.
+      const payment = await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } });
+      expect(payment.status).toBe('refunded');
+
+      await prisma.stripeWebhookEvent.deleteMany({ where: { id: eventId } });
+    });
+
+    it('4.7 a failed purchase is not silently retried, and admins are not alerted twice', async () => {
+      const user = await newUser();
+      const vin = track(uniqueVin('w7'));
+      provider.failWith(providerErrors.timeout());
+
+      // A purchase whose refund also failed: `failed` means a human is needed,
+      // and an automatic retry is exactly what would paper over that.
+      const broken = jest
+        .spyOn(prisma.refund, 'create')
+        .mockRejectedValue(new Error('refund ledger unavailable'));
+      let ctx: { purchaseId: string; paymentId: string; eventId: string };
+      try {
+        ctx = await purchaseViaWebhook(user.userId, vin);
+      } finally {
+        broken.mockRestore();
+      }
+      expect(
+        (await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: ctx.purchaseId } }))
+          .status,
+      ).toBe('failed');
+
+      const alertsAfterFirst = await prisma.notification.count({
+        where: { type: 'vin_history.failed', payload: { path: ['purchaseId'], equals: ctx.purchaseId } },
+      });
+      provider.respondWith(RAW_RICH_DE);
+      provider.resetCounters();
+      await app.get(VinHistoryService).fulfillFromWebhook(ctx.paymentId, ctx.purchaseId, vin);
+
+      const after = await prisma.vinHistoryPurchase.findUniqueOrThrow({
+        where: { id: ctx.purchaseId },
+      });
+      expect(after.status).toBe('failed');
+      expect(after.payload).toBeNull();
+      expect(provider.fetchCalls).toEqual([]);
+      expect(
+        await prisma.notification.count({
+          where: {
+            type: 'vin_history.failed',
+            payload: { path: ['purchaseId'], equals: ctx.purchaseId },
+          },
+        }),
+      ).toBe(alertsAfterFirst);
+
+      await prisma.stripeWebhookEvent.deleteMany({ where: { id: ctx.eventId } });
     });
   });
 

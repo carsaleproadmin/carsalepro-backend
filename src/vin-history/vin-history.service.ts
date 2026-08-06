@@ -42,6 +42,29 @@ const VIN_HISTORY_FAILED = 'vin_history.failed' as NotificationType;
 export type VinHistoryPurchaseStatus = 'pending' | 'ready' | 'failed' | 'refunded';
 
 /**
+ * Statuses a settlement must not re-enter.
+ *
+ * Stripe redelivers a webhook for days, and each delivery arrives at `fulfill`
+ * with the same payment and purchase ids. Only `ready` used to stop it, so a
+ * purchase that had already been refunded would run the whole path again — a
+ * fresh billable provider lookup, and, if the provider had recovered in the
+ * meantime, delivery of the report the buyer's money had already been returned
+ * for. `failed` is terminal for the opposite reason: it means the refund itself
+ * did not go through and an operator has to look, which an automatic retry
+ * would paper over.
+ *
+ * Retrying a genuinely transient outage is still possible and still supported —
+ * it goes through `unlock`, which reopens the purchase to `pending` deliberately
+ * and re-uses or re-creates the payment. That is an explicit re-attempt with a
+ * live payer behind it, not a redelivery a refunded payment can ride in on.
+ */
+const TERMINAL_PURCHASE_STATUSES: ReadonlySet<string> = new Set<VinHistoryPurchaseStatus>([
+  'ready',
+  'refunded',
+  'failed',
+]);
+
+/**
  * Fewest records a report must carry to be worth charging for.
  *
  * A provider that answers 200 with nothing in it is not a failure it can be
@@ -373,20 +396,31 @@ export class VinHistoryService {
 
   /**
    * Mark the payment succeeded and attach a report to the purchase.
-   * Idempotent: a replayed webhook for an already-ready purchase is a no-op.
+   *
+   * Idempotent: a replayed webhook for a purchase that has already reached a
+   * terminal status is a no-op, and nothing here runs before that is checked —
+   * not the payment write, not the provider lookup.
    */
   private async fulfill(
     paymentId: string,
     purchaseId: string,
     vin: string,
   ): Promise<{ ok: boolean }> {
-    await this.prisma.payment
-      .update({ where: { id: paymentId }, data: { status: 'succeeded' } })
-      .catch(() => undefined);
-
     const purchase = await this.prisma.vinHistoryPurchase.findUnique({ where: { id: purchaseId } });
     if (!purchase) return { ok: false };
-    if (purchase.status === 'ready') return { ok: true };
+    if (TERMINAL_PURCHASE_STATUSES.has(purchase.status)) {
+      return { ok: purchase.status === 'ready' };
+    }
+
+    // Settled at Stripe, so the payment is truthfully `succeeded` — but never
+    // walk one back out of `refunded`. That status is the ledger's record that
+    // the money left again; overwriting it here is how a refunded sale came to
+    // read as a successful one. `updateMany` also spares the missing-row catch
+    // this used to need.
+    await this.prisma.payment.updateMany({
+      where: { id: paymentId, status: { not: 'refunded' } },
+      data: { status: 'succeeded' },
+    });
 
     try {
       const report = await this.resolveReport(vin);
