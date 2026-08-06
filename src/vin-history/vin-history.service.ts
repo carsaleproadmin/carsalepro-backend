@@ -41,6 +41,37 @@ const VIN_HISTORY_FAILED = 'vin_history.failed' as NotificationType;
 /** Purchase lifecycle. `refunded` is terminal-good; `failed` needs a human. */
 export type VinHistoryPurchaseStatus = 'pending' | 'ready' | 'failed' | 'refunded';
 
+/**
+ * Fewest records a report must carry to be worth charging for.
+ *
+ * A provider that answers 200 with nothing in it is not a failure it can be
+ * detected by `try`/`catch` — it is a valid response that happens to be
+ * worthless, and every consumer review of the shortlisted providers is
+ * dominated by exactly that complaint. One record is the deliberately
+ * conservative floor: it refuses only the genuinely empty answer, so no buyer
+ * who received something is refunded against their will. Raise it once F3-4 has
+ * measured the real hit rate for German VINs.
+ */
+const MIN_SELLABLE_RECORD_COUNT = 1;
+
+/**
+ * A provider answer that arrived intact and holds nothing to sell.
+ *
+ * Carried as an Error so it travels the same path as a provider outage: caught
+ * in `fulfill`, refunded by `failAndRefund`, surfaced to the caller as
+ * `provider_failed` with `refunded: true`. The buyer's experience of "the
+ * lookup did not produce a report, your money is back" is identical either way.
+ */
+class EmptyProviderResponseError extends Error {
+  constructor(vin: string, recordCount: number) {
+    super(
+      `Provider returned no usable history for ${vin} ` +
+        `(${recordCount} records, minimum ${MIN_SELLABLE_RECORD_COUNT})`,
+    );
+    this.name = 'EmptyProviderResponseError';
+  }
+}
+
 @Injectable()
 export class VinHistoryService {
   private readonly logger = new Logger(VinHistoryService.name);
@@ -262,9 +293,7 @@ export class VinHistoryService {
 
   async getMine(userId: string, id: string): Promise<VinCheckDetailDto> {
     const purchase = await this.requireOwnedPurchase(userId, id);
-    const payload = purchase.report
-      ? (purchase.report.payload as unknown as VinHistoryPayloadV1)
-      : null;
+    const payload = this.soldPayload(purchase, purchase.report);
     return {
       ...this.toItem(purchase, purchase.report),
       // The paid artefact. Null until the purchase is ready — a pending or
@@ -283,7 +312,10 @@ export class VinHistoryService {
    */
   async downloadMine(userId: string, id: string): Promise<VinCheckDownloadDto> {
     const purchase = await this.requireOwnedPurchase(userId, id);
-    if (purchase.status !== 'ready' || !purchase.report?.rawS3Key || !this.r2.isConfigured()) {
+    // This buyer's own snapshot, falling back to the shared archive only for
+    // purchases fulfilled before per-purchase keys existed.
+    const key = purchase.s3Key ?? purchase.report?.rawS3Key ?? null;
+    if (purchase.status !== 'ready' || !key || !this.r2.isConfigured()) {
       throw new NotFoundException({
         error: {
           code: 'download_unavailable',
@@ -291,7 +323,7 @@ export class VinHistoryService {
         },
       });
     }
-    const { url, expiresAt } = await this.r2.createPrivateSignedUrl(purchase.report.rawS3Key);
+    const { url, expiresAt } = await this.r2.createPrivateSignedUrl(key);
     return { url, expiresAt: expiresAt.toISOString(), contentType: 'application/json' };
   }
 
@@ -358,6 +390,22 @@ export class VinHistoryService {
 
     try {
       const report = await this.resolveReport(vin);
+
+      // A warm cache can hold a report that predates MIN_SELLABLE_RECORD_COUNT
+      // (or was cached before this check existed). Re-checking here means the
+      // rule is enforced on what is actually being SOLD, not only on what was
+      // just fetched.
+      if (report.recordCount < MIN_SELLABLE_RECORD_COUNT) {
+        throw new EmptyProviderResponseError(vin, report.recordCount);
+      }
+
+      const payload = report.payload as unknown as VinHistoryPayloadV1;
+      // The buyer's own copy, written before the purchase is marked ready so a
+      // `ready` purchase is never left without the artefact it promises.
+      // Best-effort by design: an R2 outage returns null and must not turn a
+      // successful paid lookup into a refund.
+      const s3Key = await this.archive(vin, payload, purchaseId);
+
       await this.prisma.vinHistoryPurchase.update({
         where: { id: purchaseId },
         data: {
@@ -366,6 +414,10 @@ export class VinHistoryService {
           provider: report.provider,
           readyAt: new Date(),
           failureReason: null,
+          // Immutable snapshot: the shared report row this was copied from is a
+          // cache and the next buyer of this VIN will overwrite it.
+          payload: report.payload as Prisma.InputJsonValue,
+          s3Key,
         },
       });
       return { ok: true };
@@ -499,9 +551,17 @@ export class VinHistoryService {
     if (fresh) return fresh;
 
     const payload = await this.provider.fetch(vin);
+
+    // Refuse BEFORE the upsert so an empty answer is never cached: a VIN that
+    // gains its first record tomorrow must not stay unsellable for the rest of
+    // the cache window. The provider is re-queried on the next attempt, which is
+    // the same trade the existing failure path already makes.
+    if (payload.summary.recordCount < MIN_SELLABLE_RECORD_COUNT) {
+      throw new EmptyProviderResponseError(vin, payload.summary.recordCount);
+    }
+
     const cacheDays = await this.settings.getNumber('vinHistoryCacheDays');
     const expiresAt = new Date(Date.now() + cacheDays * 86_400_000);
-    const rawS3Key = await this.archive(vin, payload);
 
     return this.prisma.vinHistoryReport.upsert({
       where: { vin_provider: { vin, provider: this.provider.name } },
@@ -510,13 +570,11 @@ export class VinHistoryService {
         provider: this.provider.name,
         payload: payload as unknown as Prisma.InputJsonValue,
         recordCount: payload.summary.recordCount,
-        rawS3Key,
         expiresAt,
       },
       update: {
         payload: payload as unknown as Prisma.InputJsonValue,
         recordCount: payload.summary.recordCount,
-        rawS3Key,
         fetchedAt: new Date(),
         expiresAt,
       },
@@ -524,13 +582,30 @@ export class VinHistoryService {
   }
 
   /**
-   * Archive the payload so a buyer can download the artefact they paid for even
-   * after the cache is refreshed with newer data. Best-effort: an R2 outage must
-   * not turn a successful paid lookup into a refund.
+   * Archive one buyer's copy of the payload.
+   *
+   * The key carries the purchase id, so it is unique by construction and no
+   * later buyer of the same VIN can overwrite it — that is the whole point. The
+   * shared `VinHistoryReport` row is a provider cache and is expected to be
+   * overwritten; the artefact a buyer paid for is not.
+   *
+   * Best-effort: an R2 outage must not turn a successful paid lookup into a
+   * refund, so a failure here returns null and the purchase still completes
+   * (the payload snapshot in the database is unaffected either way).
+   *
+   * GDPR: `MeService.erase` does NOT sweep this prefix, and deliberately so.
+   * The object holds vehicle history and nothing about the buyer — the same
+   * content the shared cache keeps for every other buyer of that VIN, which an
+   * erasure has never removed either. The purchase row itself cascades with the
+   * user, so the object is orphaned rather than exposed.
    */
-  private async archive(vin: string, payload: VinHistoryPayloadV1): Promise<string | null> {
+  private async archive(
+    vin: string,
+    payload: VinHistoryPayloadV1,
+    purchaseId: string,
+  ): Promise<string | null> {
     if (!this.r2.isConfigured()) return null;
-    const key = `vin-history/${this.provider.name}/${vin}.json`;
+    const key = `vin-history/${this.provider.name}/${vin}/${purchaseId}.json`;
     try {
       await this.r2.putObject(key, JSON.stringify(payload, null, 2), 'application/json');
       return key;
@@ -566,11 +641,26 @@ export class VinHistoryService {
     return purchase;
   }
 
+  /**
+   * The payload this buyer was actually sold.
+   *
+   * The purchase's own snapshot wins. The shared report is consulted only as a
+   * fallback for purchases fulfilled before the snapshot column existed — for
+   * everyone else that row is a cache another buyer may already have refreshed.
+   */
+  private soldPayload(
+    purchase: { payload: Prisma.JsonValue | null },
+    report: { payload: Prisma.JsonValue } | null,
+  ): VinHistoryPayloadV1 | null {
+    const raw = purchase.payload ?? report?.payload ?? null;
+    return raw ? (raw as unknown as VinHistoryPayloadV1) : null;
+  }
+
   private toItem(
     purchase: VinHistoryPurchase,
     report: { expiresAt: Date; payload: Prisma.JsonValue } | null,
   ) {
-    const payload = report ? (report.payload as unknown as VinHistoryPayloadV1) : null;
+    const payload = this.soldPayload(purchase, report);
     return {
       id: purchase.id,
       vin: purchase.vin,
