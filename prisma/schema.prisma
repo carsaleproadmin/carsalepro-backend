@@ -712,7 +712,9 @@ model VinHistoryReport {
   provider    String
   /// Normalised VinHistoryPayloadV1 — the contract the API serves.
   payload     Json
-  /// R2 key of the archived payload, served only via a private signed URL.
+  /// LEGACY. The shared archive written before each buyer got their own
+  /// snapshot; new rows leave it null. Kept because purchases fulfilled under
+  /// the old scheme still resolve their download through it.
   rawS3Key    String?  @map("raw_s3_key")
   recordCount Int      @default(0) @map("record_count")
   fetchedAt   DateTime @default(now()) @map("fetched_at")
@@ -730,6 +732,13 @@ model VinHistoryReport {
 /// `@@unique([userId, vin])` makes /unlock idempotent: a user cannot be charged
 /// twice for the same VIN, however many times the button is pressed or the
 /// webhook is replayed.
+///
+/// `payload` and `s3Key` are the PAID ARTEFACT: an immutable snapshot of what
+/// this buyer was sold, written once at fulfilment. They are deliberately a copy
+/// of `report.payload` / `report.rawS3Key` rather than a reference, because the
+/// linked `VinHistoryReport` is a SHARED provider cache that the next buyer of
+/// the same VIN overwrites once the cache window lapses. Reads fall back to the
+/// report only for purchases fulfilled before this column existed.
 model VinHistoryPurchase {
   id            String    @id @default(cuid())
   userId        String    @map("user_id")
@@ -740,6 +749,10 @@ model VinHistoryPurchase {
   status        String    @default("pending")
   provider      String?
   failureReason String?   @map("failure_reason")
+  /// Immutable snapshot of the payload this buyer paid for.
+  payload       Json?
+  /// R2 key of this buyer's own archived copy, served only via a signed URL.
+  s3Key         String?   @map("s3_key")
   createdAt     DateTime  @default(now()) @map("created_at")
   readyAt       DateTime? @map("ready_at")
 

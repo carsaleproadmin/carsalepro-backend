@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import request from 'supertest';
 import { createTestApp } from './helpers/test-app';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -295,12 +296,16 @@ describe('VIN history — paid provenance (e2e)', () => {
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
 
-    const report = await prisma.vinHistoryReport.findFirstOrThrow({ where: { vin } });
+    // The buyer's own snapshot key, not the shared report's — the shared archive
+    // is legacy and new report rows no longer carry one.
+    const purchase = await prisma.vinHistoryPurchase.findUniqueOrThrow({
+      where: { id: unlock.body.purchaseId as string },
+    });
     const res = await request(app.getHttpServer())
       .get(`/api/v1/me/vin-checks/${unlock.body.purchaseId}/download`)
       .set('Authorization', `Bearer ${user.token}`);
 
-    if (report.rawS3Key) {
+    if (purchase.s3Key) {
       expect(res.status).toBe(200);
       expect(res.body.url).toContain('X-Amz-Signature');
       expect(res.body.contentType).toBe('application/json');
@@ -481,5 +486,197 @@ describe('VIN history — paid provenance (e2e)', () => {
       .expect(200);
     expect(res.body.byPurpose.vin_history).toBeDefined();
     expect(typeof res.body.byPurpose.vin_history.cents).toBe('number');
+  });
+
+  // ============================================================
+  // F3-3 — the paid artefact is immutable, and nothing is sold empty
+  // ============================================================
+
+  it('17. a refreshed cache does NOT alter an earlier buyer’s report', async () => {
+    const alice = await newUser();
+    const bob = await newUser();
+    const vin = track(uniqueVin('o'));
+
+    const aliceUnlock = await request(app.getHttpServer())
+      .post(`/api/v1/vin-history/${vin}/unlock`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(201);
+
+    const before = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${aliceUnlock.body.purchaseId}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+    const aliceOwnersBefore = before.body.payload.owners.length;
+
+    // Expire the shared cache, then make the provider answer differently — the
+    // mock is a pure function of the VIN, so a changed answer has to be forced.
+    await prisma.vinHistoryReport.updateMany({
+      where: { vin },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    const original = await provider.fetch(vin);
+    const mutated = {
+      ...original,
+      owners: [...original.owners, ...original.owners],
+      summary: { ...original.summary, recordCount: original.summary.recordCount + 7 },
+    };
+    const changed = jest.spyOn(provider, 'fetch').mockResolvedValue(mutated);
+    try {
+      await request(app.getHttpServer())
+        .post(`/api/v1/vin-history/${vin}/unlock`)
+        .set('Authorization', `Bearer ${bob.token}`)
+        .expect(201);
+    } finally {
+      changed.mockRestore();
+    }
+
+    // The shared cache did move on — that is by design.
+    const report = await prisma.vinHistoryReport.findFirstOrThrow({ where: { vin } });
+    expect(report.recordCount).toBe(original.summary.recordCount + 7);
+
+    // Alice's report did not.
+    const after = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${aliceUnlock.body.purchaseId}`)
+      .set('Authorization', `Bearer ${alice.token}`)
+      .expect(200);
+    expect(after.body.payload.owners.length).toBe(aliceOwnersBefore);
+    expect(after.body.payload).toEqual(before.body.payload);
+
+    // Two buyers, two distinct artefacts — neither key can collide with the other.
+    const [aliceRow, bobRow] = await Promise.all([
+      prisma.vinHistoryPurchase.findUniqueOrThrow({
+        where: { userId_vin: { userId: alice.userId, vin } },
+      }),
+      prisma.vinHistoryPurchase.findUniqueOrThrow({
+        where: { userId_vin: { userId: bob.userId, vin } },
+      }),
+    ]);
+    expect(aliceRow.payload).not.toBeNull();
+    if (aliceRow.s3Key || bobRow.s3Key) {
+      expect(aliceRow.s3Key).not.toBe(bobRow.s3Key);
+      expect(aliceRow.s3Key).toContain(aliceRow.id);
+      expect(bobRow.s3Key).toContain(bobRow.id);
+    }
+  });
+
+  it('18. a purchase fulfilled before snapshots existed still reads and downloads', async () => {
+    const user = await newUser();
+    const vin = track(uniqueVin('p'));
+    const unlock = await request(app.getHttpServer())
+      .post(`/api/v1/vin-history/${vin}/unlock`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    const purchaseId = unlock.body.purchaseId as string;
+
+    // Reproduce a pre-migration row: no snapshot, only the shared report, whose
+    // archive lives under the old un-versioned key.
+    const legacyKey = `vin-history/mock/${vin}.json`;
+    await prisma.vinHistoryPurchase.update({
+      where: { id: purchaseId },
+      data: { payload: Prisma.DbNull, s3Key: null },
+    });
+    await prisma.vinHistoryReport.updateMany({
+      where: { vin },
+      data: { rawS3Key: legacyKey },
+    });
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${purchaseId}`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(200);
+    expect(detail.body.payload).toBeTruthy();
+    expect(detail.body.payload.vin).toBe(vin);
+
+    const list = await request(app.getHttpServer())
+      .get('/api/v1/me/vin-checks')
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(200);
+    expect(list.body.items.find((i: { id: string }) => i.id === purchaseId).synthetic).toBe(true);
+
+    const download = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${purchaseId}/download`)
+      .set('Authorization', `Bearer ${user.token}`);
+    // 200 through the legacy key when R2 is configured; a clean 404 when it is
+    // not. What must never happen is the fallback being skipped.
+    expect([200, 404]).toContain(download.status);
+    if (download.status === 200) expect(download.body.url).toContain('X-Amz-Signature');
+  });
+
+  it('19. an empty provider response is refunded, not sold', async () => {
+    const user = await newUser();
+    const vin = track(uniqueVin('q'));
+
+    const original = await provider.fetch(vin);
+    const empty = {
+      ...original,
+      owners: [],
+      mileageRecords: [],
+      damageRecords: [],
+      registrations: [],
+      inspections: [],
+      recalls: [],
+      summary: { ...original.summary, recordCount: 0, ownersCount: 0 },
+    };
+
+    const nothing = jest.spyOn(provider, 'fetch').mockResolvedValue(empty);
+    try {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/vin-history/${vin}/unlock`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(502);
+      expect(res.body.error.code).toBe('provider_failed');
+      expect(res.body.error.refunded).toBe(true);
+    } finally {
+      nothing.mockRestore();
+    }
+
+    const purchase = await prisma.vinHistoryPurchase.findUniqueOrThrow({
+      where: { userId_vin: { userId: user.userId, vin } },
+    });
+    expect(purchase.status).toBe('refunded');
+    expect(purchase.failureReason).toContain('no usable history');
+    expect(purchase.payload).toBeNull();
+
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { id: purchase.paymentId! } });
+    expect(payment.status).toBe('refunded');
+    expect(await prisma.refund.count({ where: { paymentId: payment.id } })).toBe(1);
+
+    // An empty answer must not be cached: a VIN that gains a record tomorrow
+    // would otherwise stay unsellable for the rest of the cache window.
+    expect(await prisma.vinHistoryReport.count({ where: { vin } })).toBe(0);
+  });
+
+  it('20. a VIN that gains records after an empty answer sells on the next attempt', async () => {
+    const user = await newUser();
+    const vin = track(uniqueVin('r'));
+
+    const original = await provider.fetch(vin);
+    const empty = {
+      ...original,
+      owners: [],
+      summary: { ...original.summary, recordCount: 0 },
+    };
+
+    const nothing = jest.spyOn(provider, 'fetch').mockResolvedValue(empty);
+    try {
+      await request(app.getHttpServer())
+        .post(`/api/v1/vin-history/${vin}/unlock`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(502);
+    } finally {
+      nothing.mockRestore();
+    }
+
+    const retry = await request(app.getHttpServer())
+      .post(`/api/v1/vin-history/${vin}/unlock`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    expect(retry.body.status).toBe('ready');
+
+    const purchase = await prisma.vinHistoryPurchase.findUniqueOrThrow({
+      where: { userId_vin: { userId: user.userId, vin } },
+    });
+    expect(purchase.payload).not.toBeNull();
+    expect(await prisma.vinHistoryPurchase.count({ where: { userId: user.userId, vin } })).toBe(1);
   });
 });
