@@ -6,8 +6,26 @@ import { AllExceptionsFilter } from '../../src/common/filters/http-exception.fil
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/prisma/prisma.service';
 
-export async function createTestApp(): Promise<INestApplication> {
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+/**
+ * Swap a provider out of the application graph for the duration of a suite.
+ *
+ * `token` is whatever `app.get()` would take — a class or an injection token.
+ * Used by the VIN-history provider simulation to stand a fake data provider in
+ * place of the built-in mock without touching `src/`.
+ */
+export interface ProviderOverride {
+  token: unknown;
+  useValue: unknown;
+}
+
+export async function createTestApp(
+  overrides: ProviderOverride[] = [],
+): Promise<INestApplication> {
+  let builder = Test.createTestingModule({ imports: [AppModule] });
+  for (const { token, useValue } of overrides) {
+    builder = builder.overrideProvider(token).useValue(useValue);
+  }
+  const moduleRef = await builder.compile();
   // Mirror src/main.ts: rawBody for the Stripe webhook + raised JSON limit for
   // structured reportData payloads.
   const app = moduleRef.createNestApplication<NestExpressApplication>({
