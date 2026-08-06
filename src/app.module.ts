@@ -9,6 +9,7 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
 import { UsersModule } from './users/users.module';
 import { CatalogModule } from './catalog/catalog.module';
+import { FontsModule } from './fonts/fonts.module';
 import { LinkCodesModule } from './link-codes/link-codes.module';
 import { MeReportsModule } from './me-reports/me-reports.module';
 import { PublicModule } from './public/public.module';
@@ -82,6 +83,7 @@ import { VinHistoryModule } from './vin-history/vin-history.module';
     AdminModule,
     LegalModule,
     CatalogModule,
+    FontsModule,
     SettingsModule,
     SchedulerModule,
   ],
