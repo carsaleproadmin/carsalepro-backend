@@ -34,6 +34,13 @@ export const ORDER_TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatu
   [OrderStatus.REFUNDED]: [],
 };
 
+/** Statuses where the assigned inspector may attach the completed report. */
+export const ATTACHABLE_REPORT_ORDER_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.ASSIGNED,
+  OrderStatus.EN_ROUTE,
+  OrderStatus.IN_PROGRESS,
+];
+
 export function canTransition(from: OrderStatus, to: OrderStatus): boolean {
   return ORDER_TRANSITIONS[from]?.includes(to) ?? false;
 }

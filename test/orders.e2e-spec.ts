@@ -540,6 +540,58 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(Math.round(days)).toBe(7);
   });
 
+  it('11b. attaching a report for a different vehicle is refused', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { vin: 'WBA8E9G55JNU12345' },
+    });
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'IN_PROGRESS' })
+      .expect(200);
+
+    const report = await prisma.report.create({
+      data: {
+        deviceId: uniqueDeviceId('mismatch'),
+        code: `CSP-${Date.now().toString().slice(-6)}`,
+        vin: 'WAUZZZF41GA000001',
+        make: 'Audi',
+        model: 'A4 Avant',
+        s3Key: 'test/mismatch.pdf',
+        tier: 'free',
+        uploaded: true,
+        userId: assignedId,
+      },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/report`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ code: report.code })
+      .expect(409);
+
+    expect(res.body.error.code).toBe('report_vehicle_mismatch');
+    const [orderAfter, reportAfter] = await Promise.all([
+      prisma.order.findUnique({ where: { id: orderId } }),
+      prisma.report.findUnique({ where: { id: report.id } }),
+    ]);
+    expect(orderAfter!.status).toBe('IN_PROGRESS');
+    expect(reportAfter!.orderId).toBeNull();
+
+    await prisma.report.delete({ where: { id: report.id } });
+  });
+
   // ============================================================
   // 12. Approve from SUBMITTED → APPROVED; autoApprove + expireStaleOffers jobs
   // ============================================================

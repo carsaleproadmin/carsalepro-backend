@@ -4,6 +4,7 @@ import { Role } from '@prisma/client';
 import { CurrentUser } from '../auth/auth.decorators';
 import { LegalContractService } from '../legal/legal-contract.service';
 import {
+  AttachOrderReportDto,
   CreateOrderDto,
   DisputeOrderDto,
   ListOrdersQueryDto,
@@ -111,5 +112,16 @@ export class OrdersController {
     @Body() dto: UpdateOrderStatusDto,
   ) {
     return this.orders.updateStatusByInspector(id, userId, dto.status);
+  }
+
+  @Post(':id/report')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Attach an existing mobile report to an assigned order' })
+  async attachReport(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: AttachOrderReportDto,
+  ) {
+    return this.orders.attachReportByCode(id, userId, dto.code);
   }
 }

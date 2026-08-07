@@ -1,9 +1,18 @@
 // Category: STATE TRANSITIONS. Pure — no DB, no Nest container.
 import { OrderStatus } from '@prisma/client';
-import { ORDER_TRANSITIONS, canTransition } from './order-state-machine';
+import {
+  ATTACHABLE_REPORT_ORDER_STATUSES,
+  ORDER_TRANSITIONS,
+  canTransition,
+} from './order-state-machine';
 
 const ALL = Object.values(OrderStatus);
 const TERMINAL: OrderStatus[] = [OrderStatus.COMPLETED, OrderStatus.REFUNDED];
+const REPORT_ATTACHABLE: OrderStatus[] = [
+  OrderStatus.ASSIGNED,
+  OrderStatus.EN_ROUTE,
+  OrderStatus.IN_PROGRESS,
+];
 
 /** The edge list as documented in the module's own comment. */
 const DOCUMENTED_EDGES: Array<[OrderStatus, OrderStatus]> = [
@@ -133,6 +142,19 @@ describe('order state machine', () => {
       OrderStatus.DISPUTED,
     ]) {
       expect(canTransition(from, OrderStatus.CANCELLED)).toBe(false);
+    }
+  });
+
+  it('allows report attachment only while inspector work is active', () => {
+    expect(ATTACHABLE_REPORT_ORDER_STATUSES).toEqual(REPORT_ATTACHABLE);
+    for (const status of ALL) {
+      expect({
+        status,
+        attachable: ATTACHABLE_REPORT_ORDER_STATUSES.includes(status),
+      }).toEqual({
+        status,
+        attachable: REPORT_ATTACHABLE.includes(status),
+      });
     }
   });
 
