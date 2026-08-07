@@ -98,58 +98,90 @@ export class StripeService implements OnModuleInit {
     return this.client;
   }
 
+  /**
+   * One Checkout Session per payment, however many times we ask for it.
+   *
+   * Every `sessions.create` call opens a NEW payable page. Two tabs, a
+   * double-click or a retried request therefore used to hand the same buyer two
+   * live payment pages for one `Payment` row — and Stripe would happily capture
+   * both, leaving the second charge with no row in our ledger at all.
+   *
+   * The idempotency key is the payment id, so Stripe itself collapses repeats:
+   * for 24 hours it replays the ORIGINAL session object instead of creating a
+   * second one. That window matches the Checkout Session's own 24-hour
+   * lifetime, so there is no gap where the key has expired but the session is
+   * still payable.
+   *
+   * Deliberately not `retrieve`-then-reuse: that needs a stored session id, an
+   * extra round-trip and a status check, and still races with itself between
+   * the read and the create. This is one call and no state of ours.
+   */
+  private idempotently(paymentId: string): { idempotencyKey: string } {
+    return { idempotencyKey: `checkout_${paymentId}` };
+  }
+
   /** Create a one-time payment Checkout Session for a pay-per-view report. */
-  async createPpvCheckout(params: CreatePpvCheckoutParams): Promise<{ checkoutUrl: string }> {
-    const session = await this.requireClient().checkout.sessions.create({
-      mode: 'payment',
-      success_url: params.successUrl,
-      cancel_url: params.cancelUrl,
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: 'eur',
-            unit_amount: params.amountCents,
-            product_data: { name: `CarSalePro report ${params.reportCode}` },
+  async createPpvCheckout(
+    params: CreatePpvCheckoutParams,
+  ): Promise<{ checkoutUrl: string; sessionId: string }> {
+    const session = await this.requireClient().checkout.sessions.create(
+      {
+        mode: 'payment',
+        success_url: params.successUrl,
+        cancel_url: params.cancelUrl,
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: 'eur',
+              unit_amount: params.amountCents,
+              product_data: { name: `CarSalePro report ${params.reportCode}` },
+            },
           },
+        ],
+        metadata: {
+          paymentId: params.paymentId,
+          reportId: params.reportId,
+          userId: params.userId,
+          purpose: 'ppv',
         },
-      ],
-      metadata: {
-        paymentId: params.paymentId,
-        reportId: params.reportId,
-        userId: params.userId,
-        purpose: 'ppv',
       },
-    });
+      this.idempotently(params.paymentId),
+    );
     if (!session.url) throw new Error('Stripe did not return a Checkout URL');
-    return { checkoutUrl: session.url };
+    return { checkoutUrl: session.url, sessionId: session.id };
   }
 
   /** Create a one-time payment Checkout Session for a Gold listing upgrade. */
-  async createGoldCheckout(params: CreateGoldCheckoutParams): Promise<{ checkoutUrl: string }> {
-    const session = await this.requireClient().checkout.sessions.create({
-      mode: 'payment',
-      success_url: params.successUrl,
-      cancel_url: params.cancelUrl,
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: 'eur',
-            unit_amount: params.amountCents,
-            product_data: { name: 'CarSalePro Gold listing' },
+  async createGoldCheckout(
+    params: CreateGoldCheckoutParams,
+  ): Promise<{ checkoutUrl: string; sessionId: string }> {
+    const session = await this.requireClient().checkout.sessions.create(
+      {
+        mode: 'payment',
+        success_url: params.successUrl,
+        cancel_url: params.cancelUrl,
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: 'eur',
+              unit_amount: params.amountCents,
+              product_data: { name: 'CarSalePro Gold listing' },
+            },
           },
+        ],
+        metadata: {
+          paymentId: params.paymentId,
+          listingId: params.listingId,
+          userId: params.userId,
+          purpose: 'gold',
         },
-      ],
-      metadata: {
-        paymentId: params.paymentId,
-        listingId: params.listingId,
-        userId: params.userId,
-        purpose: 'gold',
       },
-    });
+      this.idempotently(params.paymentId),
+    );
     if (!session.url) throw new Error('Stripe did not return a Checkout URL');
-    return { checkoutUrl: session.url };
+    return { checkoutUrl: session.url, sessionId: session.id };
   }
 
   /**
@@ -162,31 +194,34 @@ export class StripeService implements OnModuleInit {
    */
   async createVinHistoryCheckout(
     params: CreateVinHistoryCheckoutParams,
-  ): Promise<{ checkoutUrl: string }> {
-    const session = await this.requireClient().checkout.sessions.create({
-      mode: 'payment',
-      success_url: params.successUrl,
-      cancel_url: params.cancelUrl,
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: 'eur',
-            unit_amount: params.amountCents,
-            product_data: { name: `CarSalePro VIN history ${params.vin}` },
+  ): Promise<{ checkoutUrl: string; sessionId: string }> {
+    const session = await this.requireClient().checkout.sessions.create(
+      {
+        mode: 'payment',
+        success_url: params.successUrl,
+        cancel_url: params.cancelUrl,
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: 'eur',
+              unit_amount: params.amountCents,
+              product_data: { name: `CarSalePro VIN history ${params.vin}` },
+            },
           },
+        ],
+        metadata: {
+          paymentId: params.paymentId,
+          purchaseId: params.purchaseId,
+          userId: params.userId,
+          vin: params.vin,
+          purpose: 'vin_history',
         },
-      ],
-      metadata: {
-        paymentId: params.paymentId,
-        purchaseId: params.purchaseId,
-        userId: params.userId,
-        vin: params.vin,
-        purpose: 'vin_history',
       },
-    });
+      this.idempotently(params.paymentId),
+    );
     if (!session.url) throw new Error('Stripe did not return a Checkout URL');
-    return { checkoutUrl: session.url };
+    return { checkoutUrl: session.url, sessionId: session.id };
   }
 
   /**
