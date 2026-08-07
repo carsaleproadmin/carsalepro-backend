@@ -279,7 +279,16 @@ export class VinHistoryService {
       };
     }
 
-    const { checkoutUrl } = await this.stripe.createVinHistoryCheckout({
+    // Money already in, fulfilment not finished. Sending this caller to a fresh
+    // Checkout would charge them a second time for a purchase that is paid for
+    // — the state is reached by a settled payment whose refund failed, or by a
+    // webhook still in flight. The honest answer is "we have your money, the
+    // report is coming", with no payment page attached.
+    if (payment.status === 'succeeded') {
+      return { purchaseId: purchase.id, status: 'pending', amountCents, currency: 'EUR' };
+    }
+
+    const { checkoutUrl, sessionId } = await this.stripe.createVinHistoryCheckout({
       paymentId: payment.id,
       purchaseId: purchase.id,
       userId,
@@ -289,13 +298,13 @@ export class VinHistoryService {
       cancelUrl: `${this.webOrigin}/vin/${vin}`,
     });
 
-    const session = checkoutUrl.match(/cs_[A-Za-z0-9_]+/)?.[0];
-    if (session) {
-      await this.prisma.payment.update({
-        where: { id: payment.id },
-        data: { stripeCheckoutSessionId: session },
-      });
-    }
+    // Stripe hands us the session id. It used to be scraped out of the URL with
+    // a regex whose failure was silent: no match, no id, and reconciliation
+    // left with nothing to ask Stripe about for that payment.
+    await this.prisma.payment.update({
+      where: { id: payment.id },
+      data: { stripeCheckoutSessionId: sessionId },
+    });
 
     return { purchaseId: purchase.id, status: 'pending', checkoutUrl, amountCents, currency: 'EUR' };
   }
@@ -421,9 +430,27 @@ export class VinHistoryService {
         // that has already settled means the money for this purchase is in —
         // opening a second payment beside it is the double charge itself. Only
         // `refunded` and `failed` are genuinely finished and warrant a new one.
-        if (existing && existing.status === 'succeeded') return existing;
+        //
+        // The amount is checked here too, not only on the `pending` branch: a
+        // settled payment for a different amount is a price change between the
+        // two attempts, and answering with it would report the wrong sum to the
+        // caller. It cannot be re-charged either way — the caller refuses to
+        // open a Checkout for a `succeeded` payment.
+        if (existing && existing.status === 'succeeded' && existing.amountCents === amountCents) {
+          return existing;
+        }
         if (existing && existing.status === 'pending' && existing.amountCents === amountCents) {
           return existing;
+        }
+        // Superseded: a stale `pending` row (wrong amount) would otherwise stay
+        // open forever once the purchase points elsewhere, and every
+        // reconciliation pass would have to explain it. The CAS loser below is
+        // deleted outright; this one is kept as `failed` because it may already
+        // have a Checkout session behind it.
+        if (existing && existing.status === 'pending') {
+          await this.prisma.payment
+            .update({ where: { id: existing.id }, data: { status: 'failed' } })
+            .catch(() => undefined);
         }
       }
 
@@ -469,6 +496,22 @@ export class VinHistoryService {
     if (!purchase) return { ok: false };
     if (TERMINAL_PURCHASE_STATUSES.has(purchase.status)) {
       return { ok: purchase.status === 'ready' };
+    }
+
+    // The purchase status is not the whole story: money can leave after the row
+    // was written. A chargeback or an out-of-band refund marks the PAYMENT
+    // `refunded` while the purchase sits at `pending`, and fulfilling that would
+    // pay the provider for a report we have already been made to give back.
+    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+    if (payment?.status === 'refunded') {
+      this.logger.warn(
+        `fulfill: payment ${paymentId} is refunded — refusing to deliver purchase ${purchaseId}`,
+      );
+      await this.prisma.vinHistoryPurchase.updateMany({
+        where: { id: purchaseId, status: { not: 'ready' } },
+        data: { status: 'refunded', failureReason: 'payment_refunded' },
+      });
+      return { ok: false };
     }
 
     // Settled at Stripe, so the payment is truthfully `succeeded` — but never
@@ -555,15 +598,24 @@ export class VinHistoryService {
       });
     }
 
-    await this.alertAdmins({
-      purchaseId: purchase.id,
-      userId: purchase.userId,
-      vin: purchase.vin,
-      provider: this.provider.name,
-      amountCents: payment?.amountCents ?? 0,
-      reason,
-      refunded,
-    });
+    // An empty answer is a normal outcome, not an incident: the provider is up,
+    // it simply holds nothing for this VIN, and the buyer has already been
+    // refunded. Alerting on it would page every admin on every such lookup —
+    // and by our own reading of the shortlisted providers, empty answers are
+    // the common complaint, so the alert would train them to ignore the channel
+    // that also carries "the refund did not go through".
+    const isRoutine = err instanceof EmptyProviderResponseError && refunded;
+    if (!isRoutine) {
+      await this.alertAdmins({
+        purchaseId: purchase.id,
+        userId: purchase.userId,
+        vin: purchase.vin,
+        provider: this.provider.name,
+        amountCents: payment?.amountCents ?? 0,
+        reason,
+        refunded,
+      });
+    }
   }
 
   /** Issue the refund and record the ledger row. Returns false if it failed. */

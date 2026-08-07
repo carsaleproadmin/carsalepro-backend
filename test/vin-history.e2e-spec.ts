@@ -679,4 +679,63 @@ describe('VIN history — paid provenance (e2e)', () => {
     expect(purchase.payload).not.toBeNull();
     expect(await prisma.vinHistoryPurchase.count({ where: { userId: user.userId, vin } })).toBe(1);
   });
+
+  it('21. a pending payment superseded by a price change is closed, not left hanging', async () => {
+    /*
+     * A retry after the tariff moved cannot reuse the old payment — the sum no
+     * longer matches what we are about to charge. The purchase then points at a
+     * new payment, and the old row would sit `pending` forever: reconciliation
+     * has to explain it, and the finance summary counts a charge that never
+     * happened. It is closed as `failed` rather than deleted, because unlike the
+     * CAS loser (which is dropped before it can reach Checkout) this one may
+     * already have a payment page behind it.
+     */
+    const user = await newUser();
+    const vin = track(uniqueVin('s'));
+    const priceCents = await app.get(SettingsService).getCents('vinHistoryPriceEur');
+
+    // A pending attempt at the OLD price, wired to a fresh purchase.
+    const stale = await prisma.payment.create({
+      data: {
+        purpose: 'vin_history',
+        userId: user.userId,
+        amountCents: priceCents + 500,
+        status: 'pending',
+      },
+    });
+    await prisma.vinHistoryPurchase.create({
+      data: {
+        userId: user.userId,
+        vin,
+        status: 'pending',
+        provider: 'mock',
+        paymentId: stale.id,
+      },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/vin-history/${vin}/unlock`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    expect(res.body.status).toBe('ready');
+
+    const purchase = await prisma.vinHistoryPurchase.findUniqueOrThrow({
+      where: { userId_vin: { userId: user.userId, vin } },
+    });
+    // A new payment at the current price took over…
+    expect(purchase.paymentId).not.toBe(stale.id);
+    expect(
+      (await prisma.payment.findUniqueOrThrow({ where: { id: purchase.paymentId! } })).amountCents,
+    ).toBe(priceCents);
+    // …and the superseded one is no longer pending.
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: stale.id } })).status).toBe(
+      'failed',
+    );
+    // The buyer was charged once, for one purchase.
+    expect(
+      await prisma.payment.count({
+        where: { userId: user.userId, purpose: 'vin_history', status: 'succeeded' },
+      }),
+    ).toBe(1);
+  });
 });
