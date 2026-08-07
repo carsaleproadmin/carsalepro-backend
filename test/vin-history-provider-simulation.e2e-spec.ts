@@ -518,6 +518,30 @@ describe('VIN history — simulated real provider (e2e)', () => {
       expect(await prisma.vinHistoryReport.count({ where: { vin } })).toBe(0);
     });
 
+    it('3.5 an empty report does not page the admins', async () => {
+      // The provider is UP and the buyer already has their money back — there
+      // is nothing for an operator to do. Alerting here would fire on every
+      // such lookup, and empty answers are the common complaint about this
+      // whole class of provider, so the channel that also carries "the refund
+      // did not go through" would become noise. Contrast 5.8, where a genuine
+      // provider failure still alerts.
+      const user = await newUser();
+      const vin = track(uniqueVin('b5'));
+      const before = await prisma.notification.count({ where: { type: 'vin_history.failed' } });
+
+      provider.respondWith(RAW_EMPTY);
+      await unlock(vin, user.token).expect(502);
+
+      const after = await prisma.notification.count({ where: { type: 'vin_history.failed' } });
+      expect(after).toBe(before);
+
+      // The buyer is still made whole — silence is about the alert, not the refund.
+      const purchase = await prisma.vinHistoryPurchase.findUniqueOrThrow({
+        where: { userId_vin: { userId: user.userId, vin } },
+      });
+      expect(purchase.status).toBe('refunded');
+    });
+
     it('3.5 a VIN that gains its first record then sells', async () => {
       const user = await newUser();
       const vin = track(uniqueVin('b5'));
@@ -859,6 +883,48 @@ describe('VIN history — simulated real provider (e2e)', () => {
       ).toBe(alertsAfterFirst);
 
       await prisma.stripeWebhookEvent.deleteMany({ where: { id: ctx.eventId } });
+    });
+
+    it('4.8 a purchase whose payment was refunded out of band is not delivered', async () => {
+      /*
+       * The purchase status is not the whole story. A chargeback (or a refund
+       * issued from the Stripe dashboard) marks the PAYMENT `refunded` while
+       * the purchase is still `pending`, so none of the terminal-status guards
+       * above see anything wrong. Delivering then means paying the provider for
+       * a report whose money we have already been made to give back.
+       */
+      const user = await newUser();
+      const vin = track(uniqueVin('w8'));
+      const amountCents = await settings.getCents('vinHistoryPriceEur');
+      const payment = await prisma.payment.create({
+        data: { purpose: 'vin_history', userId: user.userId, amountCents, status: 'refunded' },
+      });
+      const purchase = await prisma.vinHistoryPurchase.create({
+        data: {
+          userId: user.userId,
+          vin,
+          status: 'pending',
+          provider: provider.name,
+          paymentId: payment.id,
+        },
+      });
+
+      provider.respondWith(RAW_RICH_DE);
+      provider.resetCounters();
+      await app.get(VinHistoryService).fulfillFromWebhook(payment.id, purchase.id, vin);
+
+      const after = await prisma.vinHistoryPurchase.findUniqueOrThrow({
+        where: { id: purchase.id },
+      });
+      expect(after.status).toBe('refunded');
+      expect(after.payload).toBeNull();
+      expect(after.readyAt).toBeNull();
+      // The decisive assertion: the billable lookup never happened.
+      expect(provider.fetchCalls).toEqual([]);
+      // And the ledger was not walked back to `succeeded`.
+      expect(
+        (await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).status,
+      ).toBe('refunded');
     });
   });
 
