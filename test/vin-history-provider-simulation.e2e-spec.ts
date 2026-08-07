@@ -572,46 +572,67 @@ describe('VIN history — simulated real provider (e2e)', () => {
      * a money path, so the fix belongs in its own ticket and its own review —
      * not folded into the branch this suite was written on.
      */
-    it('3.7 DEFECT: a double-click opens two payments for one purchase', async () => {
+    /**
+     * 3.7 was a characterization test until DEN-68 was fixed: it asserted the
+     * double charge with ranges so it would not flake. It now asserts the
+     * property the feature is supposed to have. Exact equalities on purpose —
+     * the atomic claim makes the outcome independent of the interleaving, so a
+     * range here would hide a regression rather than tolerate one.
+     */
+    it('3.7 a double-click charges once — concurrent unlocks share one payment', async () => {
       const user = await newUser();
       const vin = track(uniqueVin('b7'));
 
       const [a, b] = await Promise.all([unlock(vin, user.token), unlock(vin, user.token)]);
       expect([a.status, b.status].every((s) => [201, 502].includes(s))).toBe(true);
 
-      // This much is sound and holds every run: one VIN, one purchase row.
       expect(await prisma.vinHistoryPurchase.count({ where: { userId: user.userId, vin } })).toBe(1);
 
       const payments = await prisma.payment.findMany({
         where: { userId: user.userId, purpose: 'vin_history' },
       });
+      // One payment, not two: the loser of the race deletes the row it opened
+      // and reuses the winner's rather than leaving an orphaned charge that the
+      // buyer cannot see and the finance summary counts as revenue.
+      expect(payments).toHaveLength(1);
+      expect(payments[0].status).toBe('succeeded');
 
-      // Both counts SHOULD be exactly 1. Ranges rather than equalities because
-      // the interleaving decides the outcome — asserting 2 would make this test
-      // flaky, which would be a worse lie than the defect it records.
-      expect(payments.length).toBeGreaterThanOrEqual(1);
-      expect(payments.length).toBeLessThanOrEqual(2);
-      // The provider can be billed twice as well: both requests miss the cold
-      // cache and both call the billable lookup. At ~7.50 EUR a lookup that is
-      // a real cost, not just an untidy row.
+      // Reachable from the purchase — an unreferenced payment is the defect.
+      const purchase = await prisma.vinHistoryPurchase.findFirstOrThrow({
+        where: { userId: user.userId, vin },
+      });
+      expect(purchase.paymentId).toBe(payments[0].id);
+
+      // STILL OPEN, deliberately: the money is fixed, the provider bill is not.
+      // Both attempts can miss the same cold cache and each call the billable
+      // lookup, so at ~7.50 EUR a call one double-click can still cost twice
+      // what it earns. Deduplicating that needs a lock across instances (Redis)
+      // rather than a compare-and-set on one row, which is a design decision
+      // and not part of "the buyer is charged once". A range keeps this test
+      // honest instead of asserting a property the code does not have.
       expect(provider.fetchCalls.length).toBeGreaterThanOrEqual(1);
       expect(provider.fetchCalls.length).toBeLessThanOrEqual(2);
       expect(new Set(provider.fetchCalls)).toEqual(new Set([vin]));
+    });
 
-      // Whatever the interleaving, no payment is left half-charged.
-      expect(payments.every((p) => p.status === 'succeeded')).toBe(true);
+    it('3.8 a burst of concurrent unlocks still charges once', async () => {
+      const user = await newUser();
+      const vin = track(uniqueVin('b8'));
 
-      if (payments.length === 2) {
-        // The buyer is charged twice over at full price, not split in half.
-        const total = payments.reduce((sum, p) => sum + p.amountCents, 0);
-        expect(total).toBe(payments[0].amountCents * 2);
-        // And only one of the two is reachable from the purchase, so nothing in
-        // the product would ever surface the second charge to the buyer.
-        const purchase = await prisma.vinHistoryPurchase.findFirstOrThrow({
-          where: { userId: user.userId, vin },
-        });
-        expect(payments.filter((p) => p.id === purchase.paymentId)).toHaveLength(1);
-      }
+      // Wider than a double-click: a retrying client, or a user hammering the
+      // button. The claim has to hold for any number of racers, not just two.
+      const responses = await Promise.all(
+        Array.from({ length: 5 }, () => unlock(vin, user.token)),
+      );
+      expect(responses.every((r) => [201, 502, 503].includes(r.status))).toBe(true);
+
+      expect(await prisma.vinHistoryPurchase.count({ where: { userId: user.userId, vin } })).toBe(1);
+      const payments = await prisma.payment.findMany({
+        where: { userId: user.userId, purpose: 'vin_history' },
+      });
+      expect(payments).toHaveLength(1);
+      const total = payments.reduce((sum, p) => sum + p.amountCents, 0);
+      expect(total).toBe(await settings.getCents('vinHistoryPriceEur'));
     });
   });
 

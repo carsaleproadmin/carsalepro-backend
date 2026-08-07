@@ -217,10 +217,26 @@ export class VinHistoryService {
     // a second sale: reuse both rows so a double-click cannot create two charges.
     let purchase = existing;
     if (purchase) {
-      purchase = await this.prisma.vinHistoryPurchase.update({
-        where: { id: purchase.id },
+      // Conditional, because this row may have been made `ready` by a request
+      // running alongside this one — the check above read it before that
+      // happened. A blind write here would reset a completed sale to `pending`
+      // and send this attempt on to open a second payment for it.
+      await this.prisma.vinHistoryPurchase.updateMany({
+        where: { id: purchase.id, status: { not: 'ready' } },
         data: { status: 'pending', failureReason: null, provider: this.provider.name },
       });
+      purchase = await this.prisma.vinHistoryPurchase.findUniqueOrThrow({
+        where: { id: purchase.id },
+      });
+      if (purchase.status === 'ready') {
+        return {
+          purchaseId: purchase.id,
+          status: 'ready',
+          alreadyOwned: true,
+          amountCents,
+          currency: 'EUR',
+        };
+      }
     } else {
       purchase = await this.createPurchase(userId, vin);
       if (purchase === null) {
@@ -372,26 +388,69 @@ export class VinHistoryService {
    * Reuse the purchase's still-pending payment rather than opening a second one.
    * Two pending payments for one purchase is how a user ends up charged twice
    * when both checkouts are eventually completed.
+   *
+   * The attachment is a compare-and-set on the value this attempt actually
+   * observed — `null` included — rather than a blind write. Reading
+   * `purchase.paymentId` and then updating is correct in sequence and empty
+   * under concurrency: a double-click has both requests read the row before
+   * either writes it, both conclude there is no payment to reuse, and both open
+   * one. The unique index on `(userId, vin)` keeps that to a single purchase, so
+   * the second payment is not even visible in the product — it is an orphaned
+   * successful charge that the admin finance summary counts as revenue.
+   *
+   * Losing the CAS is therefore normal, not exceptional: the loser deletes the
+   * row it just created and re-reads. That deletion is safe because the payment
+   * has not been through Checkout yet — it is created here and only handed to
+   * Stripe by the caller afterwards.
    */
   private async reusableOrNewPayment(
     purchase: VinHistoryPurchase,
     userId: string,
     amountCents: number,
   ): Promise<Payment> {
-    if (purchase.paymentId) {
-      const existing = await this.prisma.payment.findUnique({ where: { id: purchase.paymentId } });
-      if (existing && existing.status === 'pending' && existing.amountCents === amountCents) {
-        return existing;
+    let observed = purchase.paymentId;
+
+    // Bounded: each iteration either returns or observes a payment id written
+    // by someone else, and a purchase cannot change hands indefinitely inside
+    // one request. The cap exists so a pathological interleaving fails loudly
+    // instead of spinning.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (observed) {
+        const existing = await this.prisma.payment.findUnique({ where: { id: observed } });
+        // `succeeded` counts as reusable, not as spent. A concurrent attempt
+        // that has already settled means the money for this purchase is in —
+        // opening a second payment beside it is the double charge itself. Only
+        // `refunded` and `failed` are genuinely finished and warrant a new one.
+        if (existing && existing.status === 'succeeded') return existing;
+        if (existing && existing.status === 'pending' && existing.amountCents === amountCents) {
+          return existing;
+        }
       }
+
+      const payment = await this.prisma.payment.create({
+        data: { purpose: 'vin_history', userId, amountCents, status: 'pending' },
+      });
+      const claimed = await this.prisma.vinHistoryPurchase.updateMany({
+        where: { id: purchase.id, paymentId: observed },
+        data: { paymentId: payment.id },
+      });
+      if (claimed.count === 1) return payment;
+
+      // Someone else attached a payment between our read and our write. Drop
+      // ours before it can be charged, then look at what they attached.
+      await this.prisma.payment.delete({ where: { id: payment.id } }).catch(() => undefined);
+      const current = await this.prisma.vinHistoryPurchase.findUnique({
+        where: { id: purchase.id },
+      });
+      observed = current?.paymentId ?? null;
     }
-    const payment = await this.prisma.payment.create({
-      data: { purpose: 'vin_history', userId, amountCents, status: 'pending' },
+
+    throw new ServiceUnavailableException({
+      error: {
+        code: 'payment_conflict',
+        message: 'Could not start this purchase. Please try again — you have not been charged.',
+      },
     });
-    await this.prisma.vinHistoryPurchase.update({
-      where: { id: purchase.id },
-      data: { paymentId: payment.id },
-    });
-    return payment;
   }
 
   /**
