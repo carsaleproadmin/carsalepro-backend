@@ -260,7 +260,7 @@ export class ListingsService {
       };
     }
 
-    const { checkoutUrl } = await this.stripe.createGoldCheckout({
+    const { checkoutUrl, sessionId } = await this.stripe.createGoldCheckout({
       paymentId: payment.id,
       listingId: id,
       userId,
@@ -269,13 +269,13 @@ export class ListingsService {
       cancelUrl: `${this.webOrigin}/account/listings`,
     });
 
-    const session = checkoutUrl.match(/cs_[A-Za-z0-9_]+/)?.[0];
-    if (session) {
-      await this.prisma.payment.update({
-        where: { id: payment.id },
-        data: { stripeCheckoutSessionId: session },
-      });
-    }
+    // Stripe hands us the session id; it used to be scraped out of the URL with
+    // a regex whose failure was silent, leaving the payment with no session id
+    // and reconciliation with nothing to ask Stripe about.
+    await this.prisma.payment.update({
+      where: { id: payment.id },
+      data: { stripeCheckoutSessionId: sessionId },
+    });
 
     return { checkoutUrl, amountCents, currency: 'EUR' };
   }
