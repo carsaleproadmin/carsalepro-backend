@@ -53,6 +53,83 @@ export interface CreateVinHistoryCheckoutParams {
   cancelUrl: string;
 }
 
+/**
+ * The verdict on a failed Stripe call. `retryable` is the only field callers
+ * are allowed to branch a retry on; `code` and `message` are for mapping to an
+ * HTTP contract and for logs.
+ */
+export interface StripeFailure {
+  retryable: boolean;
+  code: string;
+  message: string;
+}
+
+/**
+ * Stripe error codes that describe a state no retry can change. Checked BEFORE
+ * the transport-level classification, so a mis-set 5xx status on an
+ * `invalid_request_error` cannot turn a permanent failure into an infinite
+ * retry loop.
+ */
+const FATAL_STRIPE_CODES = new Set([
+  'resource_missing',
+  'payment_intent_unexpected_state',
+  'charge_expired_for_capture',
+  'card_declined',
+]);
+
+/**
+ * Classify a thrown Stripe error once, in one place, so every call site agrees
+ * on what may be retried.
+ *
+ * Retryable: `StripeConnectionError`, `StripeAPIError`, a rate limit, and any
+ * HTTP 5xx from Stripe — transient conditions where the same request can
+ * succeed unchanged.
+ *
+ * Everything else, INCLUDING anything unrecognised, is fatal. Defaulting an
+ * unknown error to "retryable" would mean retrying money movement forever
+ * against a condition nobody has understood; defaulting to fatal surfaces it
+ * instead.
+ */
+export function classifyStripeError(err: unknown): StripeFailure {
+  const e = (err ?? {}) as {
+    type?: unknown;
+    code?: unknown;
+    statusCode?: unknown;
+    message?: unknown;
+    raw?: { type?: unknown; code?: unknown };
+  };
+  const type = typeof e.type === 'string' ? e.type : undefined;
+  const rawType = typeof e.raw?.type === 'string' ? e.raw.type : undefined;
+  const code =
+    typeof e.code === 'string'
+      ? e.code
+      : typeof e.raw?.code === 'string'
+        ? e.raw.code
+        : undefined;
+  const statusCode = typeof e.statusCode === 'number' ? e.statusCode : undefined;
+  const message =
+    typeof e.message === 'string' && e.message.length > 0 ? e.message : 'Stripe request failed';
+
+  if (code && FATAL_STRIPE_CODES.has(code)) {
+    return { retryable: false, code, message };
+  }
+  if (type === 'StripeCardError' || rawType === 'card_error') {
+    return { retryable: false, code: code ?? 'card_error', message };
+  }
+
+  if (type === 'StripeRateLimitError' || rawType === 'rate_limit_error' || statusCode === 429) {
+    return { retryable: true, code: code ?? 'rate_limit', message };
+  }
+  if (type === 'StripeConnectionError') {
+    return { retryable: true, code: code ?? 'connection_error', message };
+  }
+  if (type === 'StripeAPIError' || (statusCode !== undefined && statusCode >= 500)) {
+    return { retryable: true, code: code ?? 'api_error', message };
+  }
+
+  return { retryable: false, code: code ?? type ?? 'unknown_error', message };
+}
+
 export interface CreateTransferParams {
   amountCents: number;
   destinationAccountId: string;

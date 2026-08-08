@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { OrdersService } from '../src/orders/orders.service';
@@ -233,9 +234,121 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .expect(200);
 
     expect(res.body.available).toBe(false);
+    expect(res.body.waitlisted).toBe(true);
 
     const entry = await prisma.waitlistEntry.findFirst({ where: { email: customer.email } });
     expect(entry).toBeTruthy();
+  });
+
+  // ============================================================
+  // 2b. F-10 — a visitor can price an inspection with no account
+  // ============================================================
+  it('2b. quote with NO Authorization header returns 200', async () => {
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    expect(res.body.available).toBe(true);
+    expect(res.body.totalCents).toBe(FARE.totalCents);
+  });
+
+  it('2c. an anonymous no-coverage quote is not waitlisted and creates no WaitlistEntry', async () => {
+    // Munich, far outside the radius of a Berlin order.
+    await makeInspector(48.137, 11.575);
+    // Id snapshot rather than a count: sibling suites delete waitlist rows in
+    // their own cleanup, and only this suite ever creates one, so "no NEW id"
+    // is the assertion that cannot flake.
+    const before = new Set(
+      (await prisma.waitlistEntry.findMany({ select: { id: true } })).map((e) => e.id),
+    );
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    expect(res.body.available).toBe(false);
+    // No account => no email => nothing to waitlist against. The UI prompts.
+    expect(res.body.waitlisted).toBe(false);
+    const after = await prisma.waitlistEntry.findMany({ select: { id: true } });
+    expect(after.filter((e) => !before.has(e.id))).toEqual([]);
+  });
+
+  // ============================================================
+  // 2d. F-13 — an account cannot be quoted its own inspection
+  // ============================================================
+  it('2d. an account that is its own inspector is excluded from its own quote candidates', async () => {
+    // One account, both roles, at the order coordinates.
+    const self = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Self Dealer' });
+    createdWaitlistEmails.add(self.email);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${self.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    expect(res.body.available).toBe(false);
+
+    // A different customer at the same point still gets this inspector, so the
+    // exclusion is about identity, not about the inspector being ineligible.
+    const other = await makeCustomer();
+    const otherRes = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${other.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+    expect(otherRes.body.available).toBe(true);
+    expect(
+      otherRes.body.candidates.some((c: { displayName: string }) => c.displayName === 'Self Dealer'),
+    ).toBe(true);
+  });
+
+  it('2e. a forged offer to the customer is refused by acceptOffer (403) and adminAssign (400)', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    // Give the customer an inspector identity too, then forge the offer the
+    // dispatcher would never make — the candidate filter is one new assignment
+    // route away from being bypassed, so the write paths must refuse as well.
+    await prisma.user.update({ where: { id: customer.userId }, data: { kycVerified: true } });
+    await prisma.inspectorProfile.create({
+      data: {
+        userId: customer.userId,
+        baseAddress: 'Teststraße 1, Berlin',
+        available: true,
+        stripeOnboarded: true,
+      },
+    });
+    const forged = await prisma.orderOffer.create({
+      data: {
+        orderId,
+        inspectorId: customer.userId,
+        status: 'PENDING',
+        expiresAt: new Date(Date.now() + 600_000),
+      },
+    });
+
+    const accept = await request(app.getHttpServer())
+      .post(`/api/v1/offers/${forged.id}/accept`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(403);
+    expect(accept.body.error.code).toBe('self_assignment_forbidden');
+
+    await expect(
+      orders.adminAssign(orderId, customer.userId, 'admin-e2e'),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: { code: 'self_assignment_forbidden' } },
+    });
+
+    const after = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(after!.inspectorId).toBeNull();
+    expect(after!.status).toBe('PAID');
   });
 
   // ============================================================
@@ -590,6 +703,56 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(reportAfter!.orderId).toBeNull();
 
     await prisma.report.delete({ where: { id: report.id } });
+  });
+
+  // ============================================================
+  // 11c. F-02 — a lower-case uuid Report ID attaches (it is what the app mints)
+  // ============================================================
+  it('11c. attaching a report whose code is a LOWER-CASE uuid succeeds', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+    for (const status of ['EN_ROUTE', 'IN_PROGRESS']) {
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${inspToken}`)
+        .send({ status })
+        .expect(200);
+    }
+
+    // Exactly what carsalepro-mobile mints: CSP- + a LOWER-CASE uuid v4. The
+    // DTO used to upper-case it and Report.code is matched literally, so this
+    // was a guaranteed 404 on a code the public preview endpoint resolved fine.
+    const code = `CSP-${randomUUID().toLowerCase()}`;
+    expect(code.slice('CSP-'.length)).toBe(code.slice('CSP-'.length).toLowerCase());
+    const report = await prisma.report.create({
+      data: {
+        deviceId: uniqueDeviceId('lower'),
+        code,
+        make: 'BMW',
+        model: '320d',
+        s3Key: 'test/lowercase.pdf',
+        tier: 'free',
+        uploaded: true,
+        userId: assignedId,
+      },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/report`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ code })
+      .expect(200);
+
+    const attached = await prisma.report.findUnique({ where: { id: report.id } });
+    expect(attached!.orderId).toBe(orderId);
+    // Stored verbatim — never normalized to upper case.
+    expect(attached!.code).toBe(code);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('SUBMITTED');
   });
 
   // ============================================================

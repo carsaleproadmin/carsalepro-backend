@@ -83,8 +83,22 @@ export class UpdateOrderStatusDto {
 const REPORT_CODE_PATTERN =
   /^CSP-(\d{1,12}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 
+/**
+ * Trim only — NEVER upper-case.
+ *
+ * The mobile app mints `CSP-` + a LOWER-CASE uuid v4
+ * (`carsalepro-mobile/lib/core/utils/report_code.dart`) and `Report.code` is
+ * matched literally in Postgres, so upper-casing here turned every genuine
+ * modern Report ID into a 404 on the attach path — the same code answered 200
+ * from the public preview endpoint and 404 here. `REPORT_CODE_PATTERN` already
+ * carries the `/i` flag, so validation is unaffected.
+ *
+ * `src/public/dto/report-lookup.dto.ts` (trim) and
+ * `src/listings/dto/create-listing.dto.ts` (no transform at all) were already
+ * correct; this DTO was the outlier.
+ */
 const normalizeReportCode = ({ value }: { value: unknown }) =>
-  typeof value === 'string' ? value.trim().toUpperCase() : value;
+  typeof value === 'string' ? value.trim() : value;
 
 export class AttachOrderReportDto {
   @ApiProperty({

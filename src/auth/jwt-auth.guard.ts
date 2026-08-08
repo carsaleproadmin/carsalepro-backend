@@ -10,7 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { AppConfig } from '../config/configuration';
 import { PrismaService } from '../prisma/prisma.service';
-import { IS_PUBLIC_KEY } from './auth.decorators';
+import { IS_OPTIONAL_AUTH_KEY, IS_PUBLIC_KEY } from './auth.decorators';
 import { AuthUser, JwtPayload } from './jwt.types';
 
 /**
@@ -38,8 +38,24 @@ export class JwtAuthGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    // @Public() routes are fully bypassed — no token check, no DB hit.
-    if (isPublic) return true;
+
+    if (isPublic) {
+      const isOptional = this.reflector.getAllAndOverride<boolean>(IS_OPTIONAL_AUTH_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]);
+      // Plain @Public() routes are fully bypassed — no token check, no DB hit.
+      if (!isOptional) return true;
+
+      // @OptionalAuth(): resolve the caller when a usable token is present, and
+      // fall through to anonymous otherwise. A bad token must NOT 401 here — the
+      // route is open to visitors, and failing a signed-out visitor because a
+      // stale token was lying around in their client would be worse than
+      // treating them as the visitor they are.
+      const user = await this.resolveUser(req);
+      if (user) req.user = user;
+      return true;
+    }
 
     const token = this.extractToken(req);
     if (!token) {
@@ -50,38 +66,58 @@ export class JwtAuthGuard implements CanActivate {
 
     let payload: JwtPayload;
     try {
-      const secret = this.config.get('auth', { infer: true }).jwtSecret;
-      payload = this.jwt.verify<JwtPayload>(token, {
-        secret,
-        algorithms: ['HS256'],
-      });
+      payload = this.verify(token);
     } catch {
       throw new UnauthorizedException({
         error: { code: 'invalid_token', message: 'Invalid or expired token' },
       });
     }
 
-    // Request-time enforcement of ban / erasure / role / KYC. Loading the user
-    // from the DB on every /api/v1 request makes a ban, GDPR erasure, role
-    // change, or KYC approval take effect immediately rather than waiting for
-    // the 30-day token to expire. The DB row is authoritative for role + KYC.
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-      select: { id: true, email: true, role: true, kycVerified: true, bannedAt: true, deletedAt: true },
-    });
-    if (!user || user.deletedAt || user.bannedAt) {
+    const user = await this.loadUser(payload.sub);
+    if (!user) {
       throw new UnauthorizedException({
         error: { code: 'unauthorized', message: 'Account is unavailable' },
       });
     }
 
-    req.user = {
+    req.user = user;
+    return true;
+  }
+
+  /** Best-effort identification: any failure means "anonymous", never an error. */
+  private async resolveUser(req: Request): Promise<AuthUser | undefined> {
+    const token = this.extractToken(req);
+    if (!token) return undefined;
+    try {
+      return (await this.loadUser(this.verify(token).sub)) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private verify(token: string): JwtPayload {
+    const secret = this.config.get('auth', { infer: true }).jwtSecret;
+    return this.jwt.verify<JwtPayload>(token, { secret, algorithms: ['HS256'] });
+  }
+
+  /**
+   * Request-time enforcement of ban / erasure / role / KYC. Loading the user
+   * from the DB on every /api/v1 request makes a ban, GDPR erasure, role
+   * change, or KYC approval take effect immediately rather than waiting for the
+   * 30-day token to expire. The DB row is authoritative for role + KYC.
+   */
+  private async loadUser(id: string): Promise<AuthUser | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, email: true, role: true, kycVerified: true, bannedAt: true, deletedAt: true },
+    });
+    if (!user || user.deletedAt || user.bannedAt) return null;
+    return {
       id: user.id,
       email: user.email,
       role: user.role,
       kycVerified: user.kycVerified,
     };
-    return true;
   }
 
   private extractToken(req: Request): string | undefined {

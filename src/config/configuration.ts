@@ -1,3 +1,5 @@
+import { parseOriginList, resolveCorsOrigins } from './cors';
+
 export interface AppConfig {
   nodeEnv: 'development' | 'production' | 'test';
   port: number;
@@ -61,7 +63,15 @@ export interface AppConfig {
     environment: string;
   };
   web: {
+    /**
+     * THE canonical origin — the first entry of `WEB_ORIGIN`. Absolute URLs are
+     * built from it (`auth.service.ts`, `vin-history.service.ts`,
+     * `listings.service.ts`, `payments.service.ts`), and those need exactly one
+     * answer, which is why the allow-list is a separate field.
+     */
     origin: string;
+    /** Every browser origin allowed by CORS: `WEB_ORIGIN` + `CORS_ORIGINS`. */
+    corsOrigins: string[];
     appEnv: 'development' | 'staging' | 'production';
   };
   redis: {
@@ -159,7 +169,14 @@ export default (): AppConfig => ({
     environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'development',
   },
   web: {
-    origin: process.env.WEB_ORIGIN ?? 'http://localhost:3000',
+    origin: parseOriginList(process.env.WEB_ORIGIN ?? '')[0] ?? 'http://localhost:3000',
+    // `||`, not `??`: WEB_ORIGIN is Joi-allowed to be blank, and a blank one must
+    // fall back to the same canonical origin `origin` above falls back to —
+    // otherwise the allow-list would silently be empty while links still work.
+    corsOrigins: resolveCorsOrigins(
+      process.env.WEB_ORIGIN || 'http://localhost:3000',
+      process.env.CORS_ORIGINS ?? '',
+    ),
     appEnv: (process.env.APP_ENV as AppConfig['web']['appEnv']) || 'development',
   },
   redis: {
