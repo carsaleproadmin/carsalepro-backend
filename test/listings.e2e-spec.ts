@@ -203,6 +203,67 @@ describe('Listings (e2e)', () => {
     }
   });
 
+  it('3a-2. a blank contactEmail is accepted and clears the field, rather than failing the PATCH', async () => {
+    // `@IsOptional()` skips null and undefined but NOT '', so a bare @IsEmail()
+    // rejected every seller who left the optional contact e-mail blank — the
+    // whole PATCH failed with `contactEmail must be an email`, and the seller
+    // form shows that as a generic "something went wrong". Step 2 of the Report
+    // ID claim flow and the listing edit page were both dead ends because of it.
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id;
+
+      // A blank one is accepted...
+      const blank = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ city: 'Berlin', contactEmail: '' })
+        .expect(200);
+      expect(blank.body.contactEmail).toBeNull();
+
+      // ...a real one is stored...
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ contactEmail: 'seller@example.com' })
+        .expect(200);
+
+      // ...omitting the key leaves it alone (that is what "optional" means)...
+      const untouched = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ city: 'Hamburg' })
+        .expect(200);
+      expect(untouched.body.contactEmail).toBe('seller@example.com');
+
+      // ...and blanking it again CLEARS it. Omitting the key could never do
+      // this, which is why the fix belongs in the DTO and not in the client.
+      const cleared = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ contactEmail: '   ' })
+        .expect(200);
+      expect(cleared.body.contactEmail).toBeNull();
+
+      // A genuinely malformed address is still rejected.
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ contactEmail: 'not-an-email' })
+        .expect(400);
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
   it('3b. BE-S1: a different user claiming an already-claimed code gets the same 404', async () => {
     const owner = await registerUser(app);
     const stranger = await registerUser(app);
