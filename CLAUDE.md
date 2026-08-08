@@ -9,9 +9,29 @@ One NestJS service with **two API surfaces** (see @README.md):
 - **Legacy mobile MVP** — root routes (`/vin`, `/quota`, `/reports`, `/me`, `/catalog`, `/legal`, `/health`), `X-Device-Id` auth, **frozen contract** (the shipped Flutter app depends on it byte-for-byte).
 - **Website (Phase 2+)** — `/api/v1/*`, Bearer-JWT auth. The full marketplace / inspection-exchange / payments / KYC / LegalSync / admin / notifications platform was **built in this repo** (extending it in place was a deliberate decision — do NOT suggest moving it to a separate repo).
 
-## Reference catalog (`src/catalog/catalog.data.ts`)
+## Reference catalog (`src/catalog/catalog.data.ts` + `src/catalog/i18n/`)
 
-Single source of truth for `GET /catalog`, exported to the mobile bundle via `npx ts-node scripts/export-catalog.ts` (never hand-edit `carsalepro-mobile/assets/catalog/catalog.v1.json`). Each `ChecklistItemDef` carries `defaultTier` (T1/T2/T3) and `partId?` — the mobile app turns the 98 checks into damage presets and stores them as synthetic **`C<number>` codes** (e.g. `C42`) in `ReportDamageDto.kstCode` (`@MaxLength(8)`). **The `C` prefix is reserved for that mapping — never mint real K/S/T codes starting with `C`.** `LocalizedLabel` has an optional `uk` (Ukrainian, added checklist-first 2026-07-22); other sections fall back uk→ru on the client. The 8 **required exterior angles are ordered by the inspector's walk-around** (diag_front_left → left → front → diag_front_right → right → diag_rear_right → rear → diag_rear_left) and **all eight carry a `hint`** about wheel position — the four diagonals say to turn the near front wheel outward, the four straight views say wheels square. That *difference* is the instruction, so the e2e suite asserts the semantic split per locale rather than counting hinted angles; four of the eight shipped with no hint at all until 2026-08-05, and their absence was pinned by an assertion in both repos. The diagonal hint deliberately does not name a side: the longer RU/UK wording wrapped to a second line and pushed the mobile capture screen's instruction box past what a 320 dp screen can host at the 1.3 font clamp. Angle `order` is not persisted anywhere, angle **ids are** (mobile photo kinds `exterior-<id>` / `interior-<id>`, cloud slot keys). `thicknessPanels` holds the 13 guided Lackdicke stations, each resolving to a real `parts` id — **the `extra_` panelId prefix is reserved** for user-added ad-hoc measurements (same idea as the `C` prefix). Fields are additive — the frozen `GET /catalog` shape is unchanged. Regenerate the client + re-run the export after any catalog edit.
+Single source of truth for `GET /catalog`, exported to the mobile bundle via `npx ts-node scripts/export-catalog.ts` (never hand-edit `carsalepro-mobile/assets/catalog/catalog.v1.json`).
+
+**The catalog now carries all 30 app languages, 292 localizable entries each.** The four human-translated locales (`de`/`en`/`ru`/`uk`) stay authored by hand in `catalog.data.ts`; the other 26 live as one sidecar per locale in `src/catalog/i18n/catalog.<tag>.json` and are merged in by `mergeCatalogI18n` — at boot from `CatalogModule.onModuleInit`, and at export from the export script. Splicing 26 more fields into each of 292 label objects would have taken `catalog.data.ts` from 3 273 lines to roughly 12 000, buried its ~100 explanatory comments in machine output, and made the provenance of any given string invisible. `LocalizedLabel` is therefore an index signature over tags, not a fixed set of fields.
+
+A sidecar key matching no catalog entry is **reported, never fatal**: the catalog is allowed to drop an entry between a translation run and an export, and failing the export over that would block a legitimate change. Orphans surface as a warning from both the module and the script.
+
+**Why the completeness spec matters more than it looks.** Every label has a fallback chain on the client (`zh-Hant → zh → en`, `ms → id → en`, `uk → ru → en`), so a locale whose sidecar merged nothing renders a *different language* with nothing erroring anywhere. That is exactly how 164 Ukrainian catalog labels shipped as Russian in July 2026. `catalog.i18n.spec.ts` asserts that all 26 sidecars exist and that each covers every localizable entry; the mobile repo asserts the same over the exported bundle. The fallback is insurance, not evidence.
+
+Each `ChecklistItemDef` carries `defaultTier` (T1/T2/T3) and `partId?` — the mobile app turns the 98 checks into damage presets and stores them as synthetic **`C<number>` codes** (e.g. `C42`) in `ReportDamageDto.kstCode` (`@MaxLength(8)`). **The `C` prefix is reserved for that mapping — never mint real K/S/T codes starting with `C`.** The 8 **required exterior angles are ordered by the inspector's walk-around** (diag_front_left → left → front → diag_front_right → right → diag_rear_right → rear → diag_rear_left) and **all eight carry a `hint`** about wheel position — the four diagonals say to turn the near front wheel outward, the four straight views say wheels square. That *difference* is the instruction, so the e2e suite asserts the semantic split per locale rather than counting hinted angles; four of the eight shipped with no hint at all until 2026-08-05, and their absence was pinned by an assertion in both repos. The diagonal hint deliberately does not name a side: the longer RU/UK wording wrapped to a second line and pushed the mobile capture screen's instruction box past what a 320 dp screen can host at the 1.3 font clamp. Angle `order` is not persisted anywhere, angle **ids are** (mobile photo kinds `exterior-<id>` / `interior-<id>`, cloud slot keys). `thicknessPanels` holds the 13 guided Lackdicke stations, each resolving to a real `parts` id — **the `extra_` panelId prefix is reserved** for user-added ad-hoc measurements (same idea as the `C` prefix). Fields are additive — the frozen `GET /catalog` shape is unchanged. Regenerate the client + re-run the export after any catalog edit.
+
+## Downloadable PDF fonts (`src/fonts/`)
+
+`GET /fonts/manifest` returns presigned URLs plus a SHA-256 and byte count for each CJK font face, stored under `fonts/v1/` in the reports bucket. The mobile app fetches a pack the first time it generates a Chinese, Japanese or Korean report and caches the bytes.
+
+Three things here are decisions, not defaults:
+
+- **Why serve them at all.** `package:pdf` embeds its own fonts and cannot use the platform's, so a CJK report needs a real ~10 MB file even though both mobile platforms ship CJK system faces. Bundling all four would add ~33 MB to an app most of whose users never generate one.
+- **Why mirror instead of linking gstatic.** `fonts.gstatic.com` is unreachable from mainland China — the single largest market for the locale it would be serving.
+- **Why the digest is mandatory.** A truncated TrueType file does not throw when parsed. It yields a font whose glyph metrics are all zero, and the report renders with invisible text and nothing in the logs. `scripts/upload-fonts.ts` verifies every file against the committed digest — and that its sfnt version is TrueType `glyf`, not OTF or a collection, which `package:pdf` silently mis-parses — **before** uploading any of them, so a half-published pack cannot leave the app fetching three faces of four.
+
+The manifest is a root route alongside `/catalog` and `/legal`; the frozen mobile contract is untouched.
 
 ## Hard rules
 
@@ -47,7 +67,7 @@ Use `npx prisma migrate deploy` (non-interactive) to apply, and `prisma migrate 
 ```bash
 npx tsc --noEmit -p tsconfig.build.json
 npm run lint                               # ESLint 9 flat config (eslint.config.mjs)
-npm test                                   # 87 unit / 9 suites
+npm test                                   # 97 unit / 10 suites
 npm run test:e2e -- --forceExit            # 302 e2e / 22 suites must stay green; ONE jest at a time
 ```
 
@@ -72,6 +92,8 @@ mutates `orderBaseFeeEur` as part of an acceptance test. Render auto-deploys on 
 | Tariffs (PlatformSetting) | `src/settings/` |
 | LegalSync contracts | `src/legal/legal-contract.service.ts`, `legal-contracts.content.ts` |
 | Notifications + cron | `src/notifications/`, `src/scheduler/`, `src/worker/main.ts` |
+| Catalog i18n merge (26 sidecars -> in-memory catalog) | `src/catalog/catalog.i18n.ts` |
+| Downloadable CJK PDF fonts | `src/fonts/` + `scripts/upload-fonts.ts` |
 | Outstanding security items | [SECURITY.md](./SECURITY.md) |
 
 ## Adding a website feature
