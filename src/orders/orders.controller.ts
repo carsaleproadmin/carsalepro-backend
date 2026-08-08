@@ -1,7 +1,8 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
-import { CurrentUser } from '../auth/auth.decorators';
+import { CurrentUser, OptionalAuth, Public } from '../auth/auth.decorators';
 import { LegalContractService } from '../legal/legal-contract.service';
 import {
   AttachOrderReportDto,
@@ -23,10 +24,25 @@ export class OrdersController {
     private readonly legalContract: LegalContractService,
   ) {}
 
+  /**
+   * F-10: pricing is the first question a visitor asks, and it sat behind the
+   * JWT guard — you had to create an account to find out what an inspection
+   * costs. Public, and on the tighter `lookup` bucket because it is now
+   * unauthenticated and it reaches Mapbox.
+   *
+   * `@Public()` on its own is a FULL bypass — the JWT guard returns before it
+   * ever populates `req.user`, so `@CurrentUser('id')` would be `undefined`
+   * even for a signed-in caller, and they would silently lose both the
+   * waitlist entry and the self-dealing exclusion. `@OptionalAuth()` keeps the
+   * route open to visitors while still resolving a caller who sent a token.
+   */
+  @Public()
+  @OptionalAuth()
+  @Throttle({ lookup: { limit: 20, ttl: 60_000 } })
   @Post('quote')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Price an inspection; waitlist when no coverage' })
-  async quote(@CurrentUser('id') userId: string, @Body() dto: QuoteOrderDto) {
+  @ApiOperation({ summary: 'Price an inspection (public); waitlist when no coverage' })
+  async quote(@CurrentUser('id') userId: string | undefined, @Body() dto: QuoteOrderDto) {
     return this.orders.quote(userId, dto);
   }
 

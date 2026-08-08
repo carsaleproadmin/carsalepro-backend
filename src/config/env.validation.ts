@@ -1,4 +1,28 @@
 import * as Joi from 'joi';
+import { parseOriginList } from './cors';
+
+/**
+ * `WEB_ORIGIN` is primarily ONE canonical origin (it builds absolute links in
+ * emails, Stripe return URLs and listing/VIN-history URLs, all of which need
+ * exactly one answer). For backward compatibility it may also hold a
+ * comma-separated list — the first entry is canonical, every entry is
+ * CORS-allowed — so the old `.uri()` rule, which rejects a list outright, is
+ * replaced by a per-item check.
+ */
+const originList = (label: string) =>
+  Joi.string()
+    .allow('')
+    .custom((value: string, helpers) => {
+      for (const origin of parseOriginList(value)) {
+        const { error } = Joi.string().uri().validate(origin);
+        if (error) {
+          return helpers.error('any.custom', {
+            message: `${label} contains an invalid origin: ${origin}`,
+          });
+        }
+      }
+      return value;
+    });
 
 export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
@@ -7,7 +31,12 @@ export const envValidationSchema = Joi.object({
     .valid('fatal', 'error', 'warn', 'info', 'debug', 'trace')
     .default('info'),
 
-  WEB_ORIGIN: Joi.string().uri().allow('').default('http://localhost:3000'),
+  WEB_ORIGIN: originList('WEB_ORIGIN').default('http://localhost:3000'),
+  // Purely additive browser allow-list. `https://www.carsalepro.de` was in
+  // neither WEB_ORIGIN nor the Vercel preview pattern, so every browser call
+  // from the real production domain — signup, password reset, email
+  // verification, the public report check — was blocked by CORS (F-01).
+  CORS_ORIGINS: originList('CORS_ORIGINS').default(''),
   APP_ENV: Joi.string().valid('development', 'staging', 'production').default('development'),
 
   DATABASE_URL: Joi.string().uri({ scheme: ['postgresql', 'postgres'] }).required(),

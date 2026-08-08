@@ -38,6 +38,12 @@ import { PriceBreakdown, computePrice } from './order-pricing';
  */
 export interface QuoteResult {
   available: boolean;
+  /**
+   * Only meaningful when `available` is false: true when a WaitlistEntry was
+   * recorded, false when we have no email to record one against (an anonymous
+   * quote), so the UI knows to ask for one.
+   */
+  waitlisted?: boolean;
   currency?: string;
   totalCents?: number;
   breakdown?: {
@@ -98,8 +104,17 @@ export class OrdersService {
    *
    * The arithmetic itself lives in the pure `computePrice`; this method only
    * gathers inputs. All money is integer cents.
+   *
+   * `customerId` is the caller (undefined for an anonymous quote) and is
+   * excluded from the candidate set: an account that is both a customer and an
+   * inspector must never be quoted — or later dispatched — its own job (F-13).
    */
-  private async priceQuote(lat: number, lng: number, scheduledAt: Date): Promise<PricedQuote> {
+  private async priceQuote(
+    lat: number,
+    lng: number,
+    scheduledAt: Date,
+    customerId?: string,
+  ): Promise<PricedQuote> {
     const [
       baseFeeCents,
       ratePerKmCents,
@@ -140,7 +155,13 @@ export class OrdersService {
       peakEndHour,
     };
 
-    const candidates = await this.geo.findNearestInspectors(lat, lng, radiusKm, 3);
+    const candidates = await this.geo.findNearestInspectors({
+      lat,
+      lng,
+      radiusKm,
+      limit: 3,
+      excludeCustomerId: customerId ?? null,
+    });
 
     if (candidates.length === 0) {
       return {
@@ -173,13 +194,21 @@ export class OrdersService {
     };
   }
 
-  /** Public quote. On no coverage, records a WaitlistEntry from the user email. */
-  async quote(userId: string, dto: QuoteOrderDto): Promise<QuoteResult> {
-    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt));
+  /**
+   * Public quote — reachable WITHOUT an account (F-10): a visitor who cannot see
+   * a price has no reason to create one.
+   *
+   * On no coverage a WaitlistEntry is recorded only when we actually know who is
+   * asking; `WaitlistEntry.email` is the whole point of the row and we will not
+   * invent one. `waitlisted` tells the UI whether it still needs to ask for an
+   * email.
+   */
+  async quote(userId: string | undefined, dto: QuoteOrderDto): Promise<QuoteResult> {
+    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
 
     if (!priced.available) {
-      await this.addToWaitlist(userId, dto.lat, dto.lng);
-      return { available: false };
+      const waitlisted = userId ? await this.addToWaitlist(userId, dto.lat, dto.lng) : false;
+      return { available: false, waitlisted };
     }
 
     const p = priced.price;
@@ -213,14 +242,16 @@ export class OrdersService {
     };
   }
 
-  private async addToWaitlist(userId: string, lat: number, lng: number): Promise<void> {
+  /** Returns true when a WaitlistEntry was actually created. */
+  private async addToWaitlist(userId: string, lat: number, lng: number): Promise<boolean> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { email: true },
     });
-    if (!user) return;
+    if (!user) return false;
     const entry = await this.prisma.waitlistEntry.create({ data: { email: user.email } });
     await this.geo.setWaitlistLocation(entry.id, lat, lng);
+    return true;
   }
 
   // ============================================================
@@ -234,7 +265,10 @@ export class OrdersService {
     // Re-run the quote server-side; the client price is never trusted. This
     // also re-evaluates surge and the peak window against the scheduled time,
     // so a stale quote cannot lock in yesterday's multiplier.
-    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt));
+    // `userId` is passed so the customer is excluded from their own candidate
+    // set here too — otherwise a self-dealing account would pay for an order
+    // that dispatch could never fill.
+    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
     if (!priced.available) {
       throw new ConflictException({
         error: { code: 'no_coverage', message: 'No inspector available in your area' },
@@ -367,13 +401,15 @@ export class OrdersService {
     });
     const excluded = prior.map((o) => o.inspectorId);
 
-    const candidates = await this.geo.findNearestInspectorsExcluding(
+    const candidates = await this.geo.findNearestInspectors({
       lat,
       lng,
       radiusKm,
-      1,
-      excluded,
-    );
+      limit: 1,
+      excludeUserIds: excluded,
+      // F-13: never offer the order to the account that placed it.
+      excludeCustomerId: order.customerId,
+    });
 
     if (candidates.length === 0) {
       if (order.status !== OrderStatus.UNASSIGNED) {
@@ -428,6 +464,19 @@ export class OrdersService {
     if (order.status !== OrderStatus.PAID && order.status !== OrderStatus.UNASSIGNED) {
       throw new ConflictException({
         error: { code: 'already_assigned', message: 'Order is no longer open for assignment' },
+      });
+    }
+
+    // F-13, second line of defence. The candidate query already excludes the
+    // customer, but a hand-written or legacy OrderOffer row reaches this method
+    // without ever passing through it — and self-assignment ends with the
+    // account approving its own report and collecting its own payout.
+    if (order.customerId === userId) {
+      throw new ForbiddenException({
+        error: {
+          code: 'self_assignment_forbidden',
+          message: 'You cannot accept an inspection you ordered yourself',
+        },
       });
     }
 
@@ -553,6 +602,17 @@ export class OrdersService {
    */
   async adminAssign(orderId: string, inspectorId: string, adminId: string): Promise<Order> {
     const order = await this.requireOrder(orderId);
+
+    // F-13, third line of defence: an admin override must not be able to do what
+    // the dispatcher is forbidden from doing.
+    if (order.customerId === inspectorId) {
+      throw new BadRequestException({
+        error: {
+          code: 'self_assignment_forbidden',
+          message: 'The customer of an order cannot be assigned as its inspector',
+        },
+      });
+    }
 
     const profile = await this.prisma.inspectorProfile.findUnique({
       where: { userId: inspectorId },
@@ -1262,8 +1322,14 @@ export class OrdersService {
       });
     }
 
+    // `Report.code` is not `@unique` — only `@@index([code])`, with a PARTIAL
+    // unique index covering the UUID-format codes. Legacy `CSP-######` codes
+    // legitimately repeat across devices, so without an explicit order this
+    // findFirst returned whichever row Postgres happened to hand back.
+    // Newest-first, matching `PaymentsService.createPpvCheckout`.
     const report = await this.prisma.report.findFirst({
       where: { code, deletedAt: null },
+      orderBy: { createdAt: 'desc' },
       select: {
         id: true,
         code: true,

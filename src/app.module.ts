@@ -2,7 +2,7 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
@@ -15,6 +15,7 @@ import { MeReportsModule } from './me-reports/me-reports.module';
 import { PublicModule } from './public/public.module';
 import { RedisModule } from './redis/redis.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
+import { NamedThrottlerGuard } from './common/guards/named-throttler.guard';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { DeviceIdMiddleware } from './common/middleware/device-id.middleware';
 import configuration from './config/configuration';
@@ -54,6 +55,11 @@ import { VinHistoryModule } from './vin-history/vin-history.module';
         // Tighter bucket for unauthenticated lookups that take a VIN or report
         // code and answer "does this exist?". 122 bits of entropy already makes
         // enumeration impractical; this stops it being the only defence.
+        //
+        // Only routes that name it in @Throttle({ lookup: … }) are subject to
+        // it — see NamedThrottlerGuard. The stock ThrottlerGuard evaluates every
+        // configured throttler on every route, which capped the WHOLE API at
+        // 20 req/min per IP (F-12).
         { name: 'lookup', ttl: 60_000, limit: 20 },
       ],
       skipIf: () => process.env.NODE_ENV === 'test',
@@ -91,7 +97,7 @@ import { VinHistoryModule } from './vin-history/vin-history.module';
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     { provide: APP_INTERCEPTOR, useClass: LoggingInterceptor },
     // Guard order: throttle → authenticate (/api/v1 only) → authorize roles.
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: NamedThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],

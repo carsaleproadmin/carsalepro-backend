@@ -19,6 +19,27 @@ export interface NearestInspector {
 }
 
 /**
+ * Inputs to {@link GeoService.findNearestInspectors}. An object rather than a
+ * positional list because the two exclusion filters are optional, independent,
+ * and easy to swap by accident when both are bare strings.
+ */
+export interface NearestInspectorQuery {
+  lat: number;
+  lng: number;
+  radiusKm: number;
+  limit: number;
+  /** Inspector userIds already offered or declined for this order. */
+  excludeUserIds?: string[];
+  /**
+   * The ordering customer must never be offered their own job (F-13). An
+   * account holding both a customer role and an InspectorProfile could
+   * otherwise order at its own coordinates, be dispatched the job, accept it,
+   * approve its own report and collect the 80 % payout.
+   */
+  excludeCustomerId?: string | null;
+}
+
+/**
  * All PostGIS access lives here. `InspectorProfile.location`, `Order.location`
  * and `WaitlistEntry.location` are declared `Unsupported("geography(...)")` in
  * Prisma, so they can only be read/written via raw SQL.
@@ -54,17 +75,28 @@ export class GeoService {
 
   /**
    * Nearest available, eligible inspectors within `radiusKm` of (lat,lng).
+   *
    * Eligibility = user.kycVerified AND profile.stripeOnboarded AND
-   * profile.available AND a location is set. Ordered by true distance (KNN
-   * `<->` operator), limited to `limit`.
+   * profile.available AND a location is set, minus `excludeUserIds` (already
+   * offered/declined for this order) and `excludeCustomerId` (the person
+   * placing the order). Ordered by true distance (KNN `<->` operator), limited
+   * to `limit`.
+   *
+   * This used to be two near-identical copies of the same 40-line query, which
+   * is precisely why the self-assignment guard could be added to one and not
+   * the other. The exclusion list is bound through `Prisma.join`, never
+   * interpolated.
    */
-  async findNearestInspectors(
-    lat: number,
-    lng: number,
-    radiusKm: number,
-    limit: number,
-  ): Promise<NearestInspector[]> {
-    const radiusM = radiusKm * 1000;
+  async findNearestInspectors(q: NearestInspectorQuery): Promise<NearestInspector[]> {
+    const radiusM = q.radiusKm * 1000;
+    const excluded = Array.from(
+      new Set([...(q.excludeUserIds ?? []), ...(q.excludeCustomerId ? [q.excludeCustomerId] : [])]),
+    );
+    const exclusion =
+      excluded.length === 0
+        ? Prisma.empty
+        : Prisma.sql`AND ip.user_id NOT IN (${Prisma.join(excluded)})`;
+
     const rows = await this.prisma.$queryRaw<
       Array<{
         userId: string;
@@ -81,7 +113,7 @@ export class GeoService {
         u."name"          AS "displayName",
         ST_Distance(
           ip.location,
-          ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography
+          ST_SetSRID(ST_MakePoint(${q.lng}, ${q.lat}), 4326)::geography
         )                 AS "distanceM",
         ST_Y(ip.location::geometry) AS "lat",
         ST_X(ip.location::geometry) AS "lng"
@@ -91,74 +123,14 @@ export class GeoService {
         AND ip.stripe_onboarded = true
         AND ip.available = true
         AND ip.location IS NOT NULL
+        ${exclusion}
         AND ST_DWithin(
           ip.location,
-          ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography,
+          ST_SetSRID(ST_MakePoint(${q.lng}, ${q.lat}), 4326)::geography,
           ${radiusM}
         )
-      ORDER BY ip.location <-> ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography
-      LIMIT ${limit}
-    `);
-
-    return rows.map((r) => ({
-      userId: r.userId,
-      companyName: r.companyName,
-      displayName: r.displayName,
-      distanceKm: Math.round((Number(r.distanceM) / 1000) * 10) / 10,
-      lat: Number(r.lat),
-      lng: Number(r.lng),
-    }));
-  }
-
-  /**
-   * Like {@link findNearestInspectors} but excludes a set of inspector userIds
-   * (those already offered/declined for an order). Used by the dispatch cascade.
-   */
-  async findNearestInspectorsExcluding(
-    lat: number,
-    lng: number,
-    radiusKm: number,
-    limit: number,
-    excludeUserIds: string[],
-  ): Promise<NearestInspector[]> {
-    if (excludeUserIds.length === 0) {
-      return this.findNearestInspectors(lat, lng, radiusKm, limit);
-    }
-    const radiusM = radiusKm * 1000;
-    const rows = await this.prisma.$queryRaw<
-      Array<{
-        userId: string;
-        companyName: string | null;
-        displayName: string | null;
-        distanceM: number;
-        lat: number;
-        lng: number;
-      }>
-    >(Prisma.sql`
-      SELECT
-        ip.user_id        AS "userId",
-        ip.company_name   AS "companyName",
-        u."name"          AS "displayName",
-        ST_Distance(
-          ip.location,
-          ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography
-        )                 AS "distanceM",
-        ST_Y(ip.location::geometry) AS "lat",
-        ST_X(ip.location::geometry) AS "lng"
-      FROM inspector_profile ip
-      JOIN "user" u ON u.id = ip.user_id
-      WHERE u."kycVerified" = true
-        AND ip.stripe_onboarded = true
-        AND ip.available = true
-        AND ip.location IS NOT NULL
-        AND ip.user_id NOT IN (${Prisma.join(excludeUserIds)})
-        AND ST_DWithin(
-          ip.location,
-          ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography,
-          ${radiusM}
-        )
-      ORDER BY ip.location <-> ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography
-      LIMIT ${limit}
+      ORDER BY ip.location <-> ST_SetSRID(ST_MakePoint(${q.lng}, ${q.lat}), 4326)::geography
+      LIMIT ${q.limit}
     `);
 
     return rows.map((r) => ({
