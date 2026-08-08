@@ -23,7 +23,7 @@ import {
   OrderRole,
   QuoteOrderDto,
 } from './dto/order.dto';
-import { canTransition } from './order-state-machine';
+import { ATTACHABLE_REPORT_ORDER_STATUSES, canTransition } from './order-state-machine';
 import { PriceBreakdown, computePrice } from './order-pricing';
 
 /**
@@ -710,9 +710,14 @@ export class OrdersService {
     const statusFilter = status ? { status: status as OrderStatus } : {};
     let orders: Order[];
     if (role === OrderRole.inspector) {
-      // Orders assigned to me OR for which I have an offer.
+      const now = new Date();
+      // Orders assigned to me OR for which I have an active offer.
       const offered = await this.prisma.orderOffer.findMany({
-        where: { inspectorId: userId },
+        where: {
+          inspectorId: userId,
+          status: 'PENDING',
+          expiresAt: { gt: now },
+        },
         select: { orderId: true },
       });
       const offeredIds = offered.map((o) => o.orderId);
@@ -734,10 +739,23 @@ export class OrdersService {
 
   async getDetail(orderId: string, userId: string, role: Role): Promise<OrderDetail> {
     const order = await this.requireOrder(orderId);
+    const offer = await this.prisma.orderOffer.findFirst({
+      where: {
+        orderId,
+        inspectorId: userId,
+        OR: [
+          { status: 'ACCEPTED' },
+          { status: 'PENDING', expiresAt: { gt: new Date() } },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, status: true },
+    });
     const isCustomer = order.customerId === userId;
     const isInspector = order.inspectorId === userId;
+    const hasInspectorOffer = !!offer;
     const isAdmin = role === Role.ADMIN;
-    if (!isCustomer && !isInspector && !isAdmin) {
+    if (!isCustomer && !isInspector && !hasInspectorOffer && !isAdmin) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
     }
 
@@ -820,6 +838,8 @@ export class OrdersService {
       autoApproveAt: order.autoApproveAt ? order.autoApproveAt.toISOString() : null,
       submittedAt: order.submittedAt ? order.submittedAt.toISOString() : null,
       createdAt: order.createdAt.toISOString(),
+      offer: offer ? { id: offer.id, status: offer.status } : null,
+      offerId: offer?.id ?? null,
       events: events.map((e) => ({
         type: e.type,
         fromStatus: e.fromStatus,
@@ -1211,16 +1231,129 @@ export class OrdersService {
    * uploader is the assigned inspector here — any report whose orderId matches a
    * transitionable order advances it. Tighten in a later epoch.
    */
+  async attachReportByCode(
+    orderId: string,
+    inspectorId: string,
+    code: string,
+  ): Promise<{ orderId: string; status: OrderStatus; report: { id: string; code: string } }> {
+    const order = await this.requireOrder(orderId);
+    if (order.inspectorId !== inspectorId) {
+      throw new ForbiddenException({
+        error: { code: 'forbidden', message: 'You are not the assigned inspector' },
+      });
+    }
+
+    if (!ATTACHABLE_REPORT_ORDER_STATUSES.includes(order.status)) {
+      throw new ConflictException({
+        error: {
+          code: 'order_not_attachable',
+          message: `Cannot attach a report while order is ${order.status}`,
+        },
+      });
+    }
+
+    const existingOrderReport = await this.prisma.report.findUnique({
+      where: { orderId },
+      select: { id: true, code: true },
+    });
+    if (existingOrderReport) {
+      throw new ConflictException({
+        error: { code: 'order_report_exists', message: 'This order already has a report' },
+      });
+    }
+
+    const report = await this.prisma.report.findFirst({
+      where: { code, deletedAt: null },
+      select: {
+        id: true,
+        code: true,
+        deviceId: true,
+        userId: true,
+        orderId: true,
+        vin: true,
+        make: true,
+        model: true,
+      },
+    });
+    if (!report) {
+      throw new NotFoundException({
+        error: { code: 'report_not_found', message: 'Report not found' },
+      });
+    }
+    if (report.orderId && report.orderId !== orderId) {
+      throw new ConflictException({
+        error: { code: 'report_already_used', message: 'This report is already linked to another order' },
+      });
+    }
+    if (report.userId && report.userId !== inspectorId) {
+      throw new ForbiddenException({
+        error: { code: 'not_report_owner', message: 'This report belongs to another account' },
+      });
+    }
+    if (!this.reportVehicleMatchesOrder(order, report)) {
+      throw new ConflictException({
+        error: {
+          code: 'report_vehicle_mismatch',
+          message: 'This report belongs to a different vehicle',
+        },
+      });
+    }
+
+    const deviceLink = await this.prisma.deviceLink.findUnique({
+      where: { deviceId: report.deviceId },
+      select: { userId: true },
+    });
+    if (deviceLink && deviceLink.userId !== inspectorId) {
+      throw new ForbiddenException({
+        error: { code: 'not_report_owner', message: 'This report belongs to another account' },
+      });
+    }
+
+    const updatedReport = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        orderId,
+        userId: report.userId ?? inspectorId,
+      },
+      select: { id: true, code: true },
+    });
+
+    await this.submitReportForOrder(orderId);
+    const updatedOrder = await this.requireOrder(orderId);
+
+    return {
+      orderId,
+      status: updatedOrder.status,
+      report: updatedReport,
+    };
+  }
+
+  private reportVehicleMatchesOrder(
+    order: Pick<Order, 'vin' | 'make' | 'model'>,
+    report: { vin: string | null; make: string | null; model: string | null },
+  ): boolean {
+    const normalize = (value: string | null | undefined) =>
+      value?.trim().toUpperCase().replace(/\s+/g, ' ') ?? null;
+
+    const orderVin = normalize(order.vin);
+    const reportVin = normalize(report.vin);
+    if (orderVin && reportVin) return orderVin === reportVin;
+
+    const orderMake = normalize(order.make);
+    const reportMake = normalize(report.make);
+    const orderModel = normalize(order.model);
+    const reportModel = normalize(report.model);
+
+    if (orderMake && reportMake && orderMake !== reportMake) return false;
+    if (orderModel && reportModel && orderModel !== reportModel) return false;
+    return true;
+  }
+
   async submitReportForOrder(orderId: string): Promise<boolean> {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) return false;
 
-    const transitionable: OrderStatus[] = [
-      OrderStatus.ASSIGNED,
-      OrderStatus.EN_ROUTE,
-      OrderStatus.IN_PROGRESS,
-    ];
-    if (!transitionable.includes(order.status)) return false;
+    if (!ATTACHABLE_REPORT_ORDER_STATUSES.includes(order.status)) return false;
 
     // Walk forward to IN_PROGRESS so the SUBMITTED edge is always legal.
     if (order.status === OrderStatus.ASSIGNED) {
@@ -1458,6 +1591,9 @@ export interface OrderDetail {
   autoApproveAt: string | null;
   submittedAt: string | null;
   createdAt: string;
+  /** Present when the current inspector has a pending/accepted offer. */
+  offer?: { id: string; status: string } | null;
+  offerId?: string | null;
   events: Array<{
     type: string;
     fromStatus: string | null;
@@ -1466,4 +1602,3 @@ export interface OrderDetail {
     createdAt: string;
   }>;
 }
-
