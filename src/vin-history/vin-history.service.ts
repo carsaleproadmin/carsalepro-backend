@@ -41,6 +41,60 @@ const VIN_HISTORY_FAILED = 'vin_history.failed' as NotificationType;
 /** Purchase lifecycle. `refunded` is terminal-good; `failed` needs a human. */
 export type VinHistoryPurchaseStatus = 'pending' | 'ready' | 'failed' | 'refunded';
 
+/**
+ * Statuses a settlement must not re-enter.
+ *
+ * Stripe redelivers a webhook for days, and each delivery arrives at `fulfill`
+ * with the same payment and purchase ids. Only `ready` used to stop it, so a
+ * purchase that had already been refunded would run the whole path again — a
+ * fresh billable provider lookup, and, if the provider had recovered in the
+ * meantime, delivery of the report the buyer's money had already been returned
+ * for. `failed` is terminal for the opposite reason: it means the refund itself
+ * did not go through and an operator has to look, which an automatic retry
+ * would paper over.
+ *
+ * Retrying a genuinely transient outage is still possible and still supported —
+ * it goes through `unlock`, which reopens the purchase to `pending` deliberately
+ * and re-uses or re-creates the payment. That is an explicit re-attempt with a
+ * live payer behind it, not a redelivery a refunded payment can ride in on.
+ */
+const TERMINAL_PURCHASE_STATUSES: ReadonlySet<string> = new Set<VinHistoryPurchaseStatus>([
+  'ready',
+  'refunded',
+  'failed',
+]);
+
+/**
+ * Fewest records a report must carry to be worth charging for.
+ *
+ * A provider that answers 200 with nothing in it is not a failure it can be
+ * detected by `try`/`catch` — it is a valid response that happens to be
+ * worthless, and every consumer review of the shortlisted providers is
+ * dominated by exactly that complaint. One record is the deliberately
+ * conservative floor: it refuses only the genuinely empty answer, so no buyer
+ * who received something is refunded against their will. Raise it once F3-4 has
+ * measured the real hit rate for German VINs.
+ */
+const MIN_SELLABLE_RECORD_COUNT = 1;
+
+/**
+ * A provider answer that arrived intact and holds nothing to sell.
+ *
+ * Carried as an Error so it travels the same path as a provider outage: caught
+ * in `fulfill`, refunded by `failAndRefund`, surfaced to the caller as
+ * `provider_failed` with `refunded: true`. The buyer's experience of "the
+ * lookup did not produce a report, your money is back" is identical either way.
+ */
+class EmptyProviderResponseError extends Error {
+  constructor(vin: string, recordCount: number) {
+    super(
+      `Provider returned no usable history for ${vin} ` +
+        `(${recordCount} records, minimum ${MIN_SELLABLE_RECORD_COUNT})`,
+    );
+    this.name = 'EmptyProviderResponseError';
+  }
+}
+
 @Injectable()
 export class VinHistoryService {
   private readonly logger = new Logger(VinHistoryService.name);
@@ -163,10 +217,26 @@ export class VinHistoryService {
     // a second sale: reuse both rows so a double-click cannot create two charges.
     let purchase = existing;
     if (purchase) {
-      purchase = await this.prisma.vinHistoryPurchase.update({
-        where: { id: purchase.id },
+      // Conditional, because this row may have been made `ready` by a request
+      // running alongside this one — the check above read it before that
+      // happened. A blind write here would reset a completed sale to `pending`
+      // and send this attempt on to open a second payment for it.
+      await this.prisma.vinHistoryPurchase.updateMany({
+        where: { id: purchase.id, status: { not: 'ready' } },
         data: { status: 'pending', failureReason: null, provider: this.provider.name },
       });
+      purchase = await this.prisma.vinHistoryPurchase.findUniqueOrThrow({
+        where: { id: purchase.id },
+      });
+      if (purchase.status === 'ready') {
+        return {
+          purchaseId: purchase.id,
+          status: 'ready',
+          alreadyOwned: true,
+          amountCents,
+          currency: 'EUR',
+        };
+      }
     } else {
       purchase = await this.createPurchase(userId, vin);
       if (purchase === null) {
@@ -209,7 +279,16 @@ export class VinHistoryService {
       };
     }
 
-    const { checkoutUrl } = await this.stripe.createVinHistoryCheckout({
+    // Money already in, fulfilment not finished. Sending this caller to a fresh
+    // Checkout would charge them a second time for a purchase that is paid for
+    // — the state is reached by a settled payment whose refund failed, or by a
+    // webhook still in flight. The honest answer is "we have your money, the
+    // report is coming", with no payment page attached.
+    if (payment.status === 'succeeded') {
+      return { purchaseId: purchase.id, status: 'pending', amountCents, currency: 'EUR' };
+    }
+
+    const { checkoutUrl, sessionId } = await this.stripe.createVinHistoryCheckout({
       paymentId: payment.id,
       purchaseId: purchase.id,
       userId,
@@ -219,13 +298,13 @@ export class VinHistoryService {
       cancelUrl: `${this.webOrigin}/vin/${vin}`,
     });
 
-    const session = checkoutUrl.match(/cs_[A-Za-z0-9_]+/)?.[0];
-    if (session) {
-      await this.prisma.payment.update({
-        where: { id: payment.id },
-        data: { stripeCheckoutSessionId: session },
-      });
-    }
+    // Stripe hands us the session id. It used to be scraped out of the URL with
+    // a regex whose failure was silent: no match, no id, and reconciliation
+    // left with nothing to ask Stripe about for that payment.
+    await this.prisma.payment.update({
+      where: { id: payment.id },
+      data: { stripeCheckoutSessionId: sessionId },
+    });
 
     return { purchaseId: purchase.id, status: 'pending', checkoutUrl, amountCents, currency: 'EUR' };
   }
@@ -262,9 +341,7 @@ export class VinHistoryService {
 
   async getMine(userId: string, id: string): Promise<VinCheckDetailDto> {
     const purchase = await this.requireOwnedPurchase(userId, id);
-    const payload = purchase.report
-      ? (purchase.report.payload as unknown as VinHistoryPayloadV1)
-      : null;
+    const payload = this.soldPayload(purchase, purchase.report);
     return {
       ...this.toItem(purchase, purchase.report),
       // The paid artefact. Null until the purchase is ready — a pending or
@@ -283,7 +360,10 @@ export class VinHistoryService {
    */
   async downloadMine(userId: string, id: string): Promise<VinCheckDownloadDto> {
     const purchase = await this.requireOwnedPurchase(userId, id);
-    if (purchase.status !== 'ready' || !purchase.report?.rawS3Key || !this.r2.isConfigured()) {
+    // This buyer's own snapshot, falling back to the shared archive only for
+    // purchases fulfilled before per-purchase keys existed.
+    const key = purchase.s3Key ?? purchase.report?.rawS3Key ?? null;
+    if (purchase.status !== 'ready' || !key || !this.r2.isConfigured()) {
       throw new NotFoundException({
         error: {
           code: 'download_unavailable',
@@ -291,7 +371,7 @@ export class VinHistoryService {
         },
       });
     }
-    const { url, expiresAt } = await this.r2.createPrivateSignedUrl(purchase.report.rawS3Key);
+    const { url, expiresAt } = await this.r2.createPrivateSignedUrl(key);
     return { url, expiresAt: expiresAt.toISOString(), contentType: 'application/json' };
   }
 
@@ -317,47 +397,151 @@ export class VinHistoryService {
    * Reuse the purchase's still-pending payment rather than opening a second one.
    * Two pending payments for one purchase is how a user ends up charged twice
    * when both checkouts are eventually completed.
+   *
+   * The attachment is a compare-and-set on the value this attempt actually
+   * observed — `null` included — rather than a blind write. Reading
+   * `purchase.paymentId` and then updating is correct in sequence and empty
+   * under concurrency: a double-click has both requests read the row before
+   * either writes it, both conclude there is no payment to reuse, and both open
+   * one. The unique index on `(userId, vin)` keeps that to a single purchase, so
+   * the second payment is not even visible in the product — it is an orphaned
+   * successful charge that the admin finance summary counts as revenue.
+   *
+   * Losing the CAS is therefore normal, not exceptional: the loser deletes the
+   * row it just created and re-reads. That deletion is safe because the payment
+   * has not been through Checkout yet — it is created here and only handed to
+   * Stripe by the caller afterwards.
    */
   private async reusableOrNewPayment(
     purchase: VinHistoryPurchase,
     userId: string,
     amountCents: number,
   ): Promise<Payment> {
-    if (purchase.paymentId) {
-      const existing = await this.prisma.payment.findUnique({ where: { id: purchase.paymentId } });
-      if (existing && existing.status === 'pending' && existing.amountCents === amountCents) {
-        return existing;
+    let observed = purchase.paymentId;
+
+    // Bounded: each iteration either returns or observes a payment id written
+    // by someone else, and a purchase cannot change hands indefinitely inside
+    // one request. The cap exists so a pathological interleaving fails loudly
+    // instead of spinning.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (observed) {
+        const existing = await this.prisma.payment.findUnique({ where: { id: observed } });
+        // `succeeded` counts as reusable, not as spent. A concurrent attempt
+        // that has already settled means the money for this purchase is in —
+        // opening a second payment beside it is the double charge itself. Only
+        // `refunded` and `failed` are genuinely finished and warrant a new one.
+        //
+        // The amount is checked here too, not only on the `pending` branch: a
+        // settled payment for a different amount is a price change between the
+        // two attempts, and answering with it would report the wrong sum to the
+        // caller. It cannot be re-charged either way — the caller refuses to
+        // open a Checkout for a `succeeded` payment.
+        if (existing && existing.status === 'succeeded' && existing.amountCents === amountCents) {
+          return existing;
+        }
+        if (existing && existing.status === 'pending' && existing.amountCents === amountCents) {
+          return existing;
+        }
+        // Superseded: a stale `pending` row (wrong amount) would otherwise stay
+        // open forever once the purchase points elsewhere, and every
+        // reconciliation pass would have to explain it. The CAS loser below is
+        // deleted outright; this one is kept as `failed` because it may already
+        // have a Checkout session behind it.
+        if (existing && existing.status === 'pending') {
+          await this.prisma.payment
+            .update({ where: { id: existing.id }, data: { status: 'failed' } })
+            .catch(() => undefined);
+        }
       }
+
+      const payment = await this.prisma.payment.create({
+        data: { purpose: 'vin_history', userId, amountCents, status: 'pending' },
+      });
+      const claimed = await this.prisma.vinHistoryPurchase.updateMany({
+        where: { id: purchase.id, paymentId: observed },
+        data: { paymentId: payment.id },
+      });
+      if (claimed.count === 1) return payment;
+
+      // Someone else attached a payment between our read and our write. Drop
+      // ours before it can be charged, then look at what they attached.
+      await this.prisma.payment.delete({ where: { id: payment.id } }).catch(() => undefined);
+      const current = await this.prisma.vinHistoryPurchase.findUnique({
+        where: { id: purchase.id },
+      });
+      observed = current?.paymentId ?? null;
     }
-    const payment = await this.prisma.payment.create({
-      data: { purpose: 'vin_history', userId, amountCents, status: 'pending' },
+
+    throw new ServiceUnavailableException({
+      error: {
+        code: 'payment_conflict',
+        message: 'Could not start this purchase. Please try again — you have not been charged.',
+      },
     });
-    await this.prisma.vinHistoryPurchase.update({
-      where: { id: purchase.id },
-      data: { paymentId: payment.id },
-    });
-    return payment;
   }
 
   /**
    * Mark the payment succeeded and attach a report to the purchase.
-   * Idempotent: a replayed webhook for an already-ready purchase is a no-op.
+   *
+   * Idempotent: a replayed webhook for a purchase that has already reached a
+   * terminal status is a no-op, and nothing here runs before that is checked —
+   * not the payment write, not the provider lookup.
    */
   private async fulfill(
     paymentId: string,
     purchaseId: string,
     vin: string,
   ): Promise<{ ok: boolean }> {
-    await this.prisma.payment
-      .update({ where: { id: paymentId }, data: { status: 'succeeded' } })
-      .catch(() => undefined);
-
     const purchase = await this.prisma.vinHistoryPurchase.findUnique({ where: { id: purchaseId } });
     if (!purchase) return { ok: false };
-    if (purchase.status === 'ready') return { ok: true };
+    if (TERMINAL_PURCHASE_STATUSES.has(purchase.status)) {
+      return { ok: purchase.status === 'ready' };
+    }
+
+    // The purchase status is not the whole story: money can leave after the row
+    // was written. A chargeback or an out-of-band refund marks the PAYMENT
+    // `refunded` while the purchase sits at `pending`, and fulfilling that would
+    // pay the provider for a report we have already been made to give back.
+    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+    if (payment?.status === 'refunded') {
+      this.logger.warn(
+        `fulfill: payment ${paymentId} is refunded — refusing to deliver purchase ${purchaseId}`,
+      );
+      await this.prisma.vinHistoryPurchase.updateMany({
+        where: { id: purchaseId, status: { not: 'ready' } },
+        data: { status: 'refunded', failureReason: 'payment_refunded' },
+      });
+      return { ok: false };
+    }
+
+    // Settled at Stripe, so the payment is truthfully `succeeded` — but never
+    // walk one back out of `refunded`. That status is the ledger's record that
+    // the money left again; overwriting it here is how a refunded sale came to
+    // read as a successful one. `updateMany` also spares the missing-row catch
+    // this used to need.
+    await this.prisma.payment.updateMany({
+      where: { id: paymentId, status: { not: 'refunded' } },
+      data: { status: 'succeeded' },
+    });
 
     try {
       const report = await this.resolveReport(vin);
+
+      // A warm cache can hold a report that predates MIN_SELLABLE_RECORD_COUNT
+      // (or was cached before this check existed). Re-checking here means the
+      // rule is enforced on what is actually being SOLD, not only on what was
+      // just fetched.
+      if (report.recordCount < MIN_SELLABLE_RECORD_COUNT) {
+        throw new EmptyProviderResponseError(vin, report.recordCount);
+      }
+
+      const payload = report.payload as unknown as VinHistoryPayloadV1;
+      // The buyer's own copy, written before the purchase is marked ready so a
+      // `ready` purchase is never left without the artefact it promises.
+      // Best-effort by design: an R2 outage returns null and must not turn a
+      // successful paid lookup into a refund.
+      const s3Key = await this.archive(vin, payload, purchaseId);
+
       await this.prisma.vinHistoryPurchase.update({
         where: { id: purchaseId },
         data: {
@@ -366,6 +550,10 @@ export class VinHistoryService {
           provider: report.provider,
           readyAt: new Date(),
           failureReason: null,
+          // Immutable snapshot: the shared report row this was copied from is a
+          // cache and the next buyer of this VIN will overwrite it.
+          payload: report.payload as Prisma.InputJsonValue,
+          s3Key,
         },
       });
       return { ok: true };
@@ -410,15 +598,24 @@ export class VinHistoryService {
       });
     }
 
-    await this.alertAdmins({
-      purchaseId: purchase.id,
-      userId: purchase.userId,
-      vin: purchase.vin,
-      provider: this.provider.name,
-      amountCents: payment?.amountCents ?? 0,
-      reason,
-      refunded,
-    });
+    // An empty answer is a normal outcome, not an incident: the provider is up,
+    // it simply holds nothing for this VIN, and the buyer has already been
+    // refunded. Alerting on it would page every admin on every such lookup —
+    // and by our own reading of the shortlisted providers, empty answers are
+    // the common complaint, so the alert would train them to ignore the channel
+    // that also carries "the refund did not go through".
+    const isRoutine = err instanceof EmptyProviderResponseError && refunded;
+    if (!isRoutine) {
+      await this.alertAdmins({
+        purchaseId: purchase.id,
+        userId: purchase.userId,
+        vin: purchase.vin,
+        provider: this.provider.name,
+        amountCents: payment?.amountCents ?? 0,
+        reason,
+        refunded,
+      });
+    }
   }
 
   /** Issue the refund and record the ledger row. Returns false if it failed. */
@@ -499,9 +696,17 @@ export class VinHistoryService {
     if (fresh) return fresh;
 
     const payload = await this.provider.fetch(vin);
+
+    // Refuse BEFORE the upsert so an empty answer is never cached: a VIN that
+    // gains its first record tomorrow must not stay unsellable for the rest of
+    // the cache window. The provider is re-queried on the next attempt, which is
+    // the same trade the existing failure path already makes.
+    if (payload.summary.recordCount < MIN_SELLABLE_RECORD_COUNT) {
+      throw new EmptyProviderResponseError(vin, payload.summary.recordCount);
+    }
+
     const cacheDays = await this.settings.getNumber('vinHistoryCacheDays');
     const expiresAt = new Date(Date.now() + cacheDays * 86_400_000);
-    const rawS3Key = await this.archive(vin, payload);
 
     return this.prisma.vinHistoryReport.upsert({
       where: { vin_provider: { vin, provider: this.provider.name } },
@@ -510,13 +715,11 @@ export class VinHistoryService {
         provider: this.provider.name,
         payload: payload as unknown as Prisma.InputJsonValue,
         recordCount: payload.summary.recordCount,
-        rawS3Key,
         expiresAt,
       },
       update: {
         payload: payload as unknown as Prisma.InputJsonValue,
         recordCount: payload.summary.recordCount,
-        rawS3Key,
         fetchedAt: new Date(),
         expiresAt,
       },
@@ -524,13 +727,30 @@ export class VinHistoryService {
   }
 
   /**
-   * Archive the payload so a buyer can download the artefact they paid for even
-   * after the cache is refreshed with newer data. Best-effort: an R2 outage must
-   * not turn a successful paid lookup into a refund.
+   * Archive one buyer's copy of the payload.
+   *
+   * The key carries the purchase id, so it is unique by construction and no
+   * later buyer of the same VIN can overwrite it — that is the whole point. The
+   * shared `VinHistoryReport` row is a provider cache and is expected to be
+   * overwritten; the artefact a buyer paid for is not.
+   *
+   * Best-effort: an R2 outage must not turn a successful paid lookup into a
+   * refund, so a failure here returns null and the purchase still completes
+   * (the payload snapshot in the database is unaffected either way).
+   *
+   * GDPR: `MeService.erase` does NOT sweep this prefix, and deliberately so.
+   * The object holds vehicle history and nothing about the buyer — the same
+   * content the shared cache keeps for every other buyer of that VIN, which an
+   * erasure has never removed either. The purchase row itself cascades with the
+   * user, so the object is orphaned rather than exposed.
    */
-  private async archive(vin: string, payload: VinHistoryPayloadV1): Promise<string | null> {
+  private async archive(
+    vin: string,
+    payload: VinHistoryPayloadV1,
+    purchaseId: string,
+  ): Promise<string | null> {
     if (!this.r2.isConfigured()) return null;
-    const key = `vin-history/${this.provider.name}/${vin}.json`;
+    const key = `vin-history/${this.provider.name}/${vin}/${purchaseId}.json`;
     try {
       await this.r2.putObject(key, JSON.stringify(payload, null, 2), 'application/json');
       return key;
@@ -566,11 +786,26 @@ export class VinHistoryService {
     return purchase;
   }
 
+  /**
+   * The payload this buyer was actually sold.
+   *
+   * The purchase's own snapshot wins. The shared report is consulted only as a
+   * fallback for purchases fulfilled before the snapshot column existed — for
+   * everyone else that row is a cache another buyer may already have refreshed.
+   */
+  private soldPayload(
+    purchase: { payload: Prisma.JsonValue | null },
+    report: { payload: Prisma.JsonValue } | null,
+  ): VinHistoryPayloadV1 | null {
+    const raw = purchase.payload ?? report?.payload ?? null;
+    return raw ? (raw as unknown as VinHistoryPayloadV1) : null;
+  }
+
   private toItem(
     purchase: VinHistoryPurchase,
     report: { expiresAt: Date; payload: Prisma.JsonValue } | null,
   ) {
-    const payload = report ? (report.payload as unknown as VinHistoryPayloadV1) : null;
+    const payload = this.soldPayload(purchase, report);
     return {
       id: purchase.id,
       vin: purchase.vin,

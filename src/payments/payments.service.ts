@@ -84,7 +84,7 @@ export class PaymentsService {
       };
     }
 
-    const { checkoutUrl } = await this.stripe.createPpvCheckout({
+    const { checkoutUrl, sessionId } = await this.stripe.createPpvCheckout({
       paymentId: payment.id,
       reportId: report.id,
       userId,
@@ -94,13 +94,13 @@ export class PaymentsService {
       cancelUrl: `${this.webOrigin}/report/${report.code}`,
     });
 
-    const session = checkoutUrl.match(/cs_[A-Za-z0-9_]+/)?.[0];
-    if (session) {
-      await this.prisma.payment.update({
-        where: { id: payment.id },
-        data: { stripeCheckoutSessionId: session },
-      });
-    }
+    // Stripe hands us the session id; it used to be scraped out of the URL with
+    // a regex whose failure was silent, leaving the payment with no session id
+    // and reconciliation with nothing to ask Stripe about.
+    await this.prisma.payment.update({
+      where: { id: payment.id },
+      data: { stripeCheckoutSessionId: sessionId },
+    });
 
     return { checkoutUrl, amountCents, currency: 'EUR' };
   }
@@ -145,6 +145,18 @@ export class PaymentsService {
       case 'checkout.session.completed': {
         const session = event.data.object as StripeCheckoutSession;
         const meta = session.metadata ?? {};
+        // Capture the PaymentIntent before settling anything.
+        //
+        // A Checkout Session only reveals which PaymentIntent it captured once
+        // it completes, and this is the single place we ever hear about it.
+        // Without it `Payment.stripePaymentIntentId` stays null for every
+        // Checkout-based purchase, and a later refund silently falls through to
+        // the mock branch: the ledger records the money going back while
+        // Stripe never returns it. It is also the only handle reconciliation
+        // has for asking Stripe what became of a payment.
+        if (meta.paymentId) {
+          await this.recordPaymentIntent(meta.paymentId, session.payment_intent);
+        }
         if (meta.purpose === 'ppv' && meta.paymentId && meta.reportId && meta.userId) {
           await this.fulfillPurchase(meta.paymentId, meta.reportId, meta.userId);
           this.logger.log(`PPV purchase fulfilled for payment ${meta.paymentId}`);
@@ -247,6 +259,30 @@ export class PaymentsService {
     if (!order || order.status !== OrderStatus.CREATED) return;
     await orders.transition(orderId, OrderStatus.PAID, 'system');
     await orders.dispatch(orderId);
+  }
+
+  /**
+   * Attach the captured PaymentIntent to a Payment. Idempotent.
+   *
+   * `updateMany` guarded on a null column rather than `update`: the column is
+   * unique, and a redelivered webhook carries the same `pi_` — a blind write
+   * would trip the unique constraint on the second delivery and abort settling
+   * a purchase that is otherwise fine. Guarding on null also means a value we
+   * already hold is never overwritten by a later event for the same session.
+   */
+  private async recordPaymentIntent(
+    paymentId: string,
+    paymentIntent: StripeCheckoutSession['payment_intent'],
+  ): Promise<void> {
+    // Null for a zero-amount session, and an expanded object if anyone ever
+    // adds `expand` to the session create call.
+    const piId =
+      typeof paymentIntent === 'string' ? paymentIntent : (paymentIntent?.id ?? null);
+    if (!piId) return;
+    await this.prisma.payment.updateMany({
+      where: { id: paymentId, stripePaymentIntentId: null },
+      data: { stripePaymentIntentId: piId },
+    });
   }
 
   /** Mark a Payment as refunded. Idempotent. */
