@@ -8,6 +8,11 @@
       {
         "include": "legal/assets/*.ttf",
         "outDir": "dist"
+      },
+      {
+        "// why": "The 26 machine-translated catalog sidecars. tsc emits only .js, so without this they never reach dist/ — and `mergeCatalogI18n` resolves its directory relative to __dirname, finds nothing, and returns an empty report WITHOUT failing. Production served a 4-locale GET /catalog from the day the 30-language work shipped, and nothing noticed: the mobile app reads its own bundled copy and the website only needs de/en/ru. catalog.i18n.spec.ts cannot catch it either, because it reads from src/.",
+        "include": "catalog/i18n/*.json",
+        "outDir": "dist"
       }
     ],
     "watchAssets": true
