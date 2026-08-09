@@ -83,7 +83,12 @@ export const envValidationSchema = Joi.object({
 
   // Notifications — email goes through Resend; blank key => dev outbox (logs).
   RESEND_API_KEY: Joi.string().allow('').default(''),
-  EMAIL_FROM: Joi.string().allow('').default('no-reply@carsalepro.de'),
+  // Must be on a domain verified with Resend. `notifications.carsalepro.de` is
+  // the verified one; the apex is not. Keep this equal to the default in
+  // configuration.ts, which carries the full note.
+  EMAIL_FROM: Joi.string()
+    .allow('')
+    .default('CarSalePro <no-reply@notifications.carsalepro.de>'),
   EMAIL_REPLY_TO: Joi.string().allow('').default(''),
   TWILIO_ACCOUNT_SID: Joi.string().allow('').default(''),
   TWILIO_AUTH_TOKEN: Joi.string().allow('').default(''),

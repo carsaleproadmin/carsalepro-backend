@@ -265,7 +265,16 @@ export default (): AppConfig => ({
   },
   email: {
     resendApiKey: process.env.RESEND_API_KEY ?? '',
-    from: process.env.EMAIL_FROM ?? 'no-reply@carsalepro.de',
+    /*
+     * The sender domain must be VERIFIED with Resend, and the verified domain
+     * is the `notifications.` subdomain — not the apex. Resend matches the
+     * From domain exactly: a subdomain verification does not cover
+     * carsalepro.de, and the apex is not verified. Both earlier defaults were
+     * refused with "403 The <domain> domain is not verified", which made every
+     * address verification and every password reset undeliverable while
+     * nothing in the API answer said so.
+     */
+    from: process.env.EMAIL_FROM ?? 'CarSalePro <no-reply@notifications.carsalepro.de>',
     replyTo: process.env.EMAIL_REPLY_TO || undefined,
   },
   sms: {
