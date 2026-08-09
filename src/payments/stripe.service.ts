@@ -159,6 +159,13 @@ export interface CreateTransferParams {
   /** The source charge id so the transfer draws from that specific charge. */
   sourceChargeId: string;
   transferGroup: string;
+  /**
+   * Stable across retries of the SAME payout — derive it from the payout row,
+   * never from an attempt counter or a timestamp. A key that changes per attempt
+   * makes two racing releases two separate transfers, which is the whole thing
+   * it is here to prevent.
+   */
+  idempotencyKey: string;
 }
 
 /**
@@ -424,17 +431,32 @@ export class StripeService implements OnModuleInit {
     );
   }
 
-  /** Refund (full or partial) a captured PaymentIntent. */
+  /**
+   * Refund (full or partial) a captured PaymentIntent.
+   *
+   * `idempotencyKey` is REQUIRED, and it must be derived from the ledger row —
+   * not from the attempt, and not generated here. The caller's "has this already
+   * settled?" test is a database READ, so two callers racing (an operator
+   * double-clicking Retry in the admin refund queue, or a retry cron overlapping
+   * a manual retry) both pass it and both arrive here. Without a key Stripe
+   * happily performs both, and for a partial refund the customer receives twice
+   * the percentage; the ledger keeps one row, because `(orderId, reason)` is
+   * unique, so the second refund exists only at Stripe.
+   */
   async createRefund(
     paymentIntentId: string,
     amountCents: number,
     reason: string,
+    idempotencyKey: string,
   ): Promise<StripeRefund> {
-    return this.requireClient().refunds.create({
-      payment_intent: paymentIntentId,
-      amount: amountCents,
-      metadata: { reason },
-    });
+    return this.requireClient().refunds.create(
+      {
+        payment_intent: paymentIntentId,
+        amount: amountCents,
+        metadata: { reason },
+      },
+      { idempotencyKey },
+    );
   }
 
   // ============================================================
@@ -487,13 +509,23 @@ export class StripeService implements OnModuleInit {
    * test-mode available-balance issues.
    */
   async createTransfer(params: CreateTransferParams): Promise<StripeTransfer> {
-    return this.requireClient().transfers.create({
-      amount: params.amountCents,
-      currency: 'eur',
-      destination: params.destinationAccountId,
-      source_transaction: params.sourceChargeId,
-      transfer_group: params.transferGroup,
-    });
+    return this.requireClient().transfers.create(
+      {
+        amount: params.amountCents,
+        currency: 'eur',
+        destination: params.destinationAccountId,
+        source_transaction: params.sourceChargeId,
+        transfer_group: params.transferGroup,
+      },
+      // Keyed on the payout row, so two concurrent releases of the same payout
+      // pay the inspector once. The guard in `releasePayout` is a read, and it
+      // was deliberately relaxed from "a row exists" to "a row is already PAID"
+      // so a parked payout could be retried — which is right, and which is
+      // exactly what opened the window. Worse than the refund case, because
+      // `markPayoutPaid` reports an already-paid row as success and discards the
+      // second transfer id, so a double payout leaves no trace in our ledger.
+      { idempotencyKey: params.idempotencyKey },
+    );
   }
 
   /** Verify and parse a Stripe webhook payload from its raw body + signature. */

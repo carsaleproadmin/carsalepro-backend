@@ -560,9 +560,12 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
       (await prisma.orderOffer.findUniqueOrThrow({ where: { id: offer.id } })).status,
     ).toBe('EXPIRED');
 
-    // The customer is told, and the detail view explains why.
+    // The customer is told, and told the RIGHT thing. `order.cancelled` says
+    // only that the order is gone, which reads as "charged me and cancelled
+    // anyway" next to an authorization still visible on the statement — so this
+    // path sends its own message about the money instead.
     const notified = await prisma.notification.findFirst({
-      where: { userId: customer.userId, type: 'order.cancelled' },
+      where: { userId: customer.userId, type: 'order.search_expired' },
     });
     expect(notified).toBeTruthy();
     const detail = await request(app.getHttpServer())

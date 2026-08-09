@@ -603,6 +603,30 @@ export class ReportsService {
         photosManifest: rows.map((r) => ({ s3Key: r.r2Key, kind: r.kind })) as Prisma.InputJsonValue,
       },
     });
+
+    // Invalidate the showroom mirror of any listing backed by this report.
+    //
+    // Report photo keys embed a content hash, so re-taking one shot produces a
+    // NEW `s3Key` — and the public read path recomputes the mirrored key from
+    // the CURRENT manifest. Without this, a listing whose report was re-synced
+    // points at a public-bucket object that was never written: a permanently
+    // broken image on a live advert. The nightly backlog pass could not repair
+    // it either, since it selects on a null stamp or a photo row with a null
+    // bucket, and a report-backed listing has no photo rows at all.
+    //
+    // Clearing the stamp falls the read path back to signed URLs — correct but
+    // temporary — and puts the listing back in the mirror job's queue. Wrapped
+    // because a photo upload must not fail over a cache-invalidation detail.
+    try {
+      await this.prisma.listing.updateMany({
+        where: { reportId, publicPhotosMirroredAt: { not: null } },
+        data: { publicPhotosMirroredAt: null },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Could not invalidate the showroom mirror for report ${reportId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   private async toPhotoDto(row: ReportPhoto, replaced: boolean): Promise<ReportPhotoDto> {

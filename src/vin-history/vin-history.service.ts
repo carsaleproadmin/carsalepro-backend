@@ -777,6 +777,9 @@ export class VinHistoryService {
           payment.stripePaymentIntentId,
           payment.amountCents,
           REFUND_REASON,
+          // `Refund.paymentId` is unique here, so the payment id is this
+          // refund's identity and is stable across every retry of it.
+          `refund_payment_${payment.id}`,
         );
         stripeRefundId = refund.id;
       } else {

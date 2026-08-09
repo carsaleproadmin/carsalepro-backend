@@ -387,7 +387,9 @@ export class ListingsService {
     dto: UploadListingPhotoDto,
     file: Express.Multer.File,
   ): Promise<ListingPhotoDto> {
-    const listing = await this.requireOwnedListing(userId, listingId);
+    // Called for its ownership CHECK, which throws. The returned row stopped
+    // being needed when the seller id came out of the object key.
+    await this.requireOwnedListing(userId, listingId);
 
     if (!this.r2.isConfigured()) {
       throw new HttpException(
@@ -421,7 +423,20 @@ export class ListingsService {
     if (duplicate) return this.toPhotoDto(duplicate);
 
     const processed = await this.photoProcessing.compress(file.buffer);
-    const r2Key = `listings/${listing.sellerId}/${listingId}/${randomUUID()}.jpg`;
+    // The seller id is deliberately NOT in the key.
+    //
+    // Once the public bucket is configured this key becomes a permanent,
+    // unsigned URL. A stable seller identifier in it is a correlation handle:
+    // every advert by one pseudonymous seller becomes linkable from an image
+    // URL alone, without ever loading a page. `mirroredPhotoKey` already goes
+    // out of its way to hash the source so a device id and report id cannot
+    // appear in a public URL, and this is the same rule applied to the other
+    // way an image gets there. The listing id is already public — it is in the
+    // page URL — and a UUID carries nothing.
+    //
+    // Existing rows keep their old keys: `ListingPhoto.r2Key` is stored, so
+    // this changes new uploads only and needs no migration.
+    const r2Key = `listings/${listingId}/${randomUUID()}.jpg`;
     // A new photo goes straight to the public bucket when one is configured:
     // same key, different bucket, so nothing downstream has to translate keys
     // and the migration script can treat an old row exactly like a new one.
@@ -831,6 +846,69 @@ export class ListingsService {
    * listing records its own completion, so the next run starts where this one
    * stopped.
    */
+  /**
+   * Remove the PUBLIC copies of a seller's showroom images, for GDPR erasure.
+   *
+   * This lives here, and not in the two erasure paths, because there are two of
+   * them: the mobile `DELETE /me` and the website `DELETE /api/v1/users/me`.
+   * The mobile one swept the private reports bucket; the website one deleted no
+   * objects at all, which was survivable only while every showroom image was a
+   * 15-minute signed URL. Once photos moved to a public bucket with
+   * `Cache-Control: immutable`, a website-only seller — who has no `DeviceLink`
+   * and never touches the mobile path — could erase their account and leave
+   * their driveway, house number and number plate readable at a permanent,
+   * unsigned URL forever.
+   *
+   * Two shapes, matching the two ways an image gets there:
+   *   - seller uploads: `ListingPhoto` rows whose `bucket` is set, at their key;
+   *   - mirrored report photos: no row at all, so the keys are recomputed from
+   *     the report manifest exactly as the mirror derived them.
+   *
+   * Best-effort and non-throwing: a failed delete must not abort an erasure that
+   * has already anonymised the account. The mirror stamp is cleared either way,
+   * so the read path stops pointing at objects that are meant to be gone.
+   */
+  async erasePublicPhotoObjects(userId: string): Promise<number> {
+    if (!this.r2.isPublicBucketConfigured()) return 0;
+
+    let deleted = 0;
+    const rows = await this.prisma.listingPhoto.findMany({
+      where: { bucket: { not: null }, listing: { sellerId: userId } },
+      select: { r2Key: true },
+    });
+    const listings = await this.prisma.listing.findMany({
+      where: { sellerId: userId, publicPhotosMirroredAt: { not: null } },
+      select: { id: true, report: { select: { photosManifest: true } } },
+    });
+
+    const keys = [
+      ...rows.map((r) => r.r2Key),
+      ...listings.flatMap((l) =>
+        manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).map((ref) =>
+          mirroredPhotoKey(l.id, ref.s3Key),
+        ),
+      ),
+    ];
+
+    for (const key of keys) {
+      try {
+        await this.r2.publicDeleteObject(key);
+        deleted += 1;
+      } catch (err) {
+        this.logger.error(
+          `GDPR erasure could not delete public object ${key}: ${(err as Error).message}`,
+        );
+      }
+    }
+    if (listings.length > 0) {
+      await this.prisma.listing.updateMany({
+        where: { id: { in: listings.map((l) => l.id) } },
+        data: { publicPhotosMirroredAt: null },
+      });
+    }
+    return deleted;
+  }
+
   async mirrorPendingShowroomPhotos(
     batchSize = 50,
   ): Promise<{ scanned: number; mirrored: number; promoted: number; failed: number }> {

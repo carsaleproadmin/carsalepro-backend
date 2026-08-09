@@ -134,9 +134,19 @@ export class HealthController {
    * view convenient is a bad trade.
    */
   private maySeeDetails(provided?: string): boolean {
-    if (this.config.get('nodeEnv', { infer: true }) !== 'production') return true;
     const expected = this.config.get('startupCheck', { infer: true }).internalKey;
-    if (!expected || !provided) return false;
+    // Whenever a key is CONFIGURED it is required, whatever the environment.
+    // The original rule keyed only on production, which left a staging or
+    // preview deployment publishing bucket names, provider names and the LENGTH
+    // of `JWT_SECRET` to anyone who asked — `/health` is outside the `/api/v1`
+    // JWT scope, so there is nothing else in front of it. No value can leak
+    // (`describeEnvFinding` structurally cannot emit one), but the length of a
+    // signing secret is not nothing, and an environment that bothered to set a
+    // key has said what it wants.
+    if (!expected) {
+      return this.config.get('nodeEnv', { infer: true }) !== 'production';
+    }
+    if (!provided) return false;
     const a = Buffer.from(provided);
     const b = Buffer.from(expected);
     if (a.length !== b.length) return false;

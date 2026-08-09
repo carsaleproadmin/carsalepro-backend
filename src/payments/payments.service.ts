@@ -148,9 +148,15 @@ export class PaymentsService {
       throw err;
     }
 
+    // Guarded on `claimed`, so a handler that overran the stale window cannot
+    // mark the event processed after another delivery legitimately stole the
+    // claim. Unguarded, the slow original would overwrite the thief's claim,
+    // the thief's own failure-path delete would then match nothing, and the row
+    // would sit at `processed` — telling Stripe not to redeliver an event whose
+    // second run actually failed.
     await this.prisma.stripeWebhookEvent
       .updateMany({
-        where: { id: event.id },
+        where: { id: event.id, status: 'claimed' },
         data: { status: 'processed', processedAt: new Date() },
       })
       .catch(() => undefined);
