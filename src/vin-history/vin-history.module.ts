@@ -32,7 +32,7 @@ import { VinHistoryService } from './vin-history.service';
       provide: VIN_HISTORY_PROVIDER,
       inject: [ConfigService],
       useFactory: (config: ConfigService<AppConfig, true>) => {
-        const { provider } = config.get('vinHistory', { infer: true });
+        const { provider, allowSyntheticSale } = config.get('vinHistory', { infer: true });
         if (provider && provider !== 'mock') {
           // Fail LOUD but fall back SAFE: the mock refuses paid unlocks in
           // production, so a mis-set env var costs a 503, never a charge for
@@ -42,7 +42,10 @@ import { VinHistoryService } from './vin-history.service';
               'Paid unlocks will answer 503 provider_unavailable in production.',
           );
         }
-        return new MockVinHistoryProvider(config.get('nodeEnv', { infer: true }));
+        return new MockVinHistoryProvider(
+          config.get('nodeEnv', { infer: true }),
+          allowSyntheticSale,
+        );
       },
     },
   ],

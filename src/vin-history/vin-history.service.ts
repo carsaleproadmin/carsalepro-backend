@@ -18,12 +18,19 @@ import { StripeService } from '../payments/stripe.service';
 import {
   VinCheckDetailDto,
   VinCheckDownloadDto,
+  VinCheckDownloadFormat,
   VinCheckListDto,
   VinHistoryPreviewDto,
   VinHistoryUnlockDto,
 } from './dto/vin-history.dto';
 import { VinHistoryPayloadV1 } from './vin-history-payload-v1';
-import { VIN_HISTORY_PROVIDER, VinHistoryProvider } from './vin-history.provider';
+import { resolveVinHistoryPdfLocale } from './vin-history-pdf.i18n';
+import { renderVinHistoryPdf, vinHistoryPdfFilename } from './vin-history-pdf.renderer';
+import {
+  VIN_HISTORY_PROVIDER,
+  VinHistoryPreviewCounts,
+  VinHistoryProvider,
+} from './vin-history.provider';
 
 /**
  * Operator-facing alert for a VIN history that was paid for and could not be
@@ -76,6 +83,22 @@ const TERMINAL_PURCHASE_STATUSES: ReadonlySet<string> = new Set<VinHistoryPurcha
  * measured the real hit rate for German VINs.
  */
 const MIN_SELLABLE_RECORD_COUNT = 1;
+
+/**
+ * How often a purchase may fail to render before the renderer stops trying.
+ *
+ * The document is produced at fulfilment AND lazily on the first download,
+ * which makes the download path the backfill for every purchase made before it
+ * existed — cheaper and more honest than a migration that re-reads every old
+ * payload out of R2 to render documents most buyers never ask for. The flip
+ * side is that a payload this renderer cannot handle would otherwise be retried
+ * on every download forever, so the attempts are capped. A render failure never
+ * costs the buyer anything: the sale stands and the JSON stays available.
+ */
+const MAX_PDF_RENDER_ATTEMPTS = 3;
+
+/** The ledger reason for every refund this module issues. */
+const REFUND_REASON = 'vin_history_provider_failed';
 
 /**
  * A provider answer that arrived intact and holds nothing to sell.
@@ -134,7 +157,36 @@ export class VinHistoryService {
     const cached = await this.findFreshReport(vin);
 
     const payload = cached ? (cached.payload as unknown as VinHistoryPayloadV1) : null;
-    const summary = payload ? payload.summary : await this.provider.preview(vin);
+    // A warm cache answers from the payload we already hold; otherwise the
+    // provider's FREE probe. Note what does NOT happen here: the probe's answer
+    // is never written to the report cache. A real provider's free probe returns
+    // counts and nothing else, and caching it would leave a hollow report row
+    // that the next unlock would sell as a full one.
+    const probe = payload ? null : await this.provider.preview(vin);
+    const summary = payload ? payload.summary : probe!;
+    const counts: VinHistoryPreviewCounts = payload
+      ? {
+          // Array lengths, so the free preview and the paid report can never
+          // disagree about how much is in there.
+          mileageRecordCount: (payload.mileageRecords ?? []).length,
+          damageRecordCount: (payload.damageRecords ?? []).length,
+          registrationCount: (payload.registrations ?? []).length,
+          recallCount: (payload.recalls ?? []).length,
+          inspectionCount: (payload.inspections ?? []).length,
+        }
+      : {
+          // Straight from the provider, null included. Null means "not published
+          // before you pay" and must NOT be flattened to 0 — "0 accident
+          // records" is a claim about the car. The old code answered 0 for four
+          // of these and substituted the COUNTRY count for registrations, which
+          // happened to match in the mock and is simply wrong for a car
+          // registered twice in one country.
+          mileageRecordCount: probe!.mileageRecordCount ?? null,
+          damageRecordCount: probe!.damageRecordCount ?? null,
+          registrationCount: probe!.registrationCount ?? null,
+          recallCount: probe!.recallCount ?? null,
+          inspectionCount: probe!.inspectionCount ?? null,
+        };
 
     const [priceCents, cacheDays] = await Promise.all([
       this.settings.getCents('vinHistoryPriceEur'),
@@ -150,12 +202,8 @@ export class VinHistoryService {
         recordCount: summary.recordCount,
         ownersCount: summary.ownersCount,
         // The COUNT, never the list — see VinHistoryPreviewSummaryDto.
-        countriesCount: summary.countriesSeen.length,
-        mileageRecordCount: payload ? payload.mileageRecords.length : 0,
-        damageRecordCount: payload ? payload.damageRecords.length : 0,
-        registrationCount: payload ? payload.registrations.length : summary.countriesSeen.length,
-        recallCount: payload ? payload.recalls.length : 0,
-        inspectionCount: payload ? payload.inspections.length : 0,
+        countriesCount: (summary.countriesSeen ?? []).length,
+        ...counts,
         hasAccidentRecords: summary.hasAccidentRecords,
         hasSalvageOrTotalLoss: summary.hasSalvageOrTotalLoss,
         hasOdometerRollback: summary.hasOdometerRollback,
@@ -347,23 +395,42 @@ export class VinHistoryService {
       // The paid artefact. Null until the purchase is ready — a pending or
       // refunded purchase must not leak the data it did not pay for.
       payload: purchase.status === 'ready' ? payload : null,
+      pdfLocale: purchase.pdfLocale,
     };
   }
 
   /**
-   * A short-lived PRIVATE signed URL for the archived payload.
+   * A short-lived PRIVATE signed URL for what the buyer paid for.
+   *
+   * `pdf` (the default) is the rendered document — that is what a person means
+   * by "download my report"; `json` is the archived payload, for anyone
+   * integrating against it. The PDF is rendered on demand when it is missing,
+   * which is also how purchases made before the document existed get one.
    *
    * `createPrivateSignedUrl` is used rather than `createPresignedDownloadUrl`
    * because the latter short-circuits to `R2_PUBLIC_URL` when that is set, which
    * would make every purchased report world-readable the day an operator
-   * configures a public bucket base.
+   * configures a public bucket base. The signed URL carries a
+   * `Content-Disposition` filename so the browser saves
+   * `carsalepro-vin-history-<VIN>.pdf` rather than a cuid.
    */
-  async downloadMine(userId: string, id: string): Promise<VinCheckDownloadDto> {
+  async downloadMine(
+    userId: string,
+    id: string,
+    format: VinCheckDownloadFormat = 'pdf',
+  ): Promise<VinCheckDownloadDto> {
     const purchase = await this.requireOwnedPurchase(userId, id);
+
     // This buyer's own snapshot, falling back to the shared archive only for
     // purchases fulfilled before per-purchase keys existed.
-    const key = purchase.s3Key ?? purchase.report?.rawS3Key ?? null;
-    if (purchase.status !== 'ready' || !key || !this.r2.isConfigured()) {
+    const key =
+      purchase.status !== 'ready' || !this.r2.isConfigured()
+        ? null
+        : format === 'pdf'
+          ? await this.ensurePdfKey(purchase, purchase.report)
+          : (purchase.s3Key ?? purchase.report?.rawS3Key ?? null);
+
+    if (!key) {
       throw new NotFoundException({
         error: {
           code: 'download_unavailable',
@@ -371,8 +438,82 @@ export class VinHistoryService {
         },
       });
     }
-    const { url, expiresAt } = await this.r2.createPrivateSignedUrl(key);
-    return { url, expiresAt: expiresAt.toISOString(), contentType: 'application/json' };
+
+    const contentType = format === 'pdf' ? 'application/pdf' : 'application/json';
+    const filename =
+      format === 'pdf'
+        ? vinHistoryPdfFilename(purchase.vin)
+        : `carsalepro-vin-history-${purchase.vin}.json`;
+    const { url, expiresAt } = await this.r2.createPrivateSignedUrl(key, undefined, {
+      filename,
+      contentType,
+    });
+    return { url, expiresAt: expiresAt.toISOString(), contentType, format, filename };
+  }
+
+  // ============================================================
+  // The rendered document
+  // ============================================================
+
+  /**
+   * The R2 key of this purchase's PDF, rendering it first if need be.
+   *
+   * Returns null instead of throwing, always. A missing document is a degraded
+   * download, never a failed sale and never a broken JSON view — which is why
+   * `fulfill` can call this without a guard and why the buyer keeps everything
+   * they paid for when a render goes wrong.
+   *
+   * The key carries the locale, so a buyer who switches language gets a second
+   * document rather than an overwritten one, and the row points at the newest.
+   */
+  private async ensurePdfKey(
+    purchase: VinHistoryPurchase,
+    report: { payload: Prisma.JsonValue } | null = null,
+  ): Promise<string | null> {
+    if (purchase.status !== 'ready' || !this.r2.isConfigured()) return null;
+
+    const locale = resolveVinHistoryPdfLocale(await this.buyerLocale(purchase.userId));
+    if (purchase.pdfS3Key && purchase.pdfLocale === locale) return purchase.pdfS3Key;
+
+    // Capped. A payload this renderer cannot handle must not be re-attempted on
+    // every download for the rest of the purchase's life.
+    if (purchase.pdfAttempts >= MAX_PDF_RENDER_ATTEMPTS) return purchase.pdfS3Key ?? null;
+
+    const payload = this.soldPayload(purchase, report);
+    if (!payload) return purchase.pdfS3Key ?? null;
+
+    const provider = purchase.provider ?? this.provider.name;
+    const key = `vin-history/${provider}/${purchase.vin}/${purchase.id}-${locale}.pdf`;
+    try {
+      const pdf = await renderVinHistoryPdf(payload, {
+        locale,
+        purchaseId: purchase.id,
+        purchasedAt: purchase.readyAt ?? purchase.createdAt,
+      });
+      await this.r2.putObject(key, pdf, 'application/pdf');
+      await this.prisma.vinHistoryPurchase.update({
+        where: { id: purchase.id },
+        data: { pdfS3Key: key, pdfLocale: locale, pdfRenderedAt: new Date() },
+      });
+      return key;
+    } catch (err) {
+      this.logger.warn(
+        `VIN history PDF render failed for purchase ${purchase.id}: ${(err as Error).message}`,
+      );
+      await this.prisma.vinHistoryPurchase
+        .update({ where: { id: purchase.id }, data: { pdfAttempts: { increment: 1 } } })
+        .catch(() => undefined);
+      // A stale document in another language still beats no document at all.
+      return purchase.pdfS3Key ?? null;
+    }
+  }
+
+  /** The document is rendered in the buyer's own language. */
+  private async buyerLocale(userId: string): Promise<string | null> {
+    const user = await this.prisma.user
+      .findUnique({ where: { id: userId }, select: { locale: true } })
+      .catch(() => null);
+    return user?.locale ?? null;
   }
 
   // ============================================================
@@ -542,7 +683,7 @@ export class VinHistoryService {
       // successful paid lookup into a refund.
       const s3Key = await this.archive(vin, payload, purchaseId);
 
-      await this.prisma.vinHistoryPurchase.update({
+      const ready = await this.prisma.vinHistoryPurchase.update({
         where: { id: purchaseId },
         data: {
           status: 'ready',
@@ -556,6 +697,12 @@ export class VinHistoryService {
           s3Key,
         },
       });
+
+      // Render the document now so the first download is instant. Deliberately
+      // AFTER the purchase is `ready` and deliberately unguarded: ensurePdfKey
+      // swallows its own failures, because a renderer bug must not undo a sale
+      // that has already been paid for and delivered.
+      await this.ensurePdfKey(ready);
       return { ok: true };
     } catch (err) {
       await this.failAndRefund(purchase, paymentId, err as Error);
@@ -620,13 +767,16 @@ export class VinHistoryService {
 
   /** Issue the refund and record the ledger row. Returns false if it failed. */
   private async refundPayment(payment: Payment, reason: string): Promise<boolean> {
+    // Set once the ledger row says the money went back, so a failure AFTER that
+    // point cannot rewrite a successful refund as a failed one.
+    let recorded = false;
     try {
       let stripeRefundId: string;
       if (this.stripe.configured && payment.stripePaymentIntentId) {
         const refund = await this.stripe.createRefund(
           payment.stripePaymentIntentId,
           payment.amountCents,
-          'vin_history_provider_failed',
+          REFUND_REASON,
         );
         stripeRefundId = refund.id;
       } else {
@@ -636,20 +786,38 @@ export class VinHistoryService {
         stripeRefundId = `re_local_${payment.id}`;
       }
 
-      await this.prisma.refund
-        .create({
-          data: {
-            paymentId: payment.id,
-            amountCents: payment.amountCents,
-            reason: 'vin_history_provider_failed',
-            stripeRefundId,
-          },
-        })
-        .catch((err: unknown) => {
-          // Already refunded (replay) — the row is the idempotency marker.
-          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return;
-          throw err;
-        });
+      // Upsert on the payment rather than create-and-swallow-P2002.
+      // `Refund.paymentId` is unique, so a second row was never possible; what
+      // the old catch actually did was leave an EARLIER row untouched. After a
+      // first attempt that failed, the retry that succeeded would leave that row
+      // reading `failed` for ever — money returned, still shown as owed.
+      //
+      // `status` is written explicitly. It defaults to 'pending', so every VIN
+      // history refund that had in fact settled was sitting in the admin refund
+      // queue as unresolved, and the finance summary could not be narrowed to
+      // refunds that really happened.
+      await this.prisma.refund.upsert({
+        where: { paymentId: payment.id },
+        create: {
+          paymentId: payment.id,
+          amountCents: payment.amountCents,
+          reason: REFUND_REASON,
+          stripeRefundId,
+          status: 'succeeded',
+          attempts: 1,
+          lastAttemptAt: new Date(),
+        },
+        update: {
+          amountCents: payment.amountCents,
+          stripeRefundId,
+          status: 'succeeded',
+          attempts: { increment: 1 },
+          lastAttemptAt: new Date(),
+          lastError: null,
+          nextRetryAt: null,
+        },
+      });
+      recorded = true;
 
       await this.prisma.payment.update({
         where: { id: payment.id },
@@ -660,11 +828,48 @@ export class VinHistoryService {
       );
       return true;
     } catch (err) {
-      this.logger.error(
-        `Refund FAILED for VIN history payment ${payment.id}: ${(err as Error).message}`,
-      );
+      const message = (err as Error).message;
+      this.logger.error(`Refund FAILED for VIN history payment ${payment.id}: ${message}`);
+      if (!recorded) await this.parkFailedRefund(payment, message);
       return false;
     }
+  }
+
+  /**
+   * Record a refund that did not go through.
+   *
+   * A `Refund` row is the ledger's statement that money is owed back, so a
+   * failed attempt gets one too — otherwise the only trace of a payment we kept
+   * by accident is a log line and one notification.
+   *
+   * Written TERMINAL (`nextRetryAt: null`) on purpose:
+   * `OrdersService.retryStuckRefunds` selects only refunds that belong to an
+   * ORDER, and a VIN history refund has none. Scheduling a retry here would put
+   * a row in a queue nobody drains, which reads as "being handled" and is not.
+   * This needs a human, which is exactly what the admin alert beside it says.
+   */
+  private async parkFailedRefund(payment: Payment, error: string): Promise<void> {
+    const data = {
+      amountCents: payment.amountCents,
+      status: 'failed',
+      lastError: error.slice(0, 500),
+      lastAttemptAt: new Date(),
+      nextRetryAt: null,
+    };
+    await this.prisma.refund
+      .upsert({
+        where: { paymentId: payment.id },
+        create: { paymentId: payment.id, reason: REFUND_REASON, attempts: 1, ...data },
+        update: { attempts: { increment: 1 }, ...data },
+      })
+      .catch((err: unknown) => {
+        // The refund already failed; losing the record of that must not throw
+        // into the caller as well.
+        this.logger.error(
+          `Could not record the failed VIN history refund for payment ${payment.id}: ` +
+            (err as Error).message,
+        );
+      });
   }
 
   /** Fan an alert out to every active admin. Never throws. */
