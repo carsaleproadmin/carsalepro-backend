@@ -59,6 +59,15 @@ services:
         sync: false
       - key: R2_KYC_SECRET_ACCESS_KEY
         sync: false
+      # Pinned, not left to the code default: address verification and password
+      # reset are delivered by email only, and Resend refuses a From address
+      # whose domain it has not verified. `notifications.carsalepro.de` is the
+      # verified domain — the apex is not. Changing this to an unverified
+      # domain silently stops every account-recovery mail.
+      - key: EMAIL_FROM
+        value: CarSalePro <no-reply@notifications.carsalepro.de>
+      - key: RESEND_API_KEY
+        sync: false
       - key: VIN_HISTORY_ALLOW_SYNTHETIC_SALE
         sync: false
       - key: SENTRY_DSN

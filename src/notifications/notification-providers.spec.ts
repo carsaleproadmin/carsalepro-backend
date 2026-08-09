@@ -31,7 +31,7 @@ function makeProvider(opts: { key?: string; replyTo?: string } = {}): EmailProvi
       if (section !== 'email') throw new Error(`unexpected config section ${section}`);
       return {
         resendApiKey: opts.key ?? '',
-        from: 'no-reply@carsalepro.de',
+        from: 'no-reply@notifications.carsalepro.de',
         replyTo: opts.replyTo,
       };
     }),
@@ -80,7 +80,7 @@ describe('EmailProviderImpl (Resend)', () => {
 
     expect(mockSend).toHaveBeenCalledTimes(1);
     const payload = mockSend.mock.calls[0][0] as Record<string, unknown>;
-    expect(payload.from).toBe('no-reply@carsalepro.de');
+    expect(payload.from).toBe('no-reply@notifications.carsalepro.de');
     expect(payload.to).toEqual([TARGET.address]);
     expect(payload.subject).toBe(MESSAGE.subject);
     expect(payload.text).toBe(MESSAGE.body);
