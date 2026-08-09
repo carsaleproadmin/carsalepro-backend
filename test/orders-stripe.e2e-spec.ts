@@ -795,6 +795,82 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
       });
     });
 
+    /**
+     * The 17-angle arithmetic, as executable cases rather than a comment.
+     *
+     * The mobile score prorates a fixed 25 points over the REQUIRED exterior
+     * angles, so growing the walk-around from 8 to 17 lowered the score of the
+     * very same inspection. `minReportQualityScore` moved 90 -> 85 to sit
+     * inside a window bounded on both sides — and the bounds are what these
+     * three cases pin, since the middle of a range is easy to keep and the
+     * edges are what a future tweak breaks.
+     */
+    it('7e. a report shot before the 17-angle expansion (87) still closes an order', async () => {
+      // 8 of 17 exterior = round(25 * 8/17) = 12, everything else complete.
+      // At the old 90 this same report would have been refused, which is the
+      // whole reason the threshold moved with the catalog.
+      const { orderId, token } = await orderInProgress();
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const report = await seedReport(order.inspectorId as string, 87);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/report`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: report.code })
+        .expect(200);
+
+      expect(
+        (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status,
+      ).toBe(OrderStatus.SUBMITTED);
+    });
+
+    it('7f. skipping the engine bay and open bonnet (93) closes an order', async () => {
+      // 12 of 17 exterior = 18, everything else complete. The client asked for
+      // exactly this: an inspector without a lift, or with a hot engine, must
+      // still be able to close the job.
+      const { orderId, token } = await orderInProgress();
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const report = await seedReport(order.inspectorId as string, 93);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/report`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: report.code })
+        .expect(200);
+
+      expect(
+        (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status,
+      ).toBe(OrderStatus.SUBMITTED);
+    });
+
+    it('7g. a report that does not identify the vehicle (80) is still refused', async () => {
+      // All 17 angles, both calibrations, the gauge, a signature — and no
+      // make/model/VIN, which costs the whole 20-point identity component.
+      // This is the lower bound: drop the threshold to 80 and a paid inspection
+      // could be closed with a report that never says which car it is.
+      const { orderId, token } = await orderInProgress();
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const report = await seedReport(order.inspectorId as string, 80);
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/report`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: report.code })
+        .expect(409);
+
+      expect(res.body.error.code).toBe('report_quality_too_low');
+      expect(res.body.qualityScore).toBe(80);
+      expect(res.body.minQualityScore).toBe(MIN_QUALITY);
+    });
+
+    it('7h. the threshold stays inside the window the angle count implies', () => {
+      // Upper bound 87: a legacy 8-of-17 report must stay closable.
+      // Lower bound 81: a report with no vehicle identity scores 80 and must not.
+      expect(MIN_QUALITY).toBeGreaterThan(80);
+      expect(MIN_QUALITY).toBeLessThanOrEqual(87);
+      expect(MIN_QUALITY).toBe(85);
+    });
+
     it('7d. minReportQualityScore = 0 turns the gate off', async () => {
       const { orderId, token } = await orderInProgress();
       const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });

@@ -101,7 +101,11 @@ export class PublicService {
 
     const inspection = this.inspectionOf(listing);
     const inspected = inspection.status === 'inspected';
-    const photos = await this.listingPhotos(listing, 12);
+    // The detail page shows the whole mirrored subset. It was capped at 12
+    // independently of MAX_LISTING_PHOTOS, so raising that constant alone
+    // changed nothing here — and 12 no longer even covers the 17 required
+    // exterior angles, let alone the cabin.
+    const photos = await this.listingPhotos(listing, MAX_LISTING_PHOTOS);
 
     return {
       id: listing.id,
@@ -268,7 +272,7 @@ export class PublicService {
   private async listingPhotos(
     listing: ListingWithReport,
     limit: number,
-  ): Promise<{ url: string; kind?: string }[]> {
+  ): Promise<{ url: string; kind?: string; angle?: string }[]> {
     if (listing.source === 'report' && listing.report) {
       return this.reportPhotos(listing, listing.report.photosManifest, limit);
     }
@@ -279,7 +283,7 @@ export class PublicService {
       orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
       take: limit,
     });
-    const out: { url: string; kind?: string }[] = [];
+    const out: { url: string; kind?: string; angle?: string }[] = [];
     for (const row of rows) {
       if (photoLocation(row.bucket, publicConfigured) === 'public') {
         out.push({ url: this.r2.publicObjectUrl(row.r2Key), kind: 'listing' });
@@ -312,12 +316,13 @@ export class PublicService {
     listing: ListingWithReport,
     manifest: Prisma.JsonValue | null,
     limit: number,
-  ): Promise<{ url: string; kind?: string }[]> {
+  ): Promise<{ url: string; kind?: string; angle?: string }[]> {
     if (listing.publicPhotosMirroredAt && this.r2.isPublicBucketConfigured()) {
       const refs = manifestPhotoRefs(manifest, Math.min(limit, MAX_LISTING_PHOTOS));
       const mirrored = refs.map((ref) => ({
         url: this.r2.publicObjectUrl(mirroredPhotoKey(listing.id, ref.s3Key)),
         ...(ref.kind ? { kind: ref.kind } : {}),
+        ...(ref.angle ? { angle: ref.angle } : {}),
       }));
       // Every showroom caller asks for 1 or 12, so this is the only branch that
       // ever runs. The tail below exists so that raising the display limit past
@@ -333,14 +338,18 @@ export class PublicService {
   private async signPhotos(
     manifest: Prisma.JsonValue | null,
     limit: number,
-  ): Promise<{ url: string; kind?: string }[]> {
+  ): Promise<{ url: string; kind?: string; angle?: string }[]> {
     if (!this.r2.isConfigured()) return [];
     const refs = manifestPhotoRefs(manifest, limit);
-    const out: { url: string; kind?: string }[] = [];
+    const out: { url: string; kind?: string; angle?: string }[] = [];
     for (const ref of refs) {
       try {
         const { url } = await this.r2.createPresignedDownloadUrl(ref.s3Key);
-        out.push({ url, ...(ref.kind ? { kind: ref.kind } : {}) });
+        out.push({
+          url,
+          ...(ref.kind ? { kind: ref.kind } : {}),
+          ...(ref.angle ? { angle: ref.angle } : {}),
+        });
       } catch {
         /* skip unsignable */
       }

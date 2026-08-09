@@ -78,7 +78,12 @@ describe('mirroredPhotoKey', () => {
 
 describe('manifestPhotoRefs', () => {
   it('keeps order and caps at the limit', () => {
-    const manifest = Array.from({ length: 30 }, (_, i) => ({ s3Key: `k${i}.jpg`, kind: 'ext' }));
+    // Sized off the cap, not a literal: every kind here has the same sort rank,
+    // so the stable sort must leave them exactly as stored.
+    const manifest = Array.from({ length: MAX_LISTING_PHOTOS + 10 }, (_, i) => ({
+      s3Key: `k${i}.jpg`,
+      kind: 'ext',
+    }));
     const refs = manifestPhotoRefs(manifest, MAX_LISTING_PHOTOS);
     expect(refs).toHaveLength(MAX_LISTING_PHOTOS);
     expect(refs[0].s3Key).toBe('k0.jpg');
@@ -115,5 +120,49 @@ describe('manifestPhotoRefs', () => {
       [{ s3Key: 'a.jpg', kind: 'front', angle: 'diag_front_left' }],
     );
     expect(manifestPhotoRefs([{ s3Key: 'a.jpg', kind: 7 }], 5)).toEqual([{ s3Key: 'a.jpg' }]);
+  });
+
+  /**
+   * THE regression test for the showroom gallery.
+   *
+   * Manifests written before 2026-08-10 are stored in `kind ASC` order, which
+   * puts `damage-*` ahead of `exterior-*`. Truncating before sorting therefore
+   * handed the showroom twenty scratch macros and no picture of the car — and
+   * that is what every listing in the database still holds today, so the sort
+   * has to happen on READ, not only in the mirror.
+   */
+  it('sorts by the catalog walk-around BEFORE it truncates', () => {
+    const manifest = [
+      ...Array.from({ length: 25 }, (_, i) => ({ s3Key: `dmg${i}.jpg`, kind: `damage-${i}` })),
+      { s3Key: 'rear.jpg', kind: 'exterior-rear' },
+      { s3Key: 'opener.jpg', kind: 'exterior-diag_front_left' },
+      { s3Key: 'wheel.jpg', kind: 'wheel-fl' },
+    ];
+    const refs = manifestPhotoRefs(manifest, 3);
+    expect(refs.map((r) => r.s3Key)).toEqual(['opener.jpg', 'rear.jpg', 'wheel.jpg']);
+  });
+
+  it('fills in a missing angle from the kind, and never overwrites a stored one', () => {
+    // Old manifests carry no `angle` at all — the field was in the read DTOs
+    // from the start and written by nothing until this change.
+    expect(manifestPhotoRefs([{ s3Key: 'a.jpg', kind: 'exterior-trunk_open' }], 5)).toEqual([
+      { s3Key: 'a.jpg', kind: 'exterior-trunk_open', angle: 'trunk_open' },
+    ]);
+    // A stored value wins, even a stale one: this parser resolves, it does not
+    // adjudicate.
+    expect(
+      manifestPhotoRefs([{ s3Key: 'a.jpg', kind: 'exterior-front', angle: 'legacy_id' }], 5),
+    ).toEqual([{ s3Key: 'a.jpg', kind: 'exterior-front', angle: 'legacy_id' }]);
+    // A non-angle kind gets no angle key at all, rather than a null.
+    expect(manifestPhotoRefs([{ s3Key: 'd.jpg', kind: 'damage-1' }], 5)).toEqual([
+      { s3Key: 'd.jpg', kind: 'damage-1' },
+    ]);
+  });
+
+  it('caps at 32, which is the 17 exterior + 12 interior guided slots plus room', () => {
+    // Derived, not chosen: the manual seller editor builds its slots from the
+    // catalog, so a smaller cap would advertise slots the API refuses.
+    expect(MAX_LISTING_PHOTOS).toBe(32);
+    expect(MAX_LISTING_PHOTOS).toBeGreaterThanOrEqual(17 + 12);
   });
 });
