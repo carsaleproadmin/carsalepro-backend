@@ -24,7 +24,6 @@ const DOCUMENTED_EDGES: Array<[OrderStatus, OrderStatus]> = [
   [OrderStatus.UNASSIGNED, OrderStatus.ASSIGNED],
   [OrderStatus.UNASSIGNED, OrderStatus.CANCELLED],
   [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE],
-  [OrderStatus.ASSIGNED, OrderStatus.UNASSIGNED],
   [OrderStatus.ASSIGNED, OrderStatus.CANCELLED],
   [OrderStatus.EN_ROUTE, OrderStatus.IN_PROGRESS],
   [OrderStatus.EN_ROUTE, OrderStatus.CANCELLED],
@@ -166,6 +165,19 @@ describe('order state machine', () => {
   it('only reaches REFUNDED through CANCELLED or a resolved dispute', () => {
     const intoRefunded = ALL.filter((from) => canTransition(from, OrderStatus.REFUNDED));
     expect(intoRefunded.sort()).toEqual([OrderStatus.CANCELLED, OrderStatus.DISPUTED].sort());
+  });
+
+  it('cannot send an ASSIGNED order back to the search pool', () => {
+    // Deleted with manual capture. The money is captured at acceptance, so an
+    // order returned to UNASSIGNED would be re-offered while already paid for,
+    // and `expireUnfilledSearches` would try to release a hold that was taken.
+    // Losing an inspector after assignment is a cancellation or a dispute.
+    expect(canTransition(OrderStatus.ASSIGNED, OrderStatus.UNASSIGNED)).toBe(false);
+    // UNASSIGNED stays reachable from the states that precede assignment —
+    // that is dispatch running out of candidates, which is a different event.
+    expect(canTransition(OrderStatus.PAID, OrderStatus.UNASSIGNED)).toBe(true);
+    const intoUnassigned = ALL.filter((from) => canTransition(from, OrderStatus.UNASSIGNED));
+    expect(intoUnassigned).toEqual([OrderStatus.PAID]);
   });
 
   it('is total: an unknown status is refused, not crashed on', () => {

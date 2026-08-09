@@ -61,6 +61,19 @@ export class AdminSettingsController {
         error: { code: 'invalid_value', message: 'Percent settings must be between 0 and 100' },
       });
     }
+    // The completeness gate is a score out of 100, so anything above it refuses
+    // EVERY report — the platform would quietly stop being able to close an
+    // order at all, and the only symptom would be inspectors reporting that
+    // their perfectly good reports bounce. `0` is a legitimate value here and
+    // means the gate is off; that is the deliberate emergency lever.
+    if (settingKey === 'minReportQualityScore' && dto.value > 100) {
+      throw new BadRequestException({
+        error: {
+          code: 'invalid_value',
+          message: 'minReportQualityScore must be between 0 (gate off) and 100',
+        },
+      });
+    }
 
     const previous = await this.settings.getNumber(settingKey);
     await this.settings.set(settingKey, dto.value, adminId);

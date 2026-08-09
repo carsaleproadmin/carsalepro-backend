@@ -1,6 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
+import { PaymentsService } from '../src/payments/payments.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 const r2Configured = Boolean(
@@ -32,10 +33,12 @@ async function registerUser(
 describe('Payments — Reports Store / pay-per-view (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let payments: PaymentsService;
 
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
+    payments = app.get(PaymentsService);
   });
 
   afterAll(async () => {
@@ -265,6 +268,62 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
 
   it('9b. GET /api/v1/me/report-purchases without a token returns 401', async () => {
     await request(app.getHttpServer()).get('/api/v1/me/report-purchases').expect(401);
+  });
+
+  it('9c. a refunded purchase loses access, and the same buyer can purchase again', async () => {
+    const { token, userId } = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/payments/ppv')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ reportCode: code })
+      .expect(201);
+    await request(app.getHttpServer())
+      .get(`/api/v1/reports/${report.id}/full`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const purchase = await prisma.reportPurchase.findUniqueOrThrow({
+      where: { userId_reportId: { userId, reportId: report.id } },
+    });
+    await payments.markPaymentRefunded(purchase.paymentId);
+
+    // Money back, access gone — the two are one operation.
+    await request(app.getHttpServer())
+      .get(`/api/v1/reports/${report.id}/full`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(403);
+    const listed = await request(app.getHttpServer())
+      .get('/api/v1/me/report-purchases')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(
+      listed.body.items.find((i: { reportId: string }) => i.reportId === report.id),
+    ).toBeUndefined();
+
+    // And the buyer is not locked out for ever: `@@unique([userId, reportId])`
+    // means the revoked row IS the buyer's history with this report, so a new
+    // purchase has to revive it rather than insert beside it.
+    const again = await request(app.getHttpServer())
+      .post('/api/v1/payments/ppv')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ reportCode: code })
+      .expect(201);
+    expect(again.body.alreadyOwned).toBeUndefined();
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/reports/${report.id}/full`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const revived = await prisma.reportPurchase.findUniqueOrThrow({
+      where: { userId_reportId: { userId, reportId: report.id } },
+    });
+    expect(revived.revokedAt).toBeNull();
+    expect(revived.paymentId).not.toBe(purchase.paymentId);
+    expect(await prisma.reportPurchase.count({ where: { userId, reportId: report.id } })).toBe(1);
   });
 
   it('10. POST /webhooks/stripe with Stripe unconfigured returns 200 {skipped:true}', async () => {

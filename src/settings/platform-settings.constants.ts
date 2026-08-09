@@ -24,7 +24,9 @@ export const SETTING_KEYS = {
   listingDurationDays: 'listingDurationDays',
   expertSearchRadiusKm: 'expertSearchRadiusKm',
   offerTimeoutMinutes: 'offerTimeoutMinutes',
+  orderSearchWindowMinutes: 'orderSearchWindowMinutes',
   autoApproveAfterDays: 'autoApproveAfterDays',
+  minReportQualityScore: 'minReportQualityScore',
   refundBeforeAssignPercent: 'refundBeforeAssignPercent',
   refundAfterAssignPercent: 'refundAfterAssignPercent',
   signedUrlTtlMinutes: 'signedUrlTtlMinutes',
@@ -70,7 +72,26 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   listingDurationDays: 30,
   expertSearchRadiusKm: 50,
   offerTimeoutMinutes: 60,
+  /**
+   * How long we keep looking for an inspector before releasing the customer's
+   * authorization hold and cancelling (six hours).
+   *
+   * The ceiling is Stripe's: an uncaptured authorization expires after 7 days,
+   * and letting a hold sit anywhere near that strands real money. The floor is
+   * coverage — too short and orders in thin regions fail that could have been
+   * filled. A product number, meant to be tuned from the admin panel once real
+   * fill times exist.
+   */
+  orderSearchWindowMinutes: 360,
   autoApproveAfterDays: 7,
+  /**
+   * Completeness gate: an order may only be closed with a report scoring at
+   * least this. **`0` disables the gate** — that is the operational lever, and
+   * the reason this is a setting rather than a constant: an inspector on an
+   * older mobile build may file a report with no score at all, and discovering
+   * that in production must be fixable from the admin panel in a minute.
+   */
+  minReportQualityScore: 90,
   refundBeforeAssignPercent: 100,
   refundAfterAssignPercent: 80,
   signedUrlTtlMinutes: 15,
@@ -96,5 +117,10 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   'orderRatePerMinuteEur',
   'orderMinimumFareEur',
   'vinHistoryPriceEur',
+  // How long the customer's hold is held while we look for an inspector. The
+  // website shows it on the order page as "we are searching until …", so it has
+  // to be public: a countdown the client invents from a hardcoded constant
+  // silently lies the day an operator retunes the window.
+  'orderSearchWindowMinutes',
 ];
 
