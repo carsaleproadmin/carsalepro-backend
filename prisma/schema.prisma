@@ -283,6 +283,10 @@ model KycDocument {
 
   application KycApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
 
+  /// One document per kind. Re-uploading an ID front REPLACES it; without this
+  /// the table accumulated rows and every reader picked one non-deterministically
+  /// — the reviewer could be looking at a superseded document.
+  @@unique([applicationId, kind])
   @@index([applicationId])
   @@map("kyc_document")
 }
@@ -345,6 +349,14 @@ model Order {
   contractId    String?   @unique @map("contract_id")
   autoApproveAt DateTime? @map("auto_approve_at")
   submittedAt   DateTime? @map("submitted_at")
+  /// Deadline for finding an inspector, set when the payment is AUTHORIZED.
+  /// Past it with nobody assigned, the cron releases the hold and cancels.
+  ///
+  /// **Null is load-bearing and must never be backfilled.** An order created
+  /// before manual capture shipped already had its money CHARGED, so a release
+  /// attempt would target a hold that does not exist. Null means "pre-manual-
+  /// capture order — leave it alone".
+  searchExpiresAt DateTime? @map("search_expires_at")
   createdAt     DateTime  @default(now())
 
   customer  User              @relation("CustomerOrders", fields: [customerId], references: [id])
@@ -361,6 +373,7 @@ model Order {
   @@index([status])
   @@index([customerId])
   @@index([inspectorId])
+  @@index([status, searchExpiresAt])
   @@map("order")
 }
 
@@ -400,17 +413,36 @@ model OrderEvent {
 // Payments (ledger, amounts in integer cents)
 // ============================================================
 
+/// The money ledger row for one charge.
+///
+/// `status` gained `authorized` when order payments moved to manual capture:
+/// `pending → authorized → succeeded` (captured), or `pending|authorized →
+/// cancelled` when the hold is released. Non-order purposes (ppv, gold,
+/// vin_history) are still charged immediately and never see `authorized`.
+///
+/// **`authorized` is not an OrderStatus.** Money state is orthogonal to
+/// workflow state: an order whose card is authorized but which has no inspector
+/// yet is `Order.status = PAID` + `Payment.status = 'authorized'`. Adding a
+/// status to the order enum instead would have meant rewriting every transition
+/// guard for a fact the state machine does not care about.
 model Payment {
-  id                      String   @id @default(cuid())
-  orderId                 String?  @unique @map("order_id")
+  id                      String    @id @default(cuid())
+  orderId                 String?   @unique @map("order_id")
   purpose                 String // order | ppv | gold | vin_history
-  userId                  String   @map("user_id")
-  amountCents             Int      @map("amount_cents")
-  currency                String   @default("EUR")
-  status                  String // pending|succeeded|failed
-  stripePaymentIntentId   String?  @unique @map("stripe_payment_intent_id")
-  stripeCheckoutSessionId String?  @unique @map("stripe_checkout_session_id")
-  createdAt               DateTime @default(now())
+  userId                  String    @map("user_id")
+  amountCents             Int       @map("amount_cents")
+  currency                String    @default("EUR")
+  status                  String // pending|authorized|succeeded|failed|cancelled
+  stripePaymentIntentId   String?   @unique @map("stripe_payment_intent_id")
+  stripeCheckoutSessionId String?   @unique @map("stripe_checkout_session_id")
+  /// Card authorized, funds held, nothing taken yet.
+  authorizedAt            DateTime? @map("authorized_at")
+  /// Funds actually taken. Backfilled from `createdAt` for pre-manual-capture
+  /// payments so an old charge is never mistaken for an open hold.
+  capturedAt              DateTime? @map("captured_at")
+  /// Hold released without charging.
+  canceledAt              DateTime? @map("canceled_at")
+  createdAt               DateTime  @default(now())
 
   order              Order?              @relation(fields: [orderId], references: [id])
   user               User                @relation(fields: [userId], references: [id])
@@ -419,6 +451,7 @@ model Payment {
   refund             Refund?
 
   @@index([userId])
+  @@index([status, createdAt])
   @@map("payment")
 }
 
@@ -429,19 +462,46 @@ model Payment {
 /// automatically and has no order to hang off. Order refunds (fired only from
 /// the state machine) still record the order; non-order refunds record the
 /// payment instead, so every row still points at exactly one thing.
+/// A Refund row means MONEY WENT BACK, or is still trying to. It is never
+/// written for a hold that was merely released — an uncaptured authorization
+/// never left the customer's account, so recording a "refund" for it would
+/// double-count every cancelled-before-assignment order in the finance ledger.
+/// That case emits an `authorization_released` OrderEvent instead.
+///
+/// Retry state mirrors `Payout` deliberately: a refund that Stripe rejects must
+/// become a parked, visible, retryable operator task rather than a 500 thrown
+/// into a state transition. Before this existed, a failed refund aborted
+/// `cancel`, leaving the order in its old status with the money still taken —
+/// and the customer looking at a generic error.
 model Refund {
-  id             String   @id @default(cuid())
-  orderId        String?  @map("order_id")
-  paymentId      String?  @unique @map("payment_id")
-  amountCents    Int      @map("amount_cents")
+  id             String    @id @default(cuid())
+  orderId        String?   @map("order_id")
+  paymentId      String?   @unique @map("payment_id")
+  amountCents    Int       @map("amount_cents")
   reason         String // cancel_before_assign|cancel_after_assign|dispute|admin|vin_history_provider_failed
-  stripeRefundId String   @unique @map("stripe_refund_id")
-  createdAt      DateTime @default(now())
+  /// Null until Stripe accepts the refund. Nullable because the row is written
+  /// BEFORE the provider call, so a failure is recorded rather than lost.
+  stripeRefundId String?   @unique @map("stripe_refund_id")
+  /// pending | succeeded | failed
+  status         String    @default("pending")
+  /// Provider attempts. Retries stop at a cap so a permanently broken refund
+  /// becomes an operator task instead of an endless loop.
+  attempts       Int       @default(0)
+  lastError      String?   @map("last_error")
+  lastAttemptAt  DateTime? @map("last_attempt_at")
+  /// When the retry cron may try again. Null = terminal, needs a human.
+  nextRetryAt    DateTime? @map("next_retry_at")
+  createdAt      DateTime  @default(now())
 
   order   Order?   @relation(fields: [orderId], references: [id])
   payment Payment? @relation(fields: [paymentId], references: [id])
 
+  /// One refund per (order, reason) — makes `settleRefund` an upsert, so a
+  /// retried cancellation tops up the existing row instead of minting a second
+  /// one and refunding twice.
+  @@unique([orderId, reason])
   @@index([orderId])
+  @@index([status, nextRetryAt])
   @@map("refund")
 }
 
@@ -469,11 +529,26 @@ model Payout {
   @@map("payout")
 }
 
+/// Idempotency AND concurrency control for Stripe deliveries.
+///
+/// The row used to be written only after successful handling, which makes a
+/// replay a no-op but does nothing about two deliveries of the SAME event
+/// arriving at once — both found no row and both ran the handler, so a payment
+/// could be captured or a payout transferred twice. Handling now *claims* the
+/// event first (insert `claimed`), runs, then marks it `processed`; an
+/// exception deletes the claim so Stripe's own retry can pick it up again.
+/// A claim older than `WEBHOOK_CLAIM_STALE_MS` may be stolen, so a process that
+/// died mid-handler cannot wedge an event forever.
 model StripeWebhookEvent {
-  id          String   @id // stripe event id
+  id          String    @id // stripe event id
   type        String
-  processedAt DateTime @default(now())
+  /// claimed | processed
+  status      String    @default("processed")
+  attempts    Int       @default(0)
+  claimedAt   DateTime? @map("claimed_at")
+  processedAt DateTime  @default(now())
 
+  @@index([status, claimedAt])
   @@map("stripe_webhook_event")
 }
 
@@ -538,6 +613,12 @@ model Listing {
   /// Structured seller-declared payload (ListingVehicleV1Dto). Manual only.
   vehicleData       Json?         @map("vehicle_data")
   viewsCount        Int           @default(0) @map("views_count")
+  /// When the showroom subset of a REPORT-backed listing's photos was copied
+  /// into the public bucket. Report photos live in the private reports bucket
+  /// beside paid PDFs, so they cannot be served directly — they are mirrored
+  /// under a deterministic key instead. Null = not mirrored yet, fall back to
+  /// signed URLs.
+  publicPhotosMirroredAt DateTime? @map("public_photos_mirrored_at")
   publishedAt       DateTime?     @map("published_at")
   expiresAt         DateTime?     @map("expires_at")
   createdAt         DateTime      @default(now())
@@ -562,6 +643,12 @@ model ListingPhoto {
   id          String   @id @default(cuid())
   listingId   String   @map("listing_id")
   r2Key       String   @unique @map("r2_key")
+  /// Which R2 bucket holds the object. NULL = the private reports bucket, served
+  /// through a 15-minute signed URL; a value = the dedicated PUBLIC bucket,
+  /// served as a permanent immutable URL. Recorded per row so the cutover is a
+  /// gradual, resumable migration rather than a flag day — and so code stays
+  /// dark until `R2_PUBLIC_*` is configured.
+  bucket      String?
   /// Compressed size stored in R2.
   sizeBytes   Int      @map("size_bytes")
   /// Original upload size (diagnostics).
@@ -581,12 +668,25 @@ model ListingPhoto {
   @@map("listing_photo")
 }
 
+/// A pay-per-view unlock of one report.
+///
+/// `revokedAt` exists because `@@unique([userId, reportId])` makes the purchase
+/// permanent: deleting the row on refund would be the obvious move and is the
+/// wrong one — it erases the audit trail of a charge that really happened. So a
+/// refunded purchase is marked instead, and both `assertReportAccess` (which
+/// must now deny it) and `createPpvCheckout` (which must now let the same buyer
+/// pay again) read the mark. Without the second half, a refund would lock the
+/// customer out of ever re-buying that report.
 model ReportPurchase {
-  id        String   @id @default(cuid())
-  userId    String   @map("user_id")
-  reportId  String   @map("report_id")
-  paymentId String   @unique @map("payment_id")
-  createdAt DateTime @default(now())
+  id            String    @id @default(cuid())
+  userId        String    @map("user_id")
+  reportId      String    @map("report_id")
+  paymentId     String    @unique @map("payment_id")
+  /// Set when the underlying payment was refunded — access is revoked and the
+  /// report may be purchased again.
+  revokedAt     DateTime? @map("revoked_at")
+  revokedReason String?   @map("revoked_reason")
+  createdAt     DateTime  @default(now())
 
   user    User    @relation(fields: [userId], references: [id])
   payment Payment @relation(fields: [paymentId], references: [id])
@@ -753,6 +853,15 @@ model VinHistoryPurchase {
   payload       Json?
   /// R2 key of this buyer's own archived copy, served only via a signed URL.
   s3Key         String?   @map("s3_key")
+  /// R2 key of the rendered PDF. The key carries the locale, so re-rendering in
+  /// another language adds a document instead of overwriting one.
+  pdfS3Key      String?   @map("pdf_s3_key")
+  pdfLocale     String?   @map("pdf_locale")
+  pdfRenderedAt DateTime? @map("pdf_rendered_at")
+  /// Render attempts, capped — a payload the renderer cannot handle must not
+  /// retry on every download. A render failure never fails the sale: the JSON
+  /// view stays available.
+  pdfAttempts   Int       @default(0) @map("pdf_attempts")
   createdAt     DateTime  @default(now()) @map("created_at")
   readyAt       DateTime? @map("ready_at")
 
