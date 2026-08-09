@@ -1,5 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { KycStatus } from '@prisma/client';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import request from 'supertest';
 import { KycService } from '../src/kyc/kyc.service';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -38,6 +40,26 @@ async function makeAdmin(app: INestApplication, prisma: PrismaService): Promise<
   return { token: res.body.token as string, userId: u.userId, email: u.email };
 }
 
+/** A real PNG the backend's sharp pipeline can actually decode. */
+const PNG = readFileSync(join(__dirname, 'fixtures', 'small-800x600.png'));
+
+/**
+ * A minimal but genuinely parseable PDF. KYC PDFs are stored VERBATIM, so the
+ * bytes that come back out must be byte-identical to these.
+ */
+const PDF = Buffer.from(
+  [
+    '%PDF-1.4',
+    '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj',
+    '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj',
+    '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj',
+    'trailer<</Root 1 0 R>>',
+    '%%EOF',
+    '',
+  ].join('\n'),
+  'latin1',
+);
+
 /**
  * A URL that must never appear in a KYC view URL. `createPresignedDownloadUrl`
  * short-circuits to R2_PUBLIC_URL when it is set, which is right for public
@@ -55,6 +77,8 @@ describe('KYC verification (e2e)', () => {
   let expectedBucket: string | null;
 
   const createdUserIds = new Set<string>();
+  /** Objects this suite really wrote to R2, so the bucket is left as it was found. */
+  const uploadedKeys: Array<{ key: string; bucket: string | null }> = [];
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -65,6 +89,13 @@ describe('KYC verification (e2e)', () => {
   });
 
   afterEach(async () => {
+    // Uploads are REAL now (the endpoint stores the bytes before it writes the
+    // row), so the objects have to be swept as well as the rows.
+    while (uploadedKeys.length) {
+      const object = uploadedKeys.pop()!;
+      await r2.kycDeleteObject(object.key, object.bucket).catch(() => undefined);
+    }
+
     const userIds = [...createdUserIds];
     if (userIds.length) {
       const apps = await prisma.kycApplication.findMany({
@@ -98,7 +129,65 @@ describe('KYC verification (e2e)', () => {
     return u;
   }
 
-  /** Create a DRAFT application and upload all required (+optional) docs. */
+  /** POST a real multipart document and remember the object for cleanup. */
+  async function uploadDoc(
+    user: Registered,
+    appId: string,
+    kind: string,
+    body: Buffer = PNG,
+    options: { filename?: string; contentType?: string } = {},
+  ): Promise<request.Response> {
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/documents/upload`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .field('kind', kind)
+      .attach('file', body, {
+        filename: options.filename ?? 'document.png',
+        contentType: options.contentType ?? 'image/png',
+      });
+    if (res.status === 201) {
+      const doc = await prisma.kycDocument.findFirst({ where: { applicationId: appId, kind } });
+      if (doc) uploadedKeys.push({ key: doc.s3Key, bucket: doc.bucket });
+    }
+    return res;
+  }
+
+  /**
+   * Seed KycDocument rows straight through Prisma.
+   *
+   * ⚠ THIS USED TO BE AN API CALL, AND THE FACT THAT IT COULD BE WAS A BUG.
+   * `presignDocument` wrote the row BEFORE it touched R2, so a suite (and the
+   * website's Playwright harness) could bring an application to "has all four
+   * documents" without a single byte ever being stored — and then submit and
+   * approve it. The upload endpoint that replaced it writes the row only after
+   * the object exists, which is correct and which means seeding is now a
+   * database operation.
+   *
+   * Tests ABOUT the upload path use `uploadDoc` and store real objects. Tests
+   * about the state machine, the review queue and the decisions use this: they
+   * are not about storage, and making twenty R2 round-trips to assert a status
+   * transition buys nothing.
+   */
+  async function seedDocuments(
+    user: Registered,
+    appId: string,
+    kinds: string[] = ['id_front', 'id_back', 'selfie', 'gewerbeschein'],
+  ): Promise<void> {
+    for (const kind of kinds) {
+      await prisma.kycDocument.upsert({
+        where: { applicationId_kind: { applicationId: appId, kind } },
+        create: {
+          applicationId: appId,
+          kind,
+          s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg`,
+          bucket: expectedBucket,
+        },
+        update: { s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg` },
+      });
+    }
+  }
+
+  /** Create a DRAFT application, seeded with the given document kinds. */
   async function createWithDocs(
     user: Registered,
     kinds: string[] = ['id_front', 'id_back', 'selfie', 'gewerbeschein'],
@@ -108,14 +197,17 @@ describe('KYC verification (e2e)', () => {
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
     const appId = created.body.id as string;
-    for (const kind of kinds) {
-      const res = await request(app.getHttpServer())
-        .post(`/api/v1/kyc/applications/${appId}/documents`)
-        .set('Authorization', `Bearer ${user.token}`)
-        .send({ kind, contentType: 'image/jpeg' });
-      expect([200, 201, 503]).toContain(res.status);
-    }
+    await seedDocuments(user, appId, kinds);
     return appId;
+  }
+
+  /** Create a bare DRAFT application and return its id. */
+  async function createApplication(user: Registered): Promise<string> {
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/kyc/applications')
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    return created.body.id as string;
   }
 
   it('1. POST /applications creates a DRAFT; a second call returns the same application', async () => {
@@ -137,46 +229,38 @@ describe('KYC verification (e2e)', () => {
     expect(count).toBe(1);
   });
 
-  it('2. POST documents for each kind reserves a URL + creates rows; re-upload replaces', async () => {
+  it('2. multipart upload stores each kind and a re-upload REPLACES (one row, new key)', async () => {
+    if (!r2Configured) return;
     const user = await makeUser();
-    const created = await request(app.getHttpServer())
-      .post('/api/v1/kyc/applications')
-      .set('Authorization', `Bearer ${user.token}`)
-      .expect(201);
-    const appId = created.body.id as string;
+    const appId = await createApplication(user);
 
     const kinds = ['id_front', 'id_back', 'selfie', 'gewerbeschein', 'insurance'];
     const firstKeys: Record<string, string> = {};
     for (const kind of kinds) {
-      const res = await request(app.getHttpServer())
-        .post(`/api/v1/kyc/applications/${appId}/documents`)
-        .set('Authorization', `Bearer ${user.token}`)
-        .send({ kind });
-      if (r2Configured) {
-        expect(res.status).toBe(201);
-        expect(typeof res.body.presignedUploadUrl).toBe('string');
-        expect(typeof res.body.expiresAt).toBe('string');
-      } else {
-        expect(res.status).toBe(503);
-      }
-      // The row + s3Key is recorded regardless of R2 state.
+      const res = await uploadDoc(user, appId, kind);
+      expect(res.status).toBe(201);
+      expect(res.body.kind).toBe(kind);
+      expect(res.body.contentType).toBe('image/jpeg');
+      expect(res.body.replaced).toBe(false);
+      expect(typeof res.body.uploadedAt).toBe('string');
+      // The response must not leak where the object went.
+      expect(JSON.stringify(res.body)).not.toContain('kyc/');
+
       const doc = await prisma.kycDocument.findFirst({ where: { applicationId: appId, kind } });
       expect(doc).toBeTruthy();
       expect(doc!.s3Key).toContain(`kyc/${user.userId}/${appId}/${kind}-`);
-      // H2: the row records WHICH bucket holds the object — the dedicated
-      // private one when configured, NULL for the shared-bucket dev fallback.
+      // A real extension, never `.bin` — the presign path stored everything as
+      // `.bin`, so a reviewer's download arrived as an unopenable blob.
+      expect(doc!.s3Key.endsWith('.jpg')).toBe(true);
       expect(doc!.bucket).toBe(expectedBucket);
       firstKeys[kind] = doc!.s3Key;
     }
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(5);
 
-    const docCount = await prisma.kycDocument.count({ where: { applicationId: appId } });
-    expect(docCount).toBe(5);
+    const again = await uploadDoc(user, appId, 'id_front');
+    expect(again.status).toBe(201);
+    expect(again.body.replaced).toBe(true);
 
-    // Re-upload id_front → still one row for that kind, new s3Key.
-    await request(app.getHttpServer())
-      .post(`/api/v1/kyc/applications/${appId}/documents`)
-      .set('Authorization', `Bearer ${user.token}`)
-      .send({ kind: 'id_front' });
     const idFrontRows = await prisma.kycDocument.findMany({
       where: { applicationId: appId, kind: 'id_front' },
     });
@@ -410,69 +494,71 @@ describe('KYC verification (e2e)', () => {
   });
 
   it('12. uploading to a non-owned application returns 403; uploading after submit returns 400', async () => {
+    if (!r2Configured) return;
     const owner = await makeUser();
     const stranger = await makeUser();
-    const appId = await createWithDocs(owner, ['id_front']);
+    const appId = await createApplication(owner);
+    expect((await uploadDoc(owner, appId, 'id_front')).status).toBe(201);
 
-    // stranger cannot upload to the owner's application.
-    const forbidden = await request(app.getHttpServer())
-      .post(`/api/v1/kyc/applications/${appId}/documents`)
-      .set('Authorization', `Bearer ${stranger.token}`)
-      .send({ kind: 'id_back' })
-      .expect(403);
+    // A stranger cannot upload to the owner's application — and, because
+    // ownership is checked FIRST, nothing is stored and no row appears.
+    const forbidden = await uploadDoc(stranger, appId, 'id_back');
+    expect(forbidden.status).toBe(403);
     expect(forbidden.body.error.code).toBe('not_kyc_owner');
+    expect(
+      await prisma.kycDocument.count({ where: { applicationId: appId, kind: 'id_back' } }),
+    ).toBe(0);
 
-    // upload required docs + submit, then a further upload is rejected (not DRAFT).
-    for (const kind of ['id_back', 'selfie', 'gewerbeschein']) {
-      const r = await request(app.getHttpServer())
-        .post(`/api/v1/kyc/applications/${appId}/documents`)
-        .set('Authorization', `Bearer ${owner.token}`)
-        .send({ kind });
-      expect([200, 201, 503]).toContain(r.status);
-    }
+    await seedDocuments(owner, appId, ['id_back', 'selfie', 'gewerbeschein']);
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
       .set('Authorization', `Bearer ${owner.token}`)
       .expect(201);
 
-    const afterSubmit = await request(app.getHttpServer())
-      .post(`/api/v1/kyc/applications/${appId}/documents`)
-      .set('Authorization', `Bearer ${owner.token}`)
-      .send({ kind: 'insurance' })
-      .expect(400);
+    const afterSubmit = await uploadDoc(owner, appId, 'insurance');
+    expect(afterSubmit.status).toBe(400);
     expect(afterSubmit.body.error.code).toBe('kyc_not_editable');
+    expect(
+      await prisma.kycDocument.count({ where: { applicationId: appId, kind: 'insurance' } }),
+    ).toBe(0);
   });
 
-  it('13. H2: presigned uploads still work on the dev fallback and target the KYC bucket', async () => {
-    if (!r2Configured) {
-      // Nothing to presign without credentials; test 2 pins the 503 contract there.
-      return;
-    }
+  it('13. H2: the stored object lands in the KYC bucket and is readable only via a signed URL', async () => {
+    if (!r2Configured) return;
     const user = await makeUser();
-    const created = await request(app.getHttpServer())
-      .post('/api/v1/kyc/applications')
-      .set('Authorization', `Bearer ${user.token}`)
-      .expect(201);
-    const appId = created.body.id as string;
+    const appId = await createApplication(user);
 
-    const res = await request(app.getHttpServer())
-      .post(`/api/v1/kyc/applications/${appId}/documents`)
-      .set('Authorization', `Bearer ${user.token}`)
-      .send({ kind: 'id_front', contentType: 'image/jpeg' })
-      .expect(201);
-
-    // The upload URL is signed and points at the KYC bucket — which IS the main
-    // bucket when the dedicated credentials are absent, so dev/CI keep working.
-    expect(res.body.presignedUploadUrl).toContain('X-Amz-Signature');
-    expect(res.body.presignedUploadUrl).toContain(`//${r2.kycBucketName}.`);
-    expect(res.body.presignedUploadUrl).toContain(res.body.s3Key);
-    if (!r2.isKycDedicated()) {
-      expect(r2.kycBucketName).toBe(r2.bucketName);
-    }
+    const res = await uploadDoc(user, appId, 'id_front');
+    expect(res.status).toBe(201);
 
     const doc = await prisma.kycDocument.findFirst({ where: { applicationId: appId } });
     expect(doc!.bucket).toBe(expectedBucket);
-  });
+    // The KYC bucket IS the main bucket when the dedicated credentials are
+    // absent, so dev/CI keep working on the fallback.
+    if (!r2.isKycDedicated()) expect(r2.kycBucketName).toBe(r2.bucketName);
+
+    // The bytes are really there: fetch them back through a signed URL. This is
+    // the assertion the presign suite could not make, because nothing was ever
+    // uploaded — the row was written before R2 was touched at all.
+    const signed = await r2.kycSignedDownloadUrl(doc!.s3Key, doc!.bucket);
+    expect(signed.url).toContain('X-Amz-Signature');
+    expect(signed.url).toContain(`//${r2.kycBucketName}.`);
+
+    const fetched = await fetch(signed.url);
+    expect(fetched.status).toBe(200);
+    expect(fetched.headers.get('content-type')).toBe('image/jpeg');
+    const bytes = Buffer.from(await fetched.arrayBuffer());
+    expect(bytes.length).toBeGreaterThan(0);
+    // Server-side compression ran: JPEG magic bytes, not the PNG that was sent.
+    expect(bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).toBe(true);
+    expect(res.body.sourceBytes).toBe(PNG.length);
+    expect(res.body.sizeBytes).toBe(bytes.length);
+
+    // The same object without a signature is not public.
+    const unsigned = signed.url.split('?')[0];
+    const anonymous = await fetch(unsigned);
+    expect(anonymous.status).toBeGreaterThanOrEqual(400);
+  }, 30_000);
 
   it('14. H2 REGRESSION: a KYC view URL is signed and never uses R2_PUBLIC_URL', async () => {
     if (!r2Configured) return;
@@ -511,13 +597,9 @@ describe('KYC verification (e2e)', () => {
         .set('Authorization', `Bearer ${user.token}`)
         .expect(201);
       const appId = application.body.id as string;
-      for (const kind of ['id_front', 'id_back', 'selfie', 'gewerbeschein']) {
-        await request(leaky.getHttpServer())
-          .post(`/api/v1/kyc/applications/${appId}/documents`)
-          .set('Authorization', `Bearer ${user.token}`)
-          .send({ kind })
-          .expect(201);
-      }
+      // Seeded, not uploaded: this test is about how a document is SERVED, and
+      // the sentinel it guards against lives in the download path.
+      await seedDocuments(user, appId);
       await request(leaky.getHttpServer())
         .post(`/api/v1/kyc/applications/${appId}/submit`)
         .set('Authorization', `Bearer ${user.token}`)
@@ -539,5 +621,171 @@ describe('KYC verification (e2e)', () => {
       if (previous === undefined) delete process.env.R2_PUBLIC_URL;
       else process.env.R2_PUBLIC_URL = previous;
     }
+  });
+
+  /* ══════════════════════════════════════════════════════════════════════
+   * Wave 5: the upload goes through the API. The presigned-PUT path it
+   * replaces could never work in production — the private KYC bucket has no
+   * CORS rules, so the browser refused the PUT before a byte left it and no
+   * inspector could be verified.
+   * ══════════════════════════════════════════════════════════════════════ */
+
+  it('15. the presigned-upload route is GONE (and must not come back)', async () => {
+    const user = await makeUser();
+    const appId = await createApplication(user);
+
+    // The exact call the old wizard made. 404 = the route no longer exists.
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/documents`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .send({ kind: 'id_front', contentType: 'image/jpeg' });
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(res.body)).not.toContain('presignedUploadUrl');
+
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(0);
+  });
+
+  it('16. the content type is read from the multipart PART, and omitting it is a refusal', async () => {
+    if (!r2Configured) return;
+    const user = await makeUser();
+    const appId = await createApplication(user);
+
+    /*
+     * THE BYPASS THIS PINS. The presign endpoint took the content type from an
+     * OPTIONAL body field and checked it with `if (contentType && ...)`, so a
+     * client skipped validation by omitting it. A part with no Content-Type
+     * header reaches multer as `application/octet-stream`; it must be refused,
+     * not stored.
+     */
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/documents/upload`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .field('kind', 'id_front')
+      .attach('file', PNG, { filename: 'id.png', contentType: 'application/octet-stream' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('unsupported_content_type');
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(0);
+  });
+
+  it('17. bytes are checked against the declared type; a mismatch stores nothing', async () => {
+    if (!r2Configured) return;
+    const user = await makeUser();
+    const appId = await createApplication(user);
+
+    // An HTML page wearing image/png.
+    const html = await uploadDoc(
+      user,
+      appId,
+      'id_front',
+      Buffer.from('<!doctype html><html><body>not a document</body></html>'),
+      { filename: 'id.png', contentType: 'image/png' },
+    );
+    expect(html.status).toBe(400);
+    expect(html.body.error.code).toBe('unsupported_content_type');
+
+    // An SVG — an `image/*` type, and a script container the reviewer would
+    // open from a signed URL.
+    const svg = await uploadDoc(
+      user,
+      appId,
+      'id_front',
+      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>'),
+      { filename: 'id.svg', contentType: 'image/svg+xml' },
+    );
+    expect(svg.status).toBe(400);
+
+    // A real PDF declared as an image.
+    const mislabelled = await uploadDoc(user, appId, 'id_front', PDF, {
+      filename: 'id.jpg',
+      contentType: 'image/jpeg',
+    });
+    expect(mislabelled.status).toBe(400);
+    expect(mislabelled.body.error.code).toBe('content_type_mismatch');
+
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(0);
+  });
+
+  it('18. a PDF is stored VERBATIM, as application/pdf, under a .pdf key', async () => {
+    if (!r2Configured) return;
+    const user = await makeUser();
+    const appId = await createApplication(user);
+
+    const res = await uploadDoc(user, appId, 'gewerbeschein', PDF, {
+      filename: 'gewerbeschein.pdf',
+      contentType: 'application/pdf',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.contentType).toBe('application/pdf');
+    expect(res.body.sizeBytes).toBe(PDF.length);
+    expect(res.body.sourceBytes).toBe(PDF.length);
+
+    const doc = await prisma.kycDocument.findFirst({ where: { applicationId: appId } });
+    expect(doc!.s3Key.endsWith('.pdf')).toBe(true);
+
+    // Rasterising a Gewerbeschein would make its small print unreadable, so the
+    // bytes must come back exactly as they went in.
+    const signed = await r2.kycSignedDownloadUrl(doc!.s3Key, doc!.bucket);
+    const fetched = await fetch(signed.url);
+    expect(fetched.status).toBe(200);
+    expect(fetched.headers.get('content-type')).toBe('application/pdf');
+    expect(Buffer.from(await fetched.arrayBuffer()).equals(PDF)).toBe(true);
+  }, 30_000);
+
+  it('19. replacing a document deletes the object it displaced', async () => {
+    if (!r2Configured) return;
+    const user = await makeUser();
+    const appId = await createApplication(user);
+
+    expect((await uploadDoc(user, appId, 'id_front')).status).toBe(201);
+    const first = await prisma.kycDocument.findFirstOrThrow({
+      where: { applicationId: appId, kind: 'id_front' },
+    });
+    const firstUrl = await r2.kycSignedDownloadUrl(first.s3Key, first.bucket);
+    expect((await fetch(firstUrl.url)).status).toBe(200);
+
+    expect((await uploadDoc(user, appId, 'id_front')).status).toBe(201);
+    const second = await prisma.kycDocument.findFirstOrThrow({
+      where: { applicationId: appId, kind: 'id_front' },
+    });
+    expect(second.s3Key).not.toBe(first.s3Key);
+
+    // A superseded identity document must not linger in the bucket. The signed
+    // URL is still valid — the object behind it is gone.
+    const stale = await fetch(firstUrl.url);
+    expect(stale.status).toBe(404);
+
+    // The replacement is readable.
+    const secondUrl = await r2.kycSignedDownloadUrl(second.s3Key, second.bucket);
+    expect((await fetch(secondUrl.url)).status).toBe(200);
+  }, 30_000);
+
+  it('20. the upload endpoint requires a bearer token, a `kind` and a file', async () => {
+    if (!r2Configured) return;
+    const user = await makeUser();
+    const appId = await createApplication(user);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/documents/upload`)
+      .field('kind', 'id_front')
+      .attach('file', PNG, { filename: 'id.png', contentType: 'image/png' })
+      .expect(401);
+
+    // No `kind` part → the DTO refuses it (ValidationPipe, before any storage).
+    const noKind = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/documents/upload`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .attach('file', PNG, { filename: 'id.png', contentType: 'image/png' });
+    expect(noKind.status).toBe(400);
+
+    // No file part at all.
+    const noFile = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/documents/upload`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .field('kind', 'id_front');
+    expect(noFile.status).toBe(400);
+    expect(noFile.body.error.code).toBe('file_required');
+
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(0);
   });
 });
