@@ -846,8 +846,13 @@ describe('VIN history — simulated real provider (e2e)', () => {
 
       // A purchase whose refund also failed: `failed` means a human is needed,
       // and an automatic retry is exactly what would paper over that.
+      // Spied on `upsert`, NOT `create`. The refund write became an upsert when
+      // `Refund` gained retry state: create-and-swallow-P2002 left an earlier
+      // FAILED row untouched, so a retry that succeeded still read as failed for
+      // ever. A stub on the old method intercepts nothing — this test would then
+      // quietly assert the happy path while claiming to cover the sad one.
       const broken = jest
-        .spyOn(prisma.refund, 'create')
+        .spyOn(prisma.refund, 'upsert')
         .mockRejectedValue(new Error('refund ledger unavailable'));
       let ctx: { purchaseId: string; paymentId: string; eventId: string };
       try {
@@ -982,8 +987,13 @@ describe('VIN history — simulated real provider (e2e)', () => {
 
       // A refund that does not go through is a human's problem, and the status
       // must say so rather than claiming the money is back.
+      // Spied on `upsert`, NOT `create`. The refund write became an upsert when
+      // `Refund` gained retry state: create-and-swallow-P2002 left an earlier
+      // FAILED row untouched, so a retry that succeeded still read as failed for
+      // ever. A stub on the old method intercepts nothing — this test would then
+      // quietly assert the happy path while claiming to cover the sad one.
       const broken = jest
-        .spyOn(prisma.refund, 'create')
+        .spyOn(prisma.refund, 'upsert')
         .mockRejectedValue(new Error('refund ledger unavailable'));
       try {
         await unlock(vin, user.token).expect(502);
@@ -1188,8 +1198,11 @@ describe('VIN history — simulated real provider (e2e)', () => {
         where: { id: bought.body.purchaseId as string },
       });
 
+      // `?format=json` explicitly: the download defaults to PDF now, and this
+      // case is about the JSON ARCHIVE — the very next line asserts against
+      // `purchase.s3Key`, which is that archive's key and not the PDF's.
       const res = await request(app.getHttpServer())
-        .get(`/api/v1/me/vin-checks/${bought.body.purchaseId}/download`)
+        .get(`/api/v1/me/vin-checks/${bought.body.purchaseId}/download?format=json`)
         .set('Authorization', `Bearer ${user.token}`);
 
       if (purchase.s3Key) {

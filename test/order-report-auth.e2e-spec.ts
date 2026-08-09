@@ -260,7 +260,9 @@ describe('Order report submitter authorisation (e2e)', () => {
       process.env.R2_ACCESS_KEY_ID &&
       process.env.R2_SECRET_ACCESS_KEY
     );
-    const res = await fileReport(deviceId, { orderId });
+    // A complete report: the quality gate sits between the submitter check and
+    // the R2 gate, so an unscored report would 409 before either.
+    const res = await fileReport(deviceId, { orderId, qualityScore: 95 });
 
     if (r2Off) {
       // No storage → 503 from the R2 gate, which sits AFTER the submitter check.

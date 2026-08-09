@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsEmail,
   IsInt,
@@ -7,6 +7,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { ListingVehicleV1Dto } from './listing-vehicle-v1.dto';
@@ -42,11 +43,31 @@ export class UpdateListingDto {
   @MaxLength(40)
   contactPhone?: string;
 
-  @ApiPropertyOptional({ example: 'seller@example.com' })
+  /**
+   * Seller contact e-mail. Optional everywhere in the UI, so it must be
+   * possible to leave blank AND to clear once set.
+   *
+   * `@IsOptional()` skips only `null` and `undefined` — **not** `''`. With a
+   * bare `@IsEmail()` a blank field therefore failed the whole PATCH with
+   * `contactEmail must be an email`, which the seller form renders as a generic
+   * "something went wrong": step 2 of the Report ID claim flow and the listing
+   * edit page were both dead ends for anyone who did not fill it in.
+   *
+   * So `''` is normalised to `null` (the column is nullable) and validation is
+   * skipped for `null`, which is what makes clearing work. Omitting the key
+   * still means "leave unchanged" — `update()` keys off `!== undefined`.
+   */
+  @ApiPropertyOptional({
+    example: 'seller@example.com',
+    nullable: true,
+    description: 'Send null or an empty string to clear it. Omit the key to leave it unchanged.',
+  })
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? null : value))
+  @ValidateIf((_, value) => value !== null)
   @IsEmail()
   @MaxLength(254)
-  contactEmail?: string;
+  contactEmail?: string | null;
 
   /**
    * Seller-declared vehicle data. Accepted ONLY on a `source: 'manual'` listing

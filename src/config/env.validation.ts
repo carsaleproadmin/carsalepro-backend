@@ -1,4 +1,28 @@
 import * as Joi from 'joi';
+import { parseOriginList } from './cors';
+
+/**
+ * `WEB_ORIGIN` is primarily ONE canonical origin (it builds absolute links in
+ * emails, Stripe return URLs and listing/VIN-history URLs, all of which need
+ * exactly one answer). For backward compatibility it may also hold a
+ * comma-separated list — the first entry is canonical, every entry is
+ * CORS-allowed — so the old `.uri()` rule, which rejects a list outright, is
+ * replaced by a per-item check.
+ */
+const originList = (label: string) =>
+  Joi.string()
+    .allow('')
+    .custom((value: string, helpers) => {
+      for (const origin of parseOriginList(value)) {
+        const { error } = Joi.string().uri().validate(origin);
+        if (error) {
+          return helpers.error('any.custom', {
+            message: `${label} contains an invalid origin: ${origin}`,
+          });
+        }
+      }
+      return value;
+    });
 
 export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
@@ -7,7 +31,12 @@ export const envValidationSchema = Joi.object({
     .valid('fatal', 'error', 'warn', 'info', 'debug', 'trace')
     .default('info'),
 
-  WEB_ORIGIN: Joi.string().uri().allow('').default('http://localhost:3000'),
+  WEB_ORIGIN: originList('WEB_ORIGIN').default('http://localhost:3000'),
+  // Purely additive browser allow-list. `https://www.carsalepro.de` was in
+  // neither WEB_ORIGIN nor the Vercel preview pattern, so every browser call
+  // from the real production domain — signup, password reset, email
+  // verification, the public report check — was blocked by CORS (F-01).
+  CORS_ORIGINS: originList('CORS_ORIGINS').default(''),
   APP_ENV: Joi.string().valid('development', 'staging', 'production').default('development'),
 
   DATABASE_URL: Joi.string().uri({ scheme: ['postgresql', 'postgres'] }).required(),
@@ -18,7 +47,16 @@ export const envValidationSchema = Joi.object({
   R2_ACCESS_KEY_ID: Joi.string().allow('').default(''),
   R2_SECRET_ACCESS_KEY: Joi.string().allow('').default(''),
   R2_BUCKET: Joi.string().default('carsalepro-reports'),
+  // RETIRED. Kept in the schema only so a deployment that still carries it
+  // fails LOUDLY at boot (see the production block below) instead of quietly
+  // serving every paid report PDF unsigned. Use R2_PUBLIC_BUCKET instead.
   R2_PUBLIC_URL: Joi.string().uri().allow('').default(''),
+  // Dedicated PUBLIC bucket for showroom listing photos. All four blank in
+  // dev/CI => permanent URLs stay off and signed URLs keep being served.
+  R2_PUBLIC_ACCESS_KEY_ID: Joi.string().allow('').default(''),
+  R2_PUBLIC_SECRET_ACCESS_KEY: Joi.string().allow('').default(''),
+  R2_PUBLIC_BUCKET: Joi.string().allow('').default(''),
+  R2_PUBLIC_BASE_URL: Joi.string().uri().allow('').default(''),
   // Dedicated PRIVATE bucket + narrowly-scoped token for KYC identity documents
   // (SECURITY.md H2). Blank in dev/CI => R2Service falls back to the main bucket.
   R2_KYC_ACCESS_KEY_ID: Joi.string().allow('').default(''),
@@ -69,6 +107,13 @@ export const envValidationSchema = Joi.object({
   // falls back to the mock, which refuses PAID unlocks in production.
   VIN_HISTORY_PROVIDER: Joi.string().allow('').default('mock'),
   VIN_HISTORY_API_KEY: Joi.string().allow('').default(''),
+  // Lets the mock provider sell in production. Payloads stay flagged synthetic.
+  VIN_HISTORY_ALLOW_SYNTHETIC_SALE: Joi.boolean().default(false),
+
+  // Boot-time self-check. `false` downgrades fatal findings to error logs.
+  STARTUP_CHECK_STRICT: Joi.string().valid('true', 'false').default('true'),
+  // Explicit acknowledgement that identity documents share the reports bucket.
+  ALLOW_SHARED_KYC_BUCKET: Joi.string().valid('true', 'false').default('false'),
 
   IAP_VALIDATION_MODE: Joi.string().valid('client-trust', 'server').default('client-trust'),
   IAP_BUNDLE_ID: Joi.string().default('com.carsalepro.app'),
@@ -105,6 +150,22 @@ export const envValidationSchema = Joi.object({
     if (!secret || secret === 'dev-shared-secret-change-me' || secret.length < 32) {
       return helpers.error('any.custom', {
         message: 'JWT_SECRET must be set to a strong value (>= 32 chars, not the default) in production',
+      });
+    }
+    // R2_PUBLIC_URL is a GLOBAL switch inside `createPresignedDownloadUrl`: any
+    // value makes EVERY private object in the reports bucket — paid inspection
+    // PDFs included — resolve to an unsigned, permanent URL. It was introduced
+    // for showroom photos, which now come from their own public bucket.
+    //
+    // Refusing to boot is deliberate. The failure it prevents is silent: nothing
+    // errors, nothing logs, the site looks correct, and the paid product is
+    // simply free to anyone holding a key. A service that will not start is a
+    // page in the deploy log; this is not.
+    if (envVars.R2_PUBLIC_URL) {
+      return helpers.error('any.custom', {
+        message:
+          'R2_PUBLIC_URL is retired and must be unset: it exposes the ENTIRE reports bucket, ' +
+          'paid report PDFs included. Serve public images from R2_PUBLIC_BUCKET instead.',
       });
     }
   }

@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
@@ -14,7 +15,11 @@ import { LegalContractService } from '../legal/legal-contract.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
 import { PaymentsService } from '../payments/payments.service';
-import { StripeService } from '../payments/stripe.service';
+import {
+  StripePaymentIntent,
+  StripeService,
+  classifyStripeError,
+} from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import {
@@ -25,6 +30,7 @@ import {
 } from './dto/order.dto';
 import { ATTACHABLE_REPORT_ORDER_STATUSES, canTransition } from './order-state-machine';
 import { PriceBreakdown, computePrice } from './order-pricing';
+import { MONEY_RETRY_MAX_ATTEMPTS, planRetry } from './retry-schedule';
 
 /**
  * Result of a server-side quote.
@@ -38,6 +44,12 @@ import { PriceBreakdown, computePrice } from './order-pricing';
  */
 export interface QuoteResult {
   available: boolean;
+  /**
+   * Only meaningful when `available` is false: true when a WaitlistEntry was
+   * recorded, false when we have no email to record one against (an anonymous
+   * quote), so the UI knows to ask for one.
+   */
+  waitlisted?: boolean;
   currency?: string;
   totalCents?: number;
   breakdown?: {
@@ -58,6 +70,149 @@ export interface QuoteResult {
   };
   nearestKm?: number;
   candidates?: Array<{ displayName: string | null; company: string | null; distanceKm: number }>;
+}
+
+/**
+ * What `releasePayout` did. Callers ignore it in the happy path; the retry cron
+ * needs `skipped` to tell "not yet" from "never" — a row that can never settle
+ * must leave the queue instead of being re-selected on every run.
+ */
+export interface PayoutOutcome {
+  status: 'paid' | 'already_paid' | 'parked' | 'skipped';
+  reason?: string;
+}
+
+/**
+ * What `settleRefund` did. It never throws, so this is the only channel through
+ * which a caller learns whether money moved.
+ *
+ * - `refunded`  — the provider accepted it (or mock mode settled it locally).
+ * - `parked`    — the provider refused; the row carries a retry schedule.
+ * - `skipped`   — there was nothing to give back (no payment, an uncaptured or
+ *                 failed one, or one already refunded). No provider call, no row.
+ * - `released`  — an authorization hold was released. Deliberately NOT a Refund
+ *                 row: the money never left the customer.
+ * - `error`     — something below the provider broke (the database, typically).
+ *                 Surfaced rather than thrown, because a refund must never be
+ *                 the reason an order fails to cancel.
+ */
+export interface RefundOutcome {
+  status: 'refunded' | 'parked' | 'skipped' | 'released' | 'error';
+  /** Cents the customer is owed: 0 when nothing was, or will be, returned. */
+  amountCents: number;
+  refundId: string | null;
+  stripeRefundId: string | null;
+  /** The refund reason key — the second half of the (orderId, reason) identity. */
+  reason: string;
+  /** Why it was skipped/parked/errored. Null on a clean settlement. */
+  detail: string | null;
+  attempts: number;
+  /** Null when no further automatic attempt is scheduled. */
+  nextRetryAt: Date | null;
+}
+
+/** The order fields a refund needs: an id to key on and a number to report. */
+type RefundableOrder = Pick<Order, 'id' | 'number'>;
+
+/**
+ * What `captureOrderPayment` did. It never throws: the caller decides what a
+ * failure means for the ORDER, and "this inspector cannot have the job" and
+ * "this customer's order is dead" are different outcomes with different HTTP
+ * contracts.
+ *
+ * - `captured`         — the funds are ours; the Payment is 'succeeded'.
+ * - `already_captured` — an idempotent replay (a retried Accept, the reconciler).
+ * - `retryable`        — a transient provider failure. Nothing is destroyed: the
+ *                        claim is undone, the offer goes back to PENDING and the
+ *                        same inspector can accept again in a minute.
+ * - `fatal`            — the card cannot pay, ever. The caller releases the hold
+ *                        and cancels the order.
+ */
+export type CaptureOutcome =
+  | { status: 'captured' | 'already_captured'; detail?: undefined }
+  | { status: 'retryable' | 'fatal'; detail: string };
+
+/**
+ * How a cancellation settled, for the client. `refundCents: 0` on its own is
+ * ambiguous — it is both "you were never charged" and "your hold was released"
+ * — and the website words the confirmation differently for each.
+ */
+export type RefundMode = 'refunded' | 'refund_pending' | 'authorization_released' | 'none';
+
+/** Where an order's money is, as the website's `orderPhase()` reads it. */
+export type OrderPaymentState =
+  | 'pending'
+  | 'authorized'
+  | 'captured'
+  | 'released'
+  | 'refunded'
+  | 'failed';
+
+/**
+ * `Payment.status` (our ledger) → the payment state the API publishes.
+ *
+ * The two vocabularies are deliberately different. Ours is a payment-provider
+ * word list that predates manual capture ('succeeded' meant "charged"); the
+ * public one says where the MONEY is, which is what a customer looking at an
+ * order actually needs to know. 'succeeded' is 'captured' — taken — and
+ * 'cancelled' is 'released': the hold is gone and nothing ever left the card.
+ */
+const PUBLIC_PAYMENT_STATE: Record<string, OrderPaymentState> = {
+  pending: 'pending',
+  authorized: 'authorized',
+  succeeded: 'captured',
+  cancelled: 'released',
+  refunded: 'refunded',
+  failed: 'failed',
+};
+
+/**
+ * How long a payment may sit before the reconciler treats it as stuck.
+ *
+ * Stripe delivers a webhook in seconds; five minutes is long enough that a
+ * healthy delivery is never second-guessed, and short enough that a customer
+ * whose event was lost is not left staring at a CREATED order.
+ */
+const RECONCILE_MIN_AGE_MS = 5 * 60_000;
+
+/** Order statuses in which we are still looking for an inspector. */
+const PRE_ASSIGNMENT_STATUSES: OrderStatus[] = [
+  OrderStatus.CREATED,
+  OrderStatus.PAID,
+  OrderStatus.UNASSIGNED,
+];
+
+/**
+ * Order statuses in which an inspector has committed to the job. An uncaptured
+ * payment on any of these means someone is working for free.
+ */
+const POST_ASSIGNMENT_STATUSES: OrderStatus[] = [
+  OrderStatus.ASSIGNED,
+  OrderStatus.EN_ROUTE,
+  OrderStatus.IN_PROGRESS,
+  OrderStatus.SUBMITTED,
+  OrderStatus.APPROVED,
+  OrderStatus.DISPUTED,
+];
+
+/**
+ * Wave 3 introduces manual capture and, with it, `cancelPaymentIntent` on
+ * StripeService. Releasing a hold is a refund-path branch, so it is implemented
+ * here — but implementing manual capture is not this wave's job, so the call is
+ * made through a capability check instead of a hard dependency. Today the method
+ * is absent and the branch degrades to releasing the hold in our own ledger;
+ * the day it exists, the same code cancels the intent for real.
+ */
+interface AuthorizationCanceller {
+  cancelPaymentIntent(
+    paymentIntentId: string,
+    paymentId: string,
+    reason?: string,
+  ): Promise<unknown>;
+}
+
+function canCancelAuthorization(stripe: unknown): stripe is AuthorizationCanceller {
+  return typeof (stripe as AuthorizationCanceller).cancelPaymentIntent === 'function';
 }
 
 /** Full priced quote, including the cents fields needed to persist an order. */
@@ -98,8 +253,17 @@ export class OrdersService {
    *
    * The arithmetic itself lives in the pure `computePrice`; this method only
    * gathers inputs. All money is integer cents.
+   *
+   * `customerId` is the caller (undefined for an anonymous quote) and is
+   * excluded from the candidate set: an account that is both a customer and an
+   * inspector must never be quoted — or later dispatched — its own job (F-13).
    */
-  private async priceQuote(lat: number, lng: number, scheduledAt: Date): Promise<PricedQuote> {
+  private async priceQuote(
+    lat: number,
+    lng: number,
+    scheduledAt: Date,
+    customerId?: string,
+  ): Promise<PricedQuote> {
     const [
       baseFeeCents,
       ratePerKmCents,
@@ -140,7 +304,13 @@ export class OrdersService {
       peakEndHour,
     };
 
-    const candidates = await this.geo.findNearestInspectors(lat, lng, radiusKm, 3);
+    const candidates = await this.geo.findNearestInspectors({
+      lat,
+      lng,
+      radiusKm,
+      limit: 3,
+      excludeCustomerId: customerId ?? null,
+    });
 
     if (candidates.length === 0) {
       return {
@@ -173,13 +343,21 @@ export class OrdersService {
     };
   }
 
-  /** Public quote. On no coverage, records a WaitlistEntry from the user email. */
-  async quote(userId: string, dto: QuoteOrderDto): Promise<QuoteResult> {
-    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt));
+  /**
+   * Public quote — reachable WITHOUT an account (F-10): a visitor who cannot see
+   * a price has no reason to create one.
+   *
+   * On no coverage a WaitlistEntry is recorded only when we actually know who is
+   * asking; `WaitlistEntry.email` is the whole point of the row and we will not
+   * invent one. `waitlisted` tells the UI whether it still needs to ask for an
+   * email.
+   */
+  async quote(userId: string | undefined, dto: QuoteOrderDto): Promise<QuoteResult> {
+    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
 
     if (!priced.available) {
-      await this.addToWaitlist(userId, dto.lat, dto.lng);
-      return { available: false };
+      const waitlisted = userId ? await this.addToWaitlist(userId, dto.lat, dto.lng) : false;
+      return { available: false, waitlisted };
     }
 
     const p = priced.price;
@@ -213,14 +391,16 @@ export class OrdersService {
     };
   }
 
-  private async addToWaitlist(userId: string, lat: number, lng: number): Promise<void> {
+  /** Returns true when a WaitlistEntry was actually created. */
+  private async addToWaitlist(userId: string, lat: number, lng: number): Promise<boolean> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { email: true },
     });
-    if (!user) return;
+    if (!user) return false;
     const entry = await this.prisma.waitlistEntry.create({ data: { email: user.email } });
     await this.geo.setWaitlistLocation(entry.id, lat, lng);
+    return true;
   }
 
   // ============================================================
@@ -234,7 +414,10 @@ export class OrdersService {
     // Re-run the quote server-side; the client price is never trusted. This
     // also re-evaluates surge and the peak window against the scheduled time,
     // so a stale quote cannot lock in yesterday's multiplier.
-    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt));
+    // `userId` is passed so the customer is excluded from their own candidate
+    // set here too — otherwise a self-dealing account would pay for an order
+    // that dispatch could never fill.
+    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
     if (!priced.available) {
       throw new ConflictException({
         error: { code: 'no_coverage', message: 'No inspector available in your area' },
@@ -278,18 +461,154 @@ export class OrdersService {
         where: { id: payment.id },
         data: { stripePaymentIntentId: pi.id },
       });
-      // Order stays CREATED until the payment_intent.succeeded webhook → PAID.
+      // The intent uses MANUAL capture, so confirming it in the browser places a
+      // hold — it does not charge. The order stays CREATED until
+      // `payment_intent.amount_capturable_updated` says the hold is in place;
+      // that webhook starts the search window and dispatches. Nothing is taken
+      // until an inspector accepts.
       return { orderId, paymentClientSecret: pi.client_secret ?? null };
     }
 
-    // MOCK mode: settle immediately, transition to PAID, dispatch.
-    await this.prisma.payment.update({
-      where: { id: payment.id },
+    // MOCK mode: there is no card to hold, so authorize in our own ledger and
+    // run exactly the path the webhook would — PAID, a search deadline,
+    // dispatch. The money is deliberately NOT taken here: `captureOrderPayment`
+    // still runs at acceptance, so mock mode exercises the real two-step shape
+    // instead of a shortcut that would leave capture untested everywhere except
+    // the one suite that stands a fake Stripe up.
+    await this.authorizeOrderPayment(payment.id, orderId);
+    return { orderId, paymentClientSecret: null, mock: true };
+  }
+
+  // ============================================================
+  // Money state machine: authorize → capture → (release)
+  // ============================================================
+
+  /**
+   * The hold is in place: the card was authorized and the funds are reserved,
+   * but nothing has been taken. Move the payment to 'authorized', start the
+   * inspector search window, take the order CREATED → PAID and dispatch.
+   *
+   * Called from the `payment_intent.amount_capturable_updated` webhook, from
+   * mock-mode order creation, and from the reconciler when that webhook was
+   * lost. Idempotent in every half, because all three can race.
+   *
+   * `searchExpiresAt` is only ever set FROM NULL. Re-authorizing must not
+   * silently extend a deadline the expiry cron is already counting down — and
+   * an order that reached PAID some other way (the legacy captured-at-creation
+   * path) must never acquire one at all: there is no hold to release.
+   */
+  async authorizeOrderPayment(paymentId: string, orderId: string): Promise<void> {
+    const now = new Date();
+    // Guarded on the statuses that may still become a hold. 'pending' is the
+    // normal one; 'failed' covers a first card that was declined and a second
+    // that was not. A 'succeeded' payment has been CAPTURED and must never be
+    // walked backwards into a hold.
+    await this.prisma.payment
+      .updateMany({
+        where: { id: paymentId, status: { in: ['pending', 'failed'] } },
+        data: { status: 'authorized', authorizedAt: now },
+      })
+      .catch(() => undefined);
+
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!order || order.status !== OrderStatus.CREATED) return;
+
+    if (order.searchExpiresAt === null) {
+      const windowMinutes = await this.settings.getNumber('orderSearchWindowMinutes');
+      await this.prisma.order.update({
+        where: { id: orderId },
+        data: { searchExpiresAt: new Date(now.getTime() + windowMinutes * 60_000) },
+      });
+    }
+
+    await this.transition(orderId, OrderStatus.PAID, 'system');
+    await this.dispatch(orderId);
+  }
+
+  /**
+   * Take the money that has been held for an order — the single place a capture
+   * happens. Never throws; see {@link CaptureOutcome} for what the caller must
+   * do with each answer.
+   *
+   * The invariant this exists to protect: **an order must never be ASSIGNED
+   * with uncaptured money.** Every path that assigns an inspector calls this
+   * first and refuses the assignment unless it comes back captured.
+   */
+  async captureOrderPayment(orderId: string): Promise<CaptureOutcome> {
+    const payment = await this.prisma.payment.findUnique({ where: { orderId } });
+    if (!payment) return { status: 'fatal', detail: 'order has no payment' };
+    if (payment.status === 'succeeded') return { status: 'already_captured' };
+    if (payment.status !== 'authorized' && payment.status !== 'pending') {
+      // refunded / cancelled / anything else: the money is gone or was given
+      // back. No amount of retrying makes this order payable.
+      return { status: 'fatal', detail: `payment is ${payment.status}` };
+    }
+
+    if (!this.stripe.configured) {
+      // MOCK mode: no provider to call, but the ledger still records that the
+      // money moved at ACCEPTANCE rather than at creation — which is the whole
+      // behavioural change, and it stays observable without a Stripe key.
+      await this.markPaymentCaptured(payment.id);
+      return { status: 'captured' };
+    }
+
+    if (!payment.stripePaymentIntentId) {
+      // The intent id is written at creation, so this is a lost write or a
+      // half-created order. Retryable, not fatal: cancelling a customer's order
+      // over a gap in our own bookkeeping is the worse mistake, and
+      // `reconcileStuckOrderPayments` keeps the row visible.
+      return { status: 'retryable', detail: 'payment has no Stripe PaymentIntent' };
+    }
+    if (payment.status === 'pending') {
+      // No hold yet — the customer has not finished paying, or the
+      // `amount_capturable_updated` webhook has not landed. Capturing would
+      // fail anyway; let the inspector accept again once it has.
+      return { status: 'retryable', detail: 'the authorization hold is not in place yet' };
+    }
+
+    try {
+      await this.stripe.capturePaymentIntent(payment.stripePaymentIntentId, payment.id);
+    } catch (err) {
+      const failure = classifyStripeError(err);
+      // `payment_intent_unexpected_state` is ambiguous: Stripe says it both when
+      // the intent was ALREADY captured (a retry past the 24-hour idempotency
+      // window) and when it can never be captured. Ask which — treating an
+      // already-captured intent as fatal would cancel an order and "release" a
+      // hold whose money we are actually holding.
+      if (failure.code === 'payment_intent_unexpected_state') {
+        const intent = await this.stripe
+          .retrievePaymentIntent(payment.stripePaymentIntentId)
+          .catch(() => null);
+        if (intent?.status === 'succeeded') {
+          await this.markPaymentCaptured(payment.id);
+          return { status: 'already_captured' };
+        }
+      }
+      this.logger.error(
+        `captureOrderPayment: order ${orderId} could not be captured: ${failure.message}`,
+      );
+      return { status: failure.retryable ? 'retryable' : 'fatal', detail: failure.message };
+    }
+
+    await this.markPaymentCaptured(payment.id);
+    return { status: 'captured' };
+  }
+
+  /**
+   * Record that the money was taken. `capturedAt` is written once and never
+   * moved: it is the only evidence distinguishing a fresh capture from an old
+   * charge, and the reconciler reads it.
+   */
+  private async markPaymentCaptured(paymentId: string): Promise<void> {
+    const now = new Date();
+    await this.prisma.payment.updateMany({
+      where: { id: paymentId },
       data: { status: 'succeeded' },
     });
-    await this.transition(orderId, OrderStatus.PAID, userId);
-    await this.dispatch(orderId);
-    return { orderId, paymentClientSecret: null, mock: true };
+    await this.prisma.payment.updateMany({
+      where: { id: paymentId, capturedAt: null },
+      data: { capturedAt: now },
+    });
   }
 
   /** Insert an Order with its geography set inline (raw SQL). Returns the id. */
@@ -367,13 +686,15 @@ export class OrdersService {
     });
     const excluded = prior.map((o) => o.inspectorId);
 
-    const candidates = await this.geo.findNearestInspectorsExcluding(
+    const candidates = await this.geo.findNearestInspectors({
       lat,
       lng,
       radiusKm,
-      1,
-      excluded,
-    );
+      limit: 1,
+      excludeUserIds: excluded,
+      // F-13: never offer the order to the account that placed it.
+      excludeCustomerId: order.customerId,
+    });
 
     if (candidates.length === 0) {
       if (order.status !== OrderStatus.UNASSIGNED) {
@@ -407,6 +728,25 @@ export class OrdersService {
   // Offers (inspector actions)
   // ============================================================
 
+  /**
+   * An inspector takes the job. This is the moment the customer's money is
+   * actually TAKEN, so the method is written around two guarantees:
+   *
+   * 1. **One inspector wins.** The claim is a single conditional `updateMany`
+   *    on (status, inspectorId IS NULL), so the database decides the race. The
+   *    previous version did three unguarded writes after a read — two
+   *    inspectors accepting the same order milliseconds apart both "won", the
+   *    second silently overwrote the first's `inspectorId`, and the loser was
+   *    told they had the job while the winner's contract named them.
+   * 2. **An order is never ASSIGNED with uncaptured money.** Capture happens
+   *    BEFORE the transition, and any failure undoes the claim first.
+   *
+   * A retryable capture failure returns the offer to PENDING and answers 503:
+   * nothing is lost and the same inspector can accept again. A fatal one
+   * releases the hold and cancels the order — the card cannot pay, and leaving
+   * an unpayable order in the pool only sends the next inspector to the same
+   * dead end.
+   */
   async acceptOffer(offerId: string, userId: string): Promise<{ orderId: string; status: OrderStatus }> {
     const offer = await this.prisma.orderOffer.findUnique({ where: { id: offerId } });
     if (!offer) {
@@ -425,19 +765,114 @@ export class OrdersService {
     if (!order) {
       throw new NotFoundException({ error: { code: 'not_found', message: 'Order not found' } });
     }
-    if (order.status !== OrderStatus.PAID && order.status !== OrderStatus.UNASSIGNED) {
+
+    // F-13, second line of defence. The candidate query already excludes the
+    // customer, but a hand-written or legacy OrderOffer row reaches this method
+    // without ever passing through it — and self-assignment ends with the
+    // account approving its own report and collecting its own payout. Checked
+    // before the claim so a self-dealing account never even briefly holds it.
+    if (order.customerId === userId) {
+      throw new ForbiddenException({
+        error: {
+          code: 'self_assignment_forbidden',
+          message: 'You cannot accept an inspection you ordered yourself',
+        },
+      });
+    }
+
+    // The race is decided here, in one statement, by the database. `count === 0`
+    // means the order left the pool or someone else claimed it first.
+    const claim = await this.prisma.order.updateMany({
+      where: {
+        id: order.id,
+        status: { in: [OrderStatus.PAID, OrderStatus.UNASSIGNED] },
+        inspectorId: null,
+      },
+      data: { inspectorId: userId },
+    });
+    if (claim.count === 0) {
       throw new ConflictException({
         error: { code: 'already_assigned', message: 'Order is no longer open for assignment' },
       });
     }
 
-    await this.prisma.orderOffer.update({ where: { id: offerId }, data: { status: 'ACCEPTED' } });
-    await this.prisma.order.update({
-      where: { id: order.id },
-      data: { inspectorId: userId },
+    await this.prisma.orderOffer.updateMany({
+      where: { id: offerId, status: 'PENDING' },
+      data: { status: 'ACCEPTED' },
     });
+
+    const capture = await this.captureOrderPayment(order.id);
+
+    if (capture.status === 'retryable') {
+      // Transient. Put everything back exactly as it was — the offer is still
+      // within its window, so the same inspector can accept again.
+      await this.releaseOrderClaim(order.id, userId);
+      await this.prisma.orderOffer.updateMany({
+        where: { id: offerId, status: 'ACCEPTED' },
+        data: { status: 'PENDING' },
+      });
+      await this.writeEvent(order.id, userId, 'capture_deferred', null, null, {
+        offerId,
+        detail: capture.detail,
+      });
+      throw new ServiceUnavailableException({
+        error: {
+          code: 'payment_capture_unavailable',
+          message: 'The payment could not be taken right now. Please try accepting again shortly.',
+        },
+      });
+    }
+
+    if (capture.status === 'fatal') {
+      // The card cannot pay. Undo the claim, give the hold back, and take the
+      // order out of the pool: re-offering it would only send the next
+      // inspector to the same dead end.
+      await this.releaseOrderClaim(order.id, userId);
+      await this.prisma.orderOffer.updateMany({
+        where: { orderId: order.id, status: { in: ['PENDING', 'ACCEPTED'] } },
+        data: { status: 'EXPIRED' },
+      });
+      await this.writeEvent(order.id, userId, 'capture_failed', null, null, {
+        offerId,
+        detail: capture.detail,
+      });
+      // Non-throwing by contract; releases the hold and writes no Refund row.
+      await this.settleRefund(order, order.totalCents, 'capture_failed');
+      await this.transition(order.id, OrderStatus.CANCELLED, 'system');
+      throw new ConflictException({
+        error: {
+          code: 'payment_capture_failed',
+          message: 'The customer\u2019s payment could not be taken; the order has been cancelled.',
+        },
+      });
+    }
+
+    // Any OTHER live offer on this order is dead now. Left PENDING it would keep
+    // showing the job in a losing inspector's list, and `getDetail` would keep
+    // granting them access to an order they cannot take. Runs only after a
+    // successful capture, so the retryable branch's restore is never clobbered.
+    await this.prisma.orderOffer.updateMany({
+      where: { orderId: order.id, status: 'PENDING' },
+      data: { status: 'EXPIRED' },
+    });
+
     await this.transition(order.id, OrderStatus.ASSIGNED, userId);
     return { orderId: order.id, status: OrderStatus.ASSIGNED };
+  }
+
+  /**
+   * Hand a claimed order back to the pool. Guarded on the claiming inspector so
+   * a late undo can never strip an assignment somebody else legitimately holds.
+   */
+  private async releaseOrderClaim(orderId: string, inspectorId: string): Promise<void> {
+    await this.prisma.order.updateMany({
+      where: {
+        id: orderId,
+        inspectorId,
+        status: { in: [OrderStatus.PAID, OrderStatus.UNASSIGNED] },
+      },
+      data: { inspectorId: null },
+    });
   }
 
   async declineOffer(offerId: string, userId: string): Promise<{ orderId: string }> {
@@ -480,7 +915,25 @@ export class OrdersService {
   // Customer actions
   // ============================================================
 
-  async cancel(orderId: string, userId: string): Promise<{ orderId: string; status: OrderStatus; refundCents: number }> {
+  /**
+   * Customer cancellation.
+   *
+   * `refundMode` exists because `refundCents: 0` is ambiguous under manual
+   * capture: it means both "you were never charged" and "the hold on your card
+   * has been released". The website words those two confirmations differently,
+   * and a released hold must NOT be described as a refund — the money never
+   * left the customer's account, so there is no Refund row and nothing will
+   * appear on their statement to reconcile against.
+   */
+  async cancel(
+    orderId: string,
+    userId: string,
+  ): Promise<{
+    orderId: string;
+    status: OrderStatus;
+    refundCents: number;
+    refundMode: RefundMode;
+  }> {
     const order = await this.requireOrder(orderId);
     if (order.customerId !== userId) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
@@ -505,9 +958,21 @@ export class OrdersService {
     }
 
     const refundCents = Math.round((order.totalCents * refundPercent) / 100);
+    // Settle the money BEFORE moving the order, and never let it decide whether
+    // the cancellation happens: `settleRefund` cannot throw. An order whose card
+    // was never charged records a skip instead of calling Stripe — that call,
+    // made against a PaymentIntent with no successful charge, is why cancelling
+    // an unpaid order used to answer 500 and leave the order untouched.
+    const outcome = await this.settleRefund(order, refundCents, reason);
     await this.transition(orderId, OrderStatus.CANCELLED, userId);
-    await this.refundOrder(order, refundCents, reason);
-    return { orderId, status: OrderStatus.CANCELLED, refundCents };
+    // What the customer is actually owed: zero when there was nothing to give
+    // back, the full amount when the refund is issued or queued for retry.
+    return {
+      orderId,
+      status: OrderStatus.CANCELLED,
+      refundCents: outcome.amountCents,
+      refundMode: refundModeOf(outcome.status),
+    };
   }
 
   async approve(orderId: string, userId: string): Promise<{ orderId: string; status: OrderStatus }> {
@@ -554,6 +1019,17 @@ export class OrdersService {
   async adminAssign(orderId: string, inspectorId: string, adminId: string): Promise<Order> {
     const order = await this.requireOrder(orderId);
 
+    // F-13, third line of defence: an admin override must not be able to do what
+    // the dispatcher is forbidden from doing.
+    if (order.customerId === inspectorId) {
+      throw new BadRequestException({
+        error: {
+          code: 'self_assignment_forbidden',
+          message: 'The customer of an order cannot be assigned as its inspector',
+        },
+      });
+    }
+
     const profile = await this.prisma.inspectorProfile.findUnique({
       where: { userId: inspectorId },
       include: { user: { select: { kycVerified: true } } },
@@ -573,10 +1049,62 @@ export class OrdersService {
       });
     }
 
-    await this.prisma.order.update({
-      where: { id: orderId },
+    // The SAME conditional claim `acceptOffer` uses, for the same reason. An
+    // unconditional write here loses the race it looks like it wins: an
+    // inspector accepting their pending offer at the same moment claims the
+    // order, captures the money and gets a contract rendered in their name —
+    // and then this overwrites `inspectorId`. The capture below would answer
+    // `already_captured`, the transition would no-op on `from === to` so the
+    // contract is never re-rendered, and the order would end up assigned to one
+    // inspector while its legal contract names another, with two ACCEPTED
+    // offers and the losing inspector holding a 200.
+    //
+    // The undo path made it worse: `releaseOrderClaim` is guarded on
+    // PAID/UNASSIGNED, so once the other inspector moved the order to ASSIGNED
+    // it silently no-ops and the admin's inspector stays on the row.
+    const claimed = await this.prisma.order.updateMany({
+      where: { id: orderId, status: order.status, inspectorId: null },
       data: { inspectorId },
     });
+    if (claimed.count === 0) {
+      throw new ConflictException({
+        error: {
+          code: 'already_assigned',
+          message: 'This order was assigned to an inspector while you were assigning it',
+        },
+      });
+    }
+
+    // An admin override is still an assignment, so the same invariant applies:
+    // an order must never be ASSIGNED with uncaptured money. Capturing here is
+    // not optional politeness — without it an operator could hand an inspector
+    // a job whose funds are only held, and the hold would then expire at Stripe
+    // in the middle of the inspection.
+    const capture = await this.captureOrderPayment(orderId);
+    if (capture.status === 'retryable') {
+      await this.releaseOrderClaim(orderId, inspectorId);
+      throw new ServiceUnavailableException({
+        error: {
+          code: 'payment_capture_unavailable',
+          message: 'The payment could not be taken right now. Try the assignment again shortly.',
+        },
+      });
+    }
+    if (capture.status === 'fatal') {
+      await this.releaseOrderClaim(orderId, inspectorId);
+      await this.writeEvent(orderId, `admin:${adminId}`, 'capture_failed', null, null, {
+        inspectorId,
+        detail: capture.detail,
+      });
+      await this.settleRefund(order, order.totalCents, 'capture_failed');
+      await this.transition(orderId, OrderStatus.CANCELLED, `admin:${adminId}`);
+      throw new ConflictException({
+        error: {
+          code: 'payment_capture_failed',
+          message: 'The customer\u2019s payment could not be taken; the order has been cancelled.',
+        },
+      });
+    }
 
     // Reconcile offers: accept the chosen inspector's (creating one if absent),
     // expire any other still-pending offer for this order.
@@ -611,7 +1139,12 @@ export class OrdersService {
     orderId: string,
     refundPercent: number,
     adminId: string,
-  ): Promise<{ orderId: string; status: OrderStatus; refundCents: number }> {
+  ): Promise<{
+    orderId: string;
+    status: OrderStatus;
+    refundCents: number;
+    refundMode: RefundMode;
+  }> {
     const order = await this.requireOrder(orderId);
     if (!canTransition(order.status, OrderStatus.CANCELLED)) {
       throw new ConflictException({
@@ -623,17 +1156,20 @@ export class OrdersService {
     }
 
     const pct = Math.max(0, Math.min(100, refundPercent));
-    let refundCents = 0;
-    const payment = await this.prisma.payment.findUnique({ where: { orderId } });
-    if (pct > 0 && payment?.status === 'succeeded') {
-      refundCents = Math.round((order.totalCents * pct) / 100);
-    }
+    const intendedCents = pct > 0 ? Math.round((order.totalCents * pct) / 100) : 0;
+    // Whether there is anything to refund is `settleRefund`'s decision, not a
+    // payment-status check duplicated here: it also covers a released hold and
+    // an already-refunded payment, which this check never did.
+    const outcome =
+      intendedCents > 0 ? await this.settleRefund(order, intendedCents, 'admin') : null;
 
     await this.transition(orderId, OrderStatus.CANCELLED, `admin:${adminId}`);
-    if (refundCents > 0) {
-      await this.refundOrder(order, refundCents, 'admin');
-    }
-    return { orderId, status: OrderStatus.CANCELLED, refundCents };
+    return {
+      orderId,
+      status: OrderStatus.CANCELLED,
+      refundCents: outcome?.amountCents ?? 0,
+      refundMode: outcome ? refundModeOf(outcome.status) : 'none',
+    };
   }
 
   /**
@@ -659,35 +1195,54 @@ export class OrdersService {
     const now = new Date();
     if (resolution === 'customer') {
       const pct = Math.max(0, Math.min(100, refundPercent ?? 100));
-      const refundCents = Math.round((order.totalCents * pct) / 100);
-      await this.transition(orderId, OrderStatus.REFUNDED, `admin:${adminId}`);
-      if (refundCents > 0) {
-        await this.refundOrder(order, refundCents, 'dispute');
+      const intendedCents = Math.round((order.totalCents * pct) / 100);
+      const outcome =
+        intendedCents > 0 ? await this.settleRefund(order, intendedCents, 'dispute') : null;
+
+      // The dispute closes WHATEVER the money did. It used to close only after a
+      // successful refund, so a refund Stripe rejected threw out of this method
+      // and left the dispute OPEN in the admin queue for ever — one incident
+      // reported twice, and the second report is the one nobody can action.
+      let transitionError: unknown = null;
+      try {
+        await this.transition(orderId, OrderStatus.REFUNDED, `admin:${adminId}`);
+      } catch (err) {
+        transitionError = err;
       }
-      await this.prisma.dispute.update({
-        where: { orderId },
-        data: {
-          status: 'RESOLVED_CUSTOMER',
-          resolution: `Resolved in favour of the customer (${pct}% refund)`,
-          resolvedBy: adminId,
-          resolvedAt: now,
-        },
-      });
-      return { orderId, status: OrderStatus.REFUNDED, refundCents, payoutCents: 0 };
+      await this.closeDispute(
+        orderId,
+        'RESOLVED_CUSTOMER',
+        `Resolved in favour of the customer (${pct}% refund)`,
+        adminId,
+        now,
+      );
+      if (transitionError) throw transitionError;
+
+      const resolved = await this.requireOrder(orderId);
+      return {
+        orderId,
+        status: resolved.status,
+        refundCents: outcome?.amountCents ?? 0,
+        payoutCents: 0,
+      };
     }
 
     // inspector wins → APPROVED then release the escrowed share.
-    await this.transition(orderId, OrderStatus.APPROVED, `admin:${adminId}`);
-    await this.releasePayout(orderId);
-    await this.prisma.dispute.update({
-      where: { orderId },
-      data: {
-        status: 'RESOLVED_INSPECTOR',
-        resolution: 'Resolved in favour of the inspector',
-        resolvedBy: adminId,
-        resolvedAt: now,
-      },
-    });
+    let transitionError: unknown = null;
+    try {
+      await this.transition(orderId, OrderStatus.APPROVED, `admin:${adminId}`);
+      await this.releasePayout(orderId);
+    } catch (err) {
+      transitionError = err;
+    }
+    await this.closeDispute(
+      orderId,
+      'RESOLVED_INSPECTOR',
+      'Resolved in favour of the inspector',
+      adminId,
+      now,
+    );
+    if (transitionError) throw transitionError;
     const after = await this.requireOrder(orderId);
     const payout = await this.prisma.payout.findUnique({ where: { orderId } });
     return {
@@ -796,21 +1351,28 @@ export class OrdersService {
       }
     }
 
-    // Report is exposed once SUBMITTED (or later).
+    // The report row is read in EVERY status, because `reportRequirement` below
+    // is, but it is only EXPOSED from SUBMITTED onwards — a customer must not be
+    // able to read the report before it is filed.
     const submittedOrLater: OrderStatus[] = [
       OrderStatus.SUBMITTED,
       OrderStatus.APPROVED,
       OrderStatus.COMPLETED,
       OrderStatus.DISPUTED,
     ];
-    let report: { id: string; code: string; qualityScore: number | null } | null = null;
-    if (submittedOrLater.includes(order.status)) {
-      const r = await this.prisma.report.findUnique({
-        where: { orderId },
-        select: { id: true, code: true, qualityScore: true },
-      });
-      if (r) report = { id: r.id, code: r.code, qualityScore: r.qualityScore };
-    }
+    const reportRow = await this.prisma.report.findUnique({
+      where: { orderId },
+      select: { id: true, code: true, qualityScore: true },
+    });
+    const report =
+      submittedOrLater.includes(order.status) && reportRow
+        ? { id: reportRow.id, code: reportRow.code, qualityScore: reportRow.qualityScore }
+        : null;
+
+    const [payment, minQualityScore] = await Promise.all([
+      this.prisma.payment.findUnique({ where: { orderId } }),
+      this.settings.getNumber('minReportQualityScore'),
+    ]);
 
     return {
       id: order.id,
@@ -835,6 +1397,39 @@ export class OrdersService {
       },
       inspectorContact,
       report,
+      // Where the money is. Under manual capture the order status alone no
+      // longer answers that: PAID means "committed", and held-versus-taken is a
+      // payment fact, not an order state.
+      payment: payment
+        ? {
+            state: PUBLIC_PAYMENT_STATE[payment.status] ?? 'pending',
+            amountCents: payment.amountCents,
+            authorizedAt: payment.authorizedAt?.toISOString() ?? null,
+            capturedAt: payment.capturedAt?.toISOString() ?? null,
+            releasedAt: payment.canceledAt?.toISOString() ?? null,
+          }
+        : null,
+      // Null for an order created before manual capture: its money was charged
+      // outright, so there was never a search window and never a hold. The
+      // website reads null as "no countdown", which is exactly right.
+      search: order.searchExpiresAt
+        ? {
+            deadlineAt: order.searchExpiresAt.toISOString(),
+            // Derived from the event the expiry cron writes rather than a
+            // seventh column: one fact, one place, and the timeline already
+            // carries it.
+            expiredAt:
+              events.find((e) => e.type === 'search_expired')?.createdAt.toISOString() ?? null,
+          }
+        : null,
+      // Returned in EVERY status on purpose. Its entire job is to be read while
+      // the order is ASSIGNED — before the inspector drives anywhere — so they
+      // know what the report has to reach to close the job. Telling them at
+      // submission time is telling them too late.
+      reportRequirement: {
+        minQualityScore,
+        currentQualityScore: reportRow?.qualityScore ?? null,
+      },
       autoApproveAt: order.autoApproveAt ? order.autoApproveAt.toISOString() : null,
       submittedAt: order.submittedAt ? order.submittedAt.toISOString() : null,
       createdAt: order.createdAt.toISOString(),
@@ -864,6 +1459,302 @@ export class OrdersService {
       await this.dispatch(offer.orderId);
     }
     return { expired: stale.length };
+  }
+
+  /**
+   * Nobody accepted in time. Release the customer's hold and cancel.
+   *
+   * **`searchExpiresAt IS NULL` is skipped, and that is load-bearing.** A null
+   * deadline means the order predates manual capture: its money was CHARGED at
+   * creation, not held, so there is no authorization to release and cancelling
+   * it here would take a live order away from a customer who has actually paid.
+   * The column is deliberately never backfilled — see the migration. `not: null`
+   * is therefore written out even though `lt` implies it, because it is the
+   * invariant, not an optimisation.
+   *
+   * One bad order must not stop the batch: the loop is individually guarded.
+   */
+  async expireUnfilledSearches(limit = 50): Promise<{ expired: number }> {
+    const now = new Date();
+    const due = await this.prisma.order.findMany({
+      where: {
+        status: { in: [OrderStatus.PAID, OrderStatus.UNASSIGNED] },
+        inspectorId: null,
+        searchExpiresAt: { not: null, lt: now },
+      },
+      orderBy: { searchExpiresAt: 'asc' },
+      take: limit,
+    });
+
+    let expired = 0;
+    for (const order of due) {
+      try {
+        // ── The claim, and why it comes first ──────────────────────────────
+        //
+        // The rows above are a SNAPSHOT. A batch of fifty spends a Stripe round
+        // trip and a notification on each, so tens of seconds pass before the
+        // last one is reached — and an offer's own timeout is unrelated to the
+        // search deadline, so a live PENDING offer past the deadline is normal.
+        // An inspector can therefore accept an order that is sitting in this
+        // list: they capture the money, the contract renders, and this loop then
+        // arrives with a stale row, refunds a CAPTURED payment as
+        // `search_expired`, and cancels a job someone may already be driving to.
+        //
+        // So the status change is the claim, not the conclusion: one conditional
+        // write, and `count === 0` means acceptOffer won the race.
+        //
+        // This deliberately inverts the settle-before-transition rule the cancel
+        // paths follow. That rule protects against transitioning with the money
+        // still taken; here the money is a HOLD, `settleRefund` never throws, and
+        // a release that fails is parked and retried. Refunding a captured order
+        // by accident is not recoverable in the same way.
+        const claimed = await this.prisma.order.updateMany({
+          where: {
+            id: order.id,
+            status: { in: [OrderStatus.PAID, OrderStatus.UNASSIGNED] },
+            inspectorId: null,
+            searchExpiresAt: { not: null, lt: now },
+          },
+          data: { status: OrderStatus.CANCELLED },
+        });
+        if (claimed.count === 0) continue;
+
+        await this.prisma.orderOffer.updateMany({
+          where: { orderId: order.id, status: 'PENDING' },
+          data: { status: 'EXPIRED' },
+        });
+        // Releases the hold and writes NO Refund row — nothing ever left the
+        // customer's account. Non-throwing by contract.
+        const outcome = await this.settleRefund(order, order.totalCents, 'search_expired');
+        // Written BEFORE the transition so `getDetail().search.expiredAt` can be
+        // derived from it, and so the timeline explains the cancellation that
+        // follows rather than just recording it.
+        await this.writeEvent(order.id, 'system', 'search_expired', null, null, {
+          deadlineAt: order.searchExpiresAt?.toISOString() ?? null,
+          release: outcome.status,
+          detail: outcome.detail,
+        });
+        // The claim above already wrote the status, so this records the change
+        // `transition` would have recorded. Its other work for CANCELLED is a
+        // `status_change` event and an `order.cancelled` notification — the
+        // event is written here, and the notification is deliberately replaced
+        // by the one below.
+        await this.writeEvent(
+          order.id,
+          'system',
+          'status_change',
+          order.status,
+          OrderStatus.CANCELLED,
+          null,
+        );
+        // `order.cancelled` would be true and useless: the customer did nothing,
+        // and what they need to hear is about their money. A released
+        // authorization can sit in a card statement for several working days, so
+        // a message that only says "cancelled" reads as "charged me and
+        // cancelled anyway". Notifications never throw into a domain flow, so
+        // this cannot un-expire the order.
+        await this.notifications.notify(order.customerId, 'order.search_expired', {
+          orderId: order.id,
+          orderNumber: order.number,
+          released: outcome.status,
+        });
+        expired += 1;
+      } catch (err) {
+        this.logger.error(
+          `expireUnfilledSearches: order ${order.id} threw: ${(err as Error).message}`,
+        );
+      }
+    }
+    return { expired };
+  }
+
+  /**
+   * Insurance against a lost or delayed webhook — not a plan. Stripe must be
+   * subscribed to `payment_intent.amount_capturable_updated`; without it every
+   * order authorizes and sits in CREATED, and this job would be the only thing
+   * moving them, fifteen minutes at a time.
+   *
+   * Two selections, because the two failures are opposite and both cost real
+   * money:
+   *
+   * - **Waiting**: a payment still 'pending'/'authorized' on an order that has
+   *   not left the search pool. Ask Stripe what actually became of the intent
+   *   and drive the order to the state the money is already in.
+   * - **Working**: an order at or past ASSIGNED whose payment is still only
+   *   held. An inspector is doing the job for free, and the hold expires at
+   *   Stripe after seven days. Capture it.
+   */
+  async reconcileStuckOrderPayments(limit = 25): Promise<{ scanned: number; advanced: number }> {
+    const staleBefore = new Date(Date.now() - RECONCILE_MIN_AGE_MS);
+    const uncaptured = { in: ['pending', 'authorized'] };
+
+    const [waiting, working, stranded] = await Promise.all([
+      this.prisma.payment.findMany({
+        where: {
+          purpose: 'order',
+          status: uncaptured,
+          createdAt: { lt: staleBefore },
+          order: { is: { status: { in: PRE_ASSIGNMENT_STATUSES } } },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+      }),
+      this.prisma.payment.findMany({
+        where: {
+          purpose: 'order',
+          status: uncaptured,
+          createdAt: { lt: staleBefore },
+          order: { is: { status: { in: POST_ASSIGNMENT_STATUSES } } },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+      }),
+      // A hold whose release FAILED, on an order that was cancelled anyway.
+      //
+      // Nothing else picks these up. `releaseAuthorization` writes no `Refund`
+      // row by design (a Refund means money went back, and nothing was ever
+      // taken), so the refund retry cron cannot see it; and the two selections
+      // above are both scoped to statuses that exclude CANCELLED. The result was
+      // a customer told "nothing was charged and the hold has been released"
+      // while their funds stayed frozen until Stripe expired the authorization
+      // on its own — up to seven days.
+      this.prisma.payment.findMany({
+        where: {
+          purpose: 'order',
+          status: 'authorized',
+          createdAt: { lt: staleBefore },
+          order: { is: { status: { in: [OrderStatus.CANCELLED, OrderStatus.REFUNDED] } } },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+      }),
+    ]);
+
+    let advanced = 0;
+
+    for (const payment of stranded) {
+      const orderId = payment.orderId as string;
+      try {
+        const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+        if (!order) continue;
+        const outcome = await this.releaseAuthorization(order, payment, 'reconcile_stranded_hold');
+        if (outcome.status === 'released') {
+          advanced += 1;
+          this.logger.warn(`reconcile: released a stranded hold on cancelled order ${orderId}`);
+        }
+      } catch (err) {
+        this.logger.error(
+          `reconcile: stranded hold on order ${orderId} threw: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    for (const payment of working) {
+      const orderId = payment.orderId as string;
+      try {
+        const outcome = await this.captureOrderPayment(orderId);
+        if (outcome.status === 'captured') {
+          advanced += 1;
+          this.logger.warn(
+            `reconcile: captured the late payment on assigned order ${orderId}`,
+          );
+        } else if (outcome.status === 'fatal') {
+          // Deliberately NOT cancelled here. The inspection may already be done;
+          // unwinding it is a decision for an operator, not a cron.
+          this.logger.error(
+            `reconcile: order ${orderId} is assigned but unpayable (${outcome.detail}) — needs an operator`,
+          );
+        }
+      } catch (err) {
+        this.logger.error(`reconcile: order ${orderId} threw: ${(err as Error).message}`);
+      }
+    }
+
+    for (const payment of waiting) {
+      try {
+        if (await this.reconcileWaitingPayment(payment)) advanced += 1;
+      } catch (err) {
+        this.logger.error(
+          `reconcile: payment ${payment.id} threw: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    return { scanned: waiting.length + working.length + stranded.length, advanced };
+  }
+
+  /**
+   * One stuck pre-assignment payment. Returns true when the order moved.
+   *
+   * Stripe is the authority here, not our ledger: the whole reason this row is
+   * being looked at is that we did not hear what happened.
+   */
+  private async reconcileWaitingPayment(payment: {
+    id: string;
+    orderId: string | null;
+    status: string;
+    stripePaymentIntentId: string | null;
+  }): Promise<boolean> {
+    const orderId = payment.orderId;
+    if (!orderId) return false;
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) return false;
+
+    if (payment.status === 'authorized') {
+      // A hold on an order still looking for an inspector is healthy until
+      // `searchExpiresAt` — unless the order never left CREATED, which means the
+      // webhook that starts the search was lost after we recorded the hold.
+      if (order.status !== OrderStatus.CREATED) return false;
+      await this.authorizeOrderPayment(payment.id, orderId);
+      return true;
+    }
+
+    // 'pending': we never heard what became of the intent. Ask.
+    if (!this.stripe.configured || !payment.stripePaymentIntentId) return false;
+    let intent: StripePaymentIntent;
+    try {
+      intent = await this.stripe.retrievePaymentIntent(payment.stripePaymentIntentId);
+    } catch (err) {
+      this.logger.error(
+        `reconcile: could not read the PaymentIntent for order ${orderId}: ${classifyStripeError(err).message}`,
+      );
+      return false;
+    }
+
+    switch (intent.status) {
+      case 'requires_capture':
+        // The hold IS in place; only the webhook went missing.
+        await this.authorizeOrderPayment(payment.id, orderId);
+        return true;
+      case 'succeeded': {
+        // Captured out of band — an automatic-capture order from before this
+        // deploy, or a capture made in the Stripe dashboard. Record the money and
+        // start the order, but deliberately do NOT open a search window: there is
+        // no hold left to release, so a deadline would only give the expiry cron
+        // a captured order to cancel.
+        await this.payments.settleOrderPayment(payment.id, orderId);
+        return true;
+      }
+      case 'canceled': {
+        await this.prisma.payment.updateMany({
+          where: { id: payment.id, status: { not: 'cancelled' } },
+          data: { status: 'cancelled', canceledAt: new Date() },
+        });
+        if (!canTransition(order.status, OrderStatus.CANCELLED)) return false;
+        await this.writeEvent(orderId, 'system', 'authorization_released', null, null, {
+          reason: 'reconciled',
+          released: true,
+          error: null,
+        });
+        await this.transition(orderId, OrderStatus.CANCELLED, 'system');
+        return true;
+      }
+      default:
+        // requires_payment_method / requires_confirmation / requires_action /
+        // processing — the customer simply has not finished paying. There is
+        // nothing to reconcile, and no search window has started.
+        return false;
+    }
   }
 
   /** SUBMITTED orders past autoApproveAt → APPROVED. */
@@ -900,19 +1791,21 @@ export class OrdersService {
    * first failure parked a pending row, and that row then blocked every
    * subsequent attempt forever.
    */
-  async releasePayout(orderId: string): Promise<void> {
+  async releasePayout(orderId: string): Promise<PayoutOutcome> {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
-    if (!order) return;
+    if (!order) return this.skipPayout(orderId, 'order no longer exists');
     // COMPLETED is allowed so a retry can finish an order whose earlier attempt
     // transitioned it but failed to transfer. `transition` no-ops on from===to.
-    if (order.status !== OrderStatus.APPROVED && order.status !== OrderStatus.COMPLETED) return;
+    if (order.status !== OrderStatus.APPROVED && order.status !== OrderStatus.COMPLETED) {
+      return this.skipPayout(orderId, `order is ${order.status} — no payout is owed`);
+    }
     if (!order.inspectorId) {
       this.logger.warn(`releasePayout: order ${orderId} has no inspector — skipping`);
-      return;
+      return this.skipPayout(orderId, 'order has no inspector');
     }
 
     const existing = await this.prisma.payout.findUnique({ where: { orderId } });
-    if (existing?.status === 'paid') return;
+    if (existing?.status === 'paid') return { status: 'already_paid' };
 
     const amountCents = order.inspectorShareCents;
     const profile = await this.prisma.inspectorProfile.findUnique({
@@ -921,16 +1814,14 @@ export class OrdersService {
 
     // Not eligible to receive funds yet → park a pending payout, stay APPROVED.
     if (!profile?.stripeOnboarded || !profile.stripeAccountId) {
-      await this.parkPayout(order, amountCents, 'inspector is not onboarded for payouts');
-      return;
+      return this.parkPayout(order, amountCents, 'inspector is not onboarded for payouts');
     }
 
     let stripeTransferId: string | null = `tr_mock_${orderId}`;
     if (this.stripe.configured) {
       const payment = await this.prisma.payment.findUnique({ where: { orderId } });
       if (!payment?.stripePaymentIntentId) {
-        await this.parkPayout(order, amountCents, 'order has no Stripe PaymentIntent');
-        return;
+        return this.parkPayout(order, amountCents, 'order has no Stripe PaymentIntent');
       }
       try {
         const pi = await this.stripe.retrievePaymentIntent(payment.stripePaymentIntentId);
@@ -942,12 +1833,14 @@ export class OrdersService {
           destinationAccountId: profile.stripeAccountId,
           sourceChargeId: chargeId,
           transferGroup: order.number,
+          // One payout per order (`Payout.orderId` is unique), so the order id
+          // IS the payout's identity and is stable across every retry.
+          idempotencyKey: `transfer_${order.id}`,
         });
         stripeTransferId = transfer.id;
       } catch (err) {
         // Transfer failed → park with a retry schedule, stay APPROVED.
-        await this.parkPayout(order, amountCents, (err as Error).message);
-        return;
+        return this.parkPayout(order, amountCents, classifyStripeError(err).message);
       }
     }
 
@@ -968,17 +1861,27 @@ export class OrdersService {
       });
       await this.transition(orderId, OrderStatus.COMPLETED, 'system');
     }
+    return { status: wasAlreadyPaid ? 'already_paid' : 'paid' };
   }
 
   /**
-   * Backoff schedule by attempt number. After the last entry the payout is
-   * terminal and needs an operator — an automated retry that never gives up
-   * turns one broken transfer into a permanent hourly alert.
+   * Terminate a payout row that can never settle on its own — the order was
+   * cancelled, lost its inspector, or vanished. `nextRetryAt` is cleared so the
+   * cron stops re-selecting it (it used to match the due query on every single
+   * run, for ever, because `releasePayout` returned early without re-parking),
+   * and the reason is written where an operator reads it.
    */
-  private static readonly PAYOUT_BACKOFF_MINUTES = [5, 15, 60, 360, 1440, 4320];
-
-  /** Attempts after which a payout stops retrying by itself. */
-  private static readonly PAYOUT_MAX_ATTEMPTS = OrdersService.PAYOUT_BACKOFF_MINUTES.length;
+  private async skipPayout(orderId: string, reason: string): Promise<PayoutOutcome> {
+    await this.prisma.payout.updateMany({
+      where: { orderId, status: { not: 'paid' } },
+      data: {
+        nextRetryAt: null,
+        lastError: `skipped: ${reason}`.slice(0, 500),
+        lastAttemptAt: new Date(),
+      },
+    });
+    return { status: 'skipped', reason };
+  }
 
   /**
    * Record a payout that could not be settled, schedule the next attempt, and
@@ -989,23 +1892,18 @@ export class OrdersService {
     order: { id: string; number: string; inspectorId: string | null },
     amountCents: number,
     reason: string,
-  ): Promise<void> {
-    if (!order.inspectorId) return;
+  ): Promise<PayoutOutcome> {
+    if (!order.inspectorId) return this.skipPayout(order.id, 'order has no inspector');
 
     const existing = await this.prisma.payout.findUnique({ where: { orderId: order.id } });
-    const attempts = (existing?.attempts ?? 0) + 1;
-    const exhausted = attempts >= OrdersService.PAYOUT_MAX_ATTEMPTS;
-    const backoffMinutes =
-      OrdersService.PAYOUT_BACKOFF_MINUTES[
-        Math.min(attempts - 1, OrdersService.PAYOUT_BACKOFF_MINUTES.length - 1)
-      ];
+    const { attempts, terminal: exhausted, nextRetryAt } = planRetry(existing?.attempts ?? 0);
 
     const data = {
       status: exhausted ? 'failed' : 'pending',
       attempts,
       lastError: reason.slice(0, 500),
       lastAttemptAt: new Date(),
-      nextRetryAt: exhausted ? null : new Date(Date.now() + backoffMinutes * 60_000),
+      nextRetryAt,
     };
 
     await this.prisma.payout.upsert({
@@ -1037,6 +1935,39 @@ export class OrdersService {
         });
       }
     }
+
+    return { status: 'parked', reason };
+  }
+
+  /**
+   * Stripe told us, after the fact, that a transfer failed or was reversed.
+   *
+   * The attempt arithmetic lives in `parkPayout` and nowhere else. The webhook
+   * handler used to do its own `attempts: { increment: 1 }`, which could push a
+   * payout past the cap — and the retry cron filters on `attempts < cap`, so
+   * once past it the row was never looked at again by anything: not terminal,
+   * not alerted, not retried, just silently owed.
+   */
+  async parkPayoutForFailedTransfer(orderId: string, reason: string): Promise<void> {
+    const payout = await this.prisma.payout.findUnique({ where: { orderId } });
+    if (!payout) return;
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, number: true, inspectorId: true },
+    });
+    if (!order) return;
+
+    // Free the transfer id first: `parkPayout` never touches it, and a retry
+    // must be able to record a transfer of its own.
+    await this.prisma.payout.update({
+      where: { orderId },
+      data: { stripeTransferId: null },
+    });
+    await this.parkPayout(
+      { id: order.id, number: order.number, inspectorId: order.inspectorId ?? payout.inspectorId },
+      payout.amountCents,
+      reason,
+    );
   }
 
   private async notifyAdminsOfStuckPayout(
@@ -1109,7 +2040,7 @@ export class OrdersService {
       where: {
         status: { in: ['pending', 'failed'] },
         nextRetryAt: { not: null, lte: new Date() },
-        attempts: { lt: OrdersService.PAYOUT_MAX_ATTEMPTS },
+        attempts: { lt: MONEY_RETRY_MAX_ATTEMPTS },
       },
       orderBy: { nextRetryAt: 'asc' },
       take: limit,
@@ -1119,7 +2050,13 @@ export class OrdersService {
     let settled = 0;
     for (const { orderId } of due) {
       try {
-        await this.releasePayout(orderId);
+        const outcome = await this.releasePayout(orderId);
+        if (outcome.status === 'skipped') {
+          // `releasePayout` has already cleared nextRetryAt, so this row leaves
+          // the queue instead of being re-selected on every run for ever.
+          this.logger.warn(`retryStuckPayouts: ${orderId} skipped — ${outcome.reason}`);
+          continue;
+        }
         const after = await this.prisma.payout.findUnique({ where: { orderId } });
         if (after?.status === 'paid') settled += 1;
       } catch (err) {
@@ -1216,6 +2153,542 @@ export class OrdersService {
   }
 
   // ============================================================
+  // Refunds (F-14)
+  // ============================================================
+
+  /**
+   * Give money back for an order. **Never throws.**
+   *
+   * This is the refund counterpart of `releasePayout`/`parkPayout`, and it
+   * follows the same shape deliberately: the provider call is attempted, a
+   * failure parks a visible row with a retry schedule, and the caller's own work
+   * — the state transition — carries on regardless.
+   *
+   * That last part is the point. Refunds used to be issued by an unguarded
+   * `stripe.createRefund` inside `cancel`, so:
+   *   - cancelling an order whose card was never charged called Stripe against a
+   *     PaymentIntent with no successful charge, got an `invalid_request_error`,
+   *     and answered 500 — every single time, for the most ordinary cancellation
+   *     there is;
+   *   - a refund Stripe refused for any reason threw out of `resolveDispute`
+   *     before the Dispute row was closed, leaving the dispute OPEN for ever.
+   *
+   * What happens is decided by the payment, not by the caller:
+   *
+   * | payment            | behaviour                                            |
+   * |--------------------|------------------------------------------------------|
+   * | none / pending / failed / cancelled | record a `refund_skipped` event, never call the provider |
+   * | succeeded          | refund, upserted on (orderId, reason); park on failure |
+   * | refunded           | skip — the money is already back                     |
+   * | authorized         | release the hold, record `authorization_released`, write NO Refund row |
+   *
+   * A `Refund` row means money went back, or is still trying to. An uncaptured
+   * authorization never left the customer's account, so recording one for it
+   * would double-count every hold-and-release in the finance ledger.
+   */
+  async settleRefund(
+    order: RefundableOrder,
+    amountCents: number,
+    reason: string,
+  ): Promise<RefundOutcome> {
+    try {
+      return await this.settleRefundInner(order, amountCents, reason);
+    } catch (err) {
+      // Only reachable if the database itself misbehaves. Reported, not thrown:
+      // the transition this refund belongs to must still happen.
+      this.logger.error(
+        `settleRefund: order ${order.id} (${reason}) failed unexpectedly: ${(err as Error).message}`,
+      );
+      return {
+        status: 'error',
+        amountCents: 0,
+        refundId: null,
+        stripeRefundId: null,
+        reason,
+        detail: (err as Error).message,
+        attempts: 0,
+        nextRetryAt: null,
+      };
+    }
+  }
+
+  private async settleRefundInner(
+    order: RefundableOrder,
+    amountCents: number,
+    reason: string,
+  ): Promise<RefundOutcome> {
+    const existing = await this.findRefund(order.id, reason);
+    if (existing?.status === 'succeeded') {
+      // Idempotency: (orderId, reason) is unique, and this one already settled.
+      return this.refundOutcome('refunded', amountCents, existing, 'already refunded');
+    }
+
+    if (amountCents <= 0) {
+      await this.skipRefund(order, 0, reason, null, 'refund amount is zero');
+      return this.skippedRefund(reason, 'refund amount is zero');
+    }
+
+    const payment = await this.prisma.payment.findUnique({ where: { orderId: order.id } });
+    const paymentStatus = payment?.status ?? null;
+
+    if (
+      !payment ||
+      paymentStatus === 'pending' ||
+      paymentStatus === 'failed' ||
+      paymentStatus === 'cancelled'
+    ) {
+      const detail = payment ? `payment is ${paymentStatus}` : 'order has no payment';
+      await this.skipRefund(order, amountCents, reason, paymentStatus, detail);
+      return this.skippedRefund(reason, detail);
+    }
+
+    if (paymentStatus === 'refunded') {
+      const detail = 'payment is already refunded';
+      await this.skipRefund(order, amountCents, reason, paymentStatus, detail);
+      return this.skippedRefund(reason, detail);
+    }
+
+    if (paymentStatus === 'authorized') {
+      return this.releaseAuthorization(order, payment, reason);
+    }
+
+    // `search_expired` can only ever mean a hold was released — the reason IS
+    // "nobody accepted", and money is captured only when someone does. A
+    // captured payment here means the caller is working from a stale read, and
+    // refunding on it would take a paid job away from an inspector who accepted
+    // it. `expireUnfilledSearches` claims the order atomically so this should be
+    // unreachable; it is checked anyway because the failure is a customer
+    // charged and refunded for an inspection that is going ahead.
+    if (reason === 'search_expired') {
+      const detail = `payment is ${paymentStatus} — the order was accepted after the search window closed`;
+      this.logger.warn(`settleRefund: refusing search_expired refund on order ${order.id}: ${detail}`);
+      await this.skipRefund(order, amountCents, reason, paymentStatus, detail);
+      return this.skippedRefund(reason, detail);
+    }
+
+    // paymentStatus === 'succeeded' — the money really is out there.
+    let stripeRefundId: string;
+    if (this.stripe.configured) {
+      if (!payment.stripePaymentIntentId) {
+        // Recording a local refund id here would put "money returned" in the
+        // ledger while Stripe never returned it. Park instead: the PaymentIntent
+        // may still arrive on a later webhook.
+        return this.parkRefund(order, amountCents, reason, 'payment has no Stripe PaymentIntent');
+      }
+      try {
+        const refund = await this.stripe.createRefund(
+          payment.stripePaymentIntentId,
+          amountCents,
+          reason,
+          // `(orderId, reason)` is the refund's identity and is unique, so this
+          // is stable across retries and identical for two callers racing on the
+          // same row — which is the case that matters.
+          `refund_${order.id}_${reason}`,
+        );
+        stripeRefundId = refund.id;
+      } catch (err) {
+        const failure = classifyStripeError(err);
+        // `retryable: false` means the same request cannot succeed however often
+        // it is repeated — a card error, a missing charge. Scheduling six
+        // retries for it would only delay the operator's involvement by three
+        // days, so it goes terminal now and stays visible in the queue.
+        return this.parkRefund(order, amountCents, reason, failure.message, !failure.retryable);
+      }
+    } else {
+      // MOCK mode: deterministic per (order, reason), so a retry updates its own
+      // row rather than colliding on the unique stripeRefundId.
+      stripeRefundId = `re_mock_${order.id}_${reason}`;
+    }
+
+    const data = {
+      amountCents,
+      status: 'succeeded',
+      stripeRefundId,
+      attempts: (existing?.attempts ?? 0) + 1,
+      lastError: null,
+      lastAttemptAt: new Date(),
+      nextRetryAt: null,
+    };
+    const row = await this.prisma.refund.upsert({
+      where: { orderId_reason: { orderId: order.id, reason } },
+      create: { orderId: order.id, reason, ...data },
+      update: data,
+    });
+
+    // Marking the payment refunded also revokes whatever it entitled the buyer
+    // to (PaymentsService.revokeEntitlementsFor). Idempotent.
+    await this.payments.markPaymentRefunded(payment.id);
+    await this.writeEvent(order.id, 'system', 'refund_issued', null, null, {
+      reason,
+      amountCents,
+      stripeRefundId,
+    });
+    return this.refundOutcome('refunded', amountCents, row, null);
+  }
+
+  /**
+   * Release an authorization hold. No Refund row is written — see the note on
+   * `settleRefund`. The hold is only marked released in our ledger once the
+   * provider confirms it, so a failure leaves the hold visible instead of
+   * pretending the customer's money is free.
+   */
+  private async releaseAuthorization(
+    order: RefundableOrder,
+    payment: { id: string; stripePaymentIntentId: string | null },
+    reason: string,
+  ): Promise<RefundOutcome> {
+    let released = true;
+    let detail: string | null = null;
+
+    if (this.stripe.configured && payment.stripePaymentIntentId) {
+      if (canCancelAuthorization(this.stripe)) {
+        try {
+          await this.stripe.cancelPaymentIntent(payment.stripePaymentIntentId, payment.id, reason);
+        } catch (err) {
+          released = false;
+          detail = classifyStripeError(err).message;
+          this.logger.error(
+            `settleRefund: could not release the hold on order ${order.id}: ${detail}`,
+          );
+          // A failed release writes no Refund row (correctly — no money moved),
+          // so it cannot enter the refund retry queue and used to leave nothing
+          // behind but this log line. Meanwhile the customer has been told the
+          // hold is gone, and their funds stay frozen until Stripe expires the
+          // authorization on its own. `reconcileStuckOrderPayments` retries it;
+          // this is what makes it visible in the meantime.
+          await this.notifyAdminsOfStrandedHold(order, detail);
+        }
+      } else {
+        detail = 'provider cannot release holds — released locally only';
+        this.logger.warn(`settleRefund: ${detail} (order ${order.id})`);
+      }
+    }
+
+    if (released) {
+      await this.prisma.payment
+        .update({
+          where: { id: payment.id },
+          data: { status: 'cancelled', canceledAt: new Date() },
+        })
+        .catch(() => undefined);
+    }
+
+    await this.writeEvent(order.id, 'system', 'authorization_released', null, null, {
+      reason,
+      released,
+      error: detail,
+    });
+
+    return {
+      status: released ? 'released' : 'error',
+      amountCents: 0,
+      refundId: null,
+      stripeRefundId: null,
+      reason,
+      detail,
+      attempts: 0,
+      nextRetryAt: null,
+    };
+  }
+
+  /**
+   * Record a refund the provider refused, schedule the next attempt, and tell
+   * someone. Upserted on (orderId, reason), so a retried cancellation tops up
+   * the existing row instead of minting a second one and refunding twice.
+   */
+  private async parkRefund(
+    order: RefundableOrder,
+    amountCents: number,
+    reason: string,
+    error: string,
+    fatal = false,
+  ): Promise<RefundOutcome> {
+    const existing = await this.findRefund(order.id, reason);
+    const {
+      attempts,
+      terminal: exhausted,
+      nextRetryAt,
+    } = planRetry(existing?.attempts ?? 0, { fatal });
+
+    const data = {
+      amountCents,
+      status: exhausted ? 'failed' : 'pending',
+      attempts,
+      lastError: (fatal ? `permanent: ${error}` : error).slice(0, 500),
+      lastAttemptAt: new Date(),
+      nextRetryAt,
+    };
+
+    const row = await this.prisma.refund.upsert({
+      where: { orderId_reason: { orderId: order.id, reason } },
+      create: { orderId: order.id, reason, ...data },
+      update: data,
+    });
+
+    this.logger.warn(
+      `settleRefund: order ${order.id} refund ${data.status} (attempt ${attempts}): ${error}`,
+    );
+    await this.writeEvent(order.id, 'system', 'refund_failed', null, null, {
+      reason,
+      amountCents,
+      attempts,
+      terminal: exhausted,
+      error,
+    });
+
+    // Alert on the FIRST parking and on going terminal — not on every retry.
+    if (attempts === 1 || exhausted) {
+      await this.notifyAdminsOfStuckRefund(order, amountCents, reason, error, attempts, exhausted);
+    }
+
+    return this.refundOutcome('parked', amountCents, row, error);
+  }
+
+  /** Record that no refund was owed, so the timeline explains the silence. */
+  private async skipRefund(
+    order: RefundableOrder,
+    amountCents: number,
+    reason: string,
+    paymentStatus: string | null,
+    detail: string,
+  ): Promise<void> {
+    this.logger.log(`settleRefund: order ${order.id} (${reason}) skipped — ${detail}`);
+    await this.writeEvent(order.id, 'system', 'refund_skipped', null, null, {
+      reason,
+      amountCents,
+      paymentStatus,
+      detail,
+    });
+  }
+
+  private async notifyAdminsOfStuckRefund(
+    order: RefundableOrder,
+    amountCents: number,
+    reason: string,
+    error: string,
+    attempts: number,
+    terminal: boolean,
+  ): Promise<void> {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
+      select: { id: true },
+    });
+    for (const admin of admins) {
+      await this.notifications.notify(admin.id, 'refund.failed', {
+        orderId: order.id,
+        orderNumber: order.number,
+        amountCents,
+        reason,
+        error,
+        attempts,
+        terminal,
+      });
+    }
+  }
+
+  /**
+   * A hold we could not release. Reuses `refund.failed` rather than minting a
+   * type: to an operator this is the same task — money the customer should not
+   * be without — and the payload says which it is. `amountCents: 0` is the
+   * honest figure, because nothing was ever taken; what is stuck is the hold.
+   */
+  private async notifyAdminsOfStrandedHold(
+    order: RefundableOrder,
+    error: string,
+  ): Promise<void> {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
+      select: { id: true },
+    });
+    for (const admin of admins) {
+      await this.notifications.notify(admin.id, 'refund.failed', {
+        orderId: order.id,
+        orderNumber: order.number,
+        amountCents: 0,
+        reason: 'authorization_release_failed',
+        error,
+        attempts: 1,
+        terminal: false,
+      });
+    }
+  }
+
+  private findRefund(orderId: string, reason: string) {
+    return this.prisma.refund.findUnique({
+      where: { orderId_reason: { orderId, reason } },
+    });
+  }
+
+  private refundOutcome(
+    status: 'refunded' | 'parked',
+    amountCents: number,
+    row: {
+      id: string;
+      stripeRefundId: string | null;
+      reason: string;
+      attempts: number;
+      nextRetryAt: Date | null;
+    },
+    detail: string | null,
+  ): RefundOutcome {
+    return {
+      status,
+      amountCents,
+      refundId: row.id,
+      stripeRefundId: row.stripeRefundId,
+      reason: row.reason,
+      detail,
+      attempts: row.attempts,
+      nextRetryAt: row.nextRetryAt,
+    };
+  }
+
+  private skippedRefund(reason: string, detail: string): RefundOutcome {
+    return {
+      status: 'skipped',
+      amountCents: 0,
+      refundId: null,
+      stripeRefundId: null,
+      reason,
+      detail,
+      attempts: 0,
+      nextRetryAt: null,
+    };
+  }
+
+  /**
+   * Retry refunds whose backoff has elapsed. Driven by a cron every ten minutes:
+   * money owed back to a customer is not a cold queue item.
+   *
+   * A refund that turns out to be un-owed after all (the payment was refunded by
+   * a chargeback in the meantime, or the order is gone) is terminated rather
+   * than left to match this query on every run for ever.
+   */
+  async retryStuckRefunds(limit = 25): Promise<{ retried: number; settled: number }> {
+    const due = await this.prisma.refund.findMany({
+      where: {
+        status: { in: ['pending', 'failed'] },
+        nextRetryAt: { not: null, lte: new Date() },
+        attempts: { lt: MONEY_RETRY_MAX_ATTEMPTS },
+        orderId: { not: null },
+      },
+      orderBy: { nextRetryAt: 'asc' },
+      take: limit,
+      select: { id: true, orderId: true, amountCents: true, reason: true },
+    });
+
+    let settled = 0;
+    for (const refund of due) {
+      try {
+        const order = await this.prisma.order.findUnique({
+          where: { id: refund.orderId as string },
+          select: { id: true, number: true },
+        });
+        if (!order) {
+          await this.terminateRefund(refund.id, 'order no longer exists');
+          continue;
+        }
+        const outcome = await this.settleRefund(order, refund.amountCents, refund.reason);
+        if (outcome.status === 'refunded') {
+          settled += 1;
+        } else if (outcome.status === 'skipped' || outcome.status === 'released') {
+          await this.terminateRefund(refund.id, outcome.detail ?? 'nothing left to refund');
+        }
+      } catch (err) {
+        // One bad row must not stop the batch.
+        this.logger.error(`retryStuckRefunds: ${refund.id} threw: ${(err as Error).message}`);
+      }
+    }
+    return { retried: due.length, settled };
+  }
+
+  /** Take a refund out of the retry queue, leaving the reason where it shows. */
+  private async terminateRefund(refundId: string, reason: string): Promise<void> {
+    await this.prisma.refund.update({
+      where: { id: refundId },
+      data: { nextRetryAt: null, lastError: `skipped: ${reason}`.slice(0, 500) },
+    });
+  }
+
+  /**
+   * Operator action: attempt a parked refund right now, ignoring the backoff and
+   * the attempt cap.
+   */
+  async adminRetryRefund(refundId: string) {
+    const refund = await this.prisma.refund.findUnique({ where: { id: refundId } });
+    if (!refund) {
+      throw new NotFoundException({
+        error: { code: 'refund_not_found', message: `No refund ${refundId}` },
+      });
+    }
+    if (refund.status === 'succeeded') return refund;
+    if (!refund.orderId) {
+      // A VIN-history refund hangs off the payment, not an order, and its retry
+      // path belongs to that module. Refusing is honest; guessing is not.
+      throw new ConflictException({
+        error: {
+          code: 'refund_not_retryable',
+          message: 'This refund is not attached to an order and must be settled in Stripe',
+        },
+      });
+    }
+    const order = await this.prisma.order.findUnique({
+      where: { id: refund.orderId },
+      select: { id: true, number: true },
+    });
+    if (!order) {
+      throw new NotFoundException({
+        error: { code: 'not_found', message: 'Order not found' },
+      });
+    }
+
+    // Reset the counter so an operator retry is never refused by the cap, and so
+    // the schedule restarts from the short end if it fails again.
+    await this.prisma.refund.update({
+      where: { id: refundId },
+      data: { attempts: 0, nextRetryAt: new Date() },
+    });
+    await this.settleRefund(order, refund.amountCents, refund.reason);
+    return this.prisma.refund.findUnique({ where: { id: refundId } });
+  }
+
+  /** Refund queue for the admin finance view. */
+  async listRefunds(status?: string, page = 1, pageSize = 50) {
+    const where = status ? { status } : {};
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.refund.findMany({
+        where,
+        orderBy: [{ nextRetryAt: 'asc' }, { createdAt: 'desc' }],
+        skip: (Math.max(1, page) - 1) * pageSize,
+        take: pageSize,
+        include: { order: { select: { number: true, status: true } } },
+      }),
+      this.prisma.refund.count({ where }),
+    ]);
+
+    return {
+      total,
+      items: rows.map((r) => ({
+        id: r.id,
+        orderId: r.orderId,
+        orderNumber: r.order?.number ?? null,
+        orderStatus: r.order?.status ?? null,
+        paymentId: r.paymentId,
+        amountCents: r.amountCents,
+        currency: 'EUR',
+        reason: r.reason,
+        status: r.status,
+        attempts: r.attempts,
+        lastError: r.lastError,
+        lastAttemptAt: r.lastAttemptAt?.toISOString() ?? null,
+        nextRetryAt: r.nextRetryAt?.toISOString() ?? null,
+        stripeRefundId: r.stripeRefundId,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
+  }
+
+  // ============================================================
   // Report attach → SUBMITTED (called from ReportsService.create)
   // ============================================================
 
@@ -1262,8 +2735,14 @@ export class OrdersService {
       });
     }
 
+    // `Report.code` is not `@unique` — only `@@index([code])`, with a PARTIAL
+    // unique index covering the UUID-format codes. Legacy `CSP-######` codes
+    // legitimately repeat across devices, so without an explicit order this
+    // findFirst returned whichever row Postgres happened to hand back.
+    // Newest-first, matching `PaymentsService.createPpvCheckout`.
     const report = await this.prisma.report.findFirst({
       where: { code, deletedAt: null },
+      orderBy: { createdAt: 'desc' },
       select: {
         id: true,
         code: true,
@@ -1273,6 +2752,7 @@ export class OrdersService {
         vin: true,
         make: true,
         model: true,
+        qualityScore: true,
       },
     });
     if (!report) {
@@ -1298,6 +2778,11 @@ export class OrdersService {
         },
       });
     }
+
+    // The completeness gate runs AFTER the vehicle check on purpose: "this is
+    // the wrong car" is the more useful thing to be told, and a right-car report
+    // that is merely incomplete is the only one worth quoting a score at.
+    await this.assertReportQuality(report.qualityScore);
 
     const deviceLink = await this.prisma.deviceLink.findUnique({
       where: { deviceId: report.deviceId },
@@ -1326,6 +2811,55 @@ export class OrdersService {
       status: updatedOrder.status,
       report: updatedReport,
     };
+  }
+
+  /**
+   * The completeness gate: an order may only be closed with a report that
+   * actually covers the vehicle. Throws, or returns silently.
+   *
+   * The threshold is `minReportQualityScore` (a PlatformSetting, seeded at 90)
+   * rather than a constant for one operational reason: an inspector running an
+   * older mobile build files reports with NO score at all, and discovering that
+   * in production has to be fixable from the admin panel in a minute rather
+   * than by a release. **`min <= 0` disables the gate entirely** — that is the
+   * lever, and it is why the comparison is not `score < min || min === 0`.
+   *
+   * The two refusals are separate codes on purpose. `report_quality_unknown`
+   * means "your app is too old, update it"; `report_quality_too_low` means "the
+   * inspection is incomplete, go back to the car". Collapsing them into one
+   * accuses an inspector of poor work when the real problem is a stale build,
+   * and they would keep re-uploading the same perfectly good report.
+   *
+   * Both numbers ride on the exception beside `error`, where
+   * `AllExceptionsFilter` passes them through to the wire — a bare code the
+   * client cannot turn into "87 of 90" is a code the user cannot act on.
+   */
+  async assertReportQuality(qualityScore: number | null | undefined): Promise<void> {
+    const minQualityScore = await this.settings.getNumber('minReportQualityScore');
+    if (minQualityScore <= 0) return;
+
+    if (qualityScore === null || qualityScore === undefined) {
+      throw new ConflictException({
+        error: {
+          code: 'report_quality_unknown',
+          message:
+            'This report carries no completeness score. Update the CarSalePro app and re-sync the report.',
+        },
+        qualityScore: null,
+        minQualityScore,
+      });
+    }
+
+    if (qualityScore < minQualityScore) {
+      throw new ConflictException({
+        error: {
+          code: 'report_quality_too_low',
+          message: `This report is ${qualityScore}% complete; ${minQualityScore}% is required to close an order.`,
+        },
+        qualityScore,
+        minQualityScore,
+      });
+    }
   }
 
   private reportVehicleMatchesOrder(
@@ -1496,18 +3030,24 @@ export class OrdersService {
     return order;
   }
 
-  private async refundOrder(order: Order, amountCents: number, reason: string): Promise<void> {
-    let stripeRefundId = `mock_re_${order.id}_${Date.now()}`;
-    const payment = await this.prisma.payment.findUnique({ where: { orderId: order.id } });
-    if (this.stripe.configured && payment?.stripePaymentIntentId) {
-      const refund = await this.stripe.createRefund(payment.stripePaymentIntentId, amountCents, reason);
-      stripeRefundId = refund.id;
-    } else if (payment) {
-      await this.payments.markPaymentRefunded(payment.id);
+  /** Close a dispute row. Never throws: bookkeeping must not reopen a decision. */
+  private async closeDispute(
+    orderId: string,
+    status: 'RESOLVED_CUSTOMER' | 'RESOLVED_INSPECTOR',
+    resolution: string,
+    adminId: string,
+    at: Date,
+  ): Promise<void> {
+    try {
+      await this.prisma.dispute.update({
+        where: { orderId },
+        data: { status, resolution, resolvedBy: adminId, resolvedAt: at },
+      });
+    } catch (err) {
+      this.logger.error(
+        `Failed to close the dispute on order ${orderId}: ${(err as Error).message}`,
+      );
     }
-    await this.prisma.refund.create({
-      data: { orderId: order.id, amountCents, reason, stripeRefundId },
-    });
   }
 
   private async readOrderLatLng(orderId: string): Promise<{ lat: number; lng: number }> {
@@ -1558,6 +3098,27 @@ export class OrdersService {
   }
 }
 
+/**
+ * Map a {@link RefundOutcome} onto the word the client shows the customer.
+ *
+ * `error` reports 'none' rather than inventing a state: the customer is not
+ * owed anything we know how to promise, and the order's own
+ * `authorization_released` / `refund_failed` event carries what actually
+ * happened for whoever has to fix it.
+ */
+function refundModeOf(status: RefundOutcome['status']): RefundMode {
+  switch (status) {
+    case 'refunded':
+      return 'refunded';
+    case 'parked':
+      return 'refund_pending';
+    case 'released':
+      return 'authorization_released';
+    default:
+      return 'none';
+  }
+}
+
 export interface OrderDetail {
   id: string;
   number: string;
@@ -1588,6 +3149,25 @@ export interface OrderDetail {
     companyName: string | null;
   } | null;
   report: { id: string; code: string; qualityScore: number | null } | null;
+  /**
+   * Where the customer's money is. Optional in the type (never absent in
+   * practice) so the website and the API can deploy in either order — neither
+   * repo waits on the other.
+   */
+  payment?: {
+    state: OrderPaymentState;
+    amountCents: number;
+    authorizedAt: string | null;
+    capturedAt: string | null;
+    releasedAt: string | null;
+  } | null;
+  /** The inspector search window. Null for pre-manual-capture orders. */
+  search?: { deadlineAt: string; expiredAt: string | null } | null;
+  /** The completeness gate. Present in EVERY status — see `getDetail`. */
+  reportRequirement?: {
+    minQualityScore: number;
+    currentQualityScore: number | null;
+  } | null;
   autoApproveAt: string | null;
   submittedAt: string | null;
   createdAt: string;

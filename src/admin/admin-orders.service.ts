@@ -76,6 +76,11 @@ export class AdminOrdersService {
 
     return {
       ...core,
+      // Deliberately overrides the public `payment` block `getDetail` returns.
+      // The website needs one word for where the money is; an operator needs the
+      // raw ledger status, the provider handle, and WHEN each step happened —
+      // "authorized at 09:02, never captured" is the answer to most finance
+      // questions about an order, and the public block cannot carry it.
       payment: payment
         ? {
             id: payment.id,
@@ -84,6 +89,9 @@ export class AdminOrdersService {
             currency: payment.currency,
             status: payment.status,
             stripePaymentIntentId: payment.stripePaymentIntentId,
+            authorizedAt: payment.authorizedAt?.toISOString() ?? null,
+            capturedAt: payment.capturedAt?.toISOString() ?? null,
+            canceledAt: payment.canceledAt?.toISOString() ?? null,
             createdAt: payment.createdAt.toISOString(),
           }
         : null,
@@ -92,6 +100,12 @@ export class AdminOrdersService {
         amountCents: r.amountCents,
         reason: r.reason,
         stripeRefundId: r.stripeRefundId,
+        // A refund can now be parked mid-flight, so its own state has to be
+        // visible here: a row on the order used to imply the money went back.
+        status: r.status,
+        attempts: r.attempts,
+        lastError: r.lastError,
+        nextRetryAt: r.nextRetryAt?.toISOString() ?? null,
         createdAt: r.createdAt.toISOString(),
       })),
       payout: payout

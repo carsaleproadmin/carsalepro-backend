@@ -1,8 +1,16 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  HttpException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppConfig } from '../config/configuration';
 import { GeoService } from '../geo/geo.service';
-import { StripeService } from '../payments/stripe.service';
+import { StripeService, classifyStripeError } from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateInspectorProfileDto } from './dto/inspector-profile.dto';
 
@@ -170,10 +178,35 @@ export class InspectorService {
       return { accountLinkUrl: this.connectReturnUrl, mock: true };
     }
 
-    // Real Stripe: create the connected account once, then a fresh account link.
-    let accountId = profile.stripeAccountId;
+    // Real Stripe. Every failure below used to escape as a raw 500: the
+    // inspector pressed "Start onboarding", nothing happened, and nothing said
+    // why — most often because Connect was simply not enabled on the platform
+    // account (F-15). Each condition now has its own code the UI can act on.
+    try {
+      return await this.createConnectOnboardingLink(userId, profile.stripeAccountId, user.email);
+    } catch (err) {
+      throw this.toConnectOnboardingException(err, userId);
+    }
+  }
+
+  /**
+   * Create (or reuse) the connected account and return a fresh account link.
+   *
+   * Self-healing: a STORED `stripeAccountId` that Stripe answers `resource_missing`
+   * for means the account was deleted at Stripe, or the secret key was swapped
+   * between live and test — the stored id then names an account that will never
+   * exist again, and every retry fails identically forever. The stale id is
+   * cleared, a fresh account is created, and the link is attempted exactly ONCE
+   * more; a second failure is reported rather than looped.
+   */
+  private async createConnectOnboardingLink(
+    userId: string,
+    storedAccountId: string | null,
+    email: string,
+  ): Promise<StripeOnboardingResponse> {
+    let accountId = storedAccountId;
     if (!accountId) {
-      const account = await this.stripe.createConnectedAccount(user.email);
+      const account = await this.stripe.createConnectedAccount(email);
       accountId = account.id;
       await this.prisma.inspectorProfile.update({
         where: { userId },
@@ -181,12 +214,93 @@ export class InspectorService {
       });
     }
 
-    const link = await this.stripe.createAccountLink(
-      accountId,
-      this.connectRefreshUrl,
-      this.connectReturnUrl,
+    try {
+      const link = await this.stripe.createAccountLink(
+        accountId,
+        this.connectRefreshUrl,
+        this.connectReturnUrl,
+      );
+      return { accountLinkUrl: link.url };
+    } catch (err) {
+      if (!storedAccountId || classifyStripeError(err).code !== 'resource_missing') throw err;
+
+      this.logger.warn(
+        `Stored Stripe Connect account no longer exists for inspector=${mask(userId)} ` +
+          '(deleted at Stripe, or the API key was swapped between live and test) — recreating once',
+      );
+      await this.prisma.inspectorProfile.update({
+        where: { userId },
+        data: { stripeAccountId: null, stripeOnboarded: false },
+      });
+      const fresh = await this.stripe.createConnectedAccount(email);
+      await this.prisma.inspectorProfile.update({
+        where: { userId },
+        data: { stripeAccountId: fresh.id },
+      });
+      const link = await this.stripe.createAccountLink(
+        fresh.id,
+        this.connectRefreshUrl,
+        this.connectReturnUrl,
+      );
+      return { accountLinkUrl: link.url };
+    }
+  }
+
+  /**
+   * Map a Stripe failure onto the `{ error: { code, message } }` envelope the
+   * exception filter passes through untouched (including at 5xx, because the
+   * body carries a `code`).
+   */
+  private toConnectOnboardingException(err: unknown, userId: string): HttpException {
+    const failure = classifyStripeError(err);
+    this.logger.error(
+      `Stripe Connect onboarding failed for inspector=${mask(userId)}: ` +
+        `${failure.code} — ${failure.message}`,
     );
-    return { accountLinkUrl: link.url };
+
+    // Connect not enabled on the platform account. Stripe reports this as a
+    // plain invalid_request_error whose only distinguishing mark is its text —
+    // and it is by far the most likely cause of a dead onboarding button.
+    if (/signed up for Connect/i.test(failure.message)) {
+      return new ServiceUnavailableException({
+        error: {
+          code: 'connect_not_enabled',
+          message:
+            'Payouts are not enabled on this platform yet. Please try again later or contact support.',
+        },
+      });
+    }
+    if (failure.code === 'resource_missing') {
+      return new BadGatewayException({
+        error: {
+          code: 'connect_account_unavailable',
+          message: 'Your payout account could not be reached at Stripe. Please try again.',
+        },
+      });
+    }
+    if (failure.code === 'account_invalid' || /capabilit|country/i.test(failure.message)) {
+      return new BadRequestException({
+        error: {
+          code: 'connect_account_rejected',
+          message:
+            'Stripe rejected this payout account (unsupported country or capability). Contact support.',
+        },
+      });
+    }
+    if (failure.retryable) {
+      return new ServiceUnavailableException({
+        error: {
+          code: 'stripe_unavailable',
+          message: 'Stripe is temporarily unavailable. Please try again in a moment.',
+        },
+      });
+    }
+    return new BadGatewayException({
+      error: {
+        code: 'connect_onboarding_failed',
+        message: 'Could not start Stripe onboarding. Please try again or contact support.',
+      },
+    });
   }
 
   /** Onboarding status for the caller: whether Stripe is ready and offers eligible. */

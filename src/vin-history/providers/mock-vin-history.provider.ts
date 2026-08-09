@@ -12,7 +12,7 @@ import {
   VinHistorySummary,
   VinHistoryTheft,
 } from '../vin-history-payload-v1';
-import { VinHistoryProvider } from '../vin-history.provider';
+import { VinHistoryPreviewSummary, VinHistoryProvider } from '../vin-history.provider';
 
 /**
  * Deterministic pseudo-random source seeded from a string.
@@ -98,25 +98,63 @@ export class MockVinHistoryProvider implements VinHistoryProvider {
   readonly name = 'mock';
   readonly synthetic = true;
 
-  constructor(private readonly nodeEnv: string) {
+  constructor(
+    private readonly nodeEnv: string,
+    /**
+     * `VIN_HISTORY_ALLOW_SYNTHETIC_SALE`. Lets an operator run the product on
+     * generated data in production — a launch decision, taken deliberately and
+     * loudly. It does NOT touch `synthetic`, so the payload, the preview, the
+     * report page and the PDF all still say what the buyer is looking at.
+     */
+    private readonly allowSyntheticSale = false,
+  ) {
     if (nodeEnv !== 'production') {
       this.logger.warn(
         'VIN history runs on the MOCK provider — generated data, flagged synthetic. ' +
           'Paid unlocks are refused in production until a real provider is wired.',
       );
+    } else if (allowSyntheticSale) {
+      // Loud on purpose, once per boot: real money is about to be taken for
+      // invented vehicle history. If this line is a surprise, the flag is a
+      // mistake.
+      this.logger.warn(
+        'VIN_HISTORY_ALLOW_SYNTHETIC_SALE is ON in production — the MOCK provider will ' +
+          'BACK PAID UNLOCKS. Buyers are charged for GENERATED data; every payload, preview, ' +
+          'report page and PDF is marked synthetic. Unset the flag to refuse paid unlocks.',
+      );
     }
   }
 
   /**
-   * Never true in production. Generated history is fine for a demo and for the
-   * free preview; charging 19.99 EUR for it is not.
+   * False in production unless an operator has explicitly opted in. Generated
+   * history is fine for a demo and for the free preview; charging 19.99 EUR for
+   * it is a decision someone has to make on purpose.
    */
   get configured(): boolean {
-    return this.nodeEnv !== 'production';
+    return this.nodeEnv !== 'production' || this.allowSyntheticSale;
   }
 
-  async preview(vin: string): Promise<VinHistorySummary> {
-    return (await this.fetch(vin)).summary;
+  /**
+   * The free probe.
+   *
+   * Counts come from the arrays this provider just built. It used to return the
+   * summary alone and throw the arrays away, which is why five counters reached
+   * the preview page as hardcoded zeros: there was nothing else to give them.
+   *
+   * A real provider's free probe returns counts and nothing else, so this must
+   * stay cheap and must NOT warm the report cache — a cached free probe could
+   * later be sold as a full report.
+   */
+  async preview(vin: string): Promise<VinHistoryPreviewSummary> {
+    const payload = await this.fetch(vin);
+    return {
+      ...payload.summary,
+      mileageRecordCount: payload.mileageRecords.length,
+      damageRecordCount: payload.damageRecords.length,
+      registrationCount: payload.registrations.length,
+      recallCount: payload.recalls.length,
+      inspectionCount: payload.inspections.length,
+    };
   }
 
   async fetch(vin: string): Promise<VinHistoryPayloadV1> {

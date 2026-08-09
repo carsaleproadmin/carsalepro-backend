@@ -8,6 +8,7 @@ import {
 import { DeviceLink, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { LinkCodesService } from '../link-codes/link-codes.service';
+import { ListingsService } from '../listings/listings.service';
 import { UpdateMeDto } from './dto/users.dto';
 
 @Injectable()
@@ -17,6 +18,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly linkCodes: LinkCodesService,
+    private readonly listings: ListingsService,
   ) {}
 
   async getMe(userId: string) {
@@ -95,6 +97,25 @@ export class UsersService {
         },
       });
     });
+
+    // Outside the transaction on purpose: these are object-store deletes, and
+    // holding a database transaction open across them would serialise erasure
+    // behind network I/O. The method is non-throwing, so a storage failure
+    // cannot undo an anonymisation that has already committed.
+    //
+    // This path used to delete no objects at all, which was survivable only
+    // while every showroom image was a 15-minute signed URL — hiding the
+    // listing made them unreachable within the quarter hour. Once photos moved
+    // to a public bucket with `Cache-Control: immutable`, a website-only seller
+    // (no `DeviceLink`, so the mobile erasure never runs for them) could delete
+    // their account and leave their driveway, house number and number plate
+    // readable at a permanent unsigned URL indefinitely.
+    const publicObjects = await this.listings.erasePublicPhotoObjects(userId);
+    if (publicObjects > 0) {
+      this.logger.log(
+        `GDPR erasure removed ${publicObjects} public listing object(s) for user ${userId.slice(0, 6)}…`,
+      );
+    }
     this.logger.log(`User ${userId.slice(0, 6)}… erased (GDPR)`);
   }
 

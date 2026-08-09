@@ -8,6 +8,7 @@ import 'reflect-metadata';
 import { AppModule } from './app.module';
 import { initSentry } from './common/sentry/sentry.bootstrap';
 import { AppConfig } from './config/configuration';
+import { buildCorsOriginChecker } from './config/cors';
 
 async function bootstrap(): Promise<void> {
   // rawBody:true exposes req.rawBody, which the Stripe webhook controller needs
@@ -35,29 +36,21 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  // CORS. In production, reflect only the configured web origin and Vercel
-  // preview deployments (https://*.vercel.app); deny everything else. Requests
-  // with no Origin header (server-to-server, e.g. the Stripe webhook, health
-  // probes) are always allowed. Outside production we stay permissive for local
-  // dev. Bearer-token auth means no cookies, so credentials stay disabled.
+  // CORS. In production, reflect the configured allow-list (WEB_ORIGIN +
+  // CORS_ORIGINS) plus Vercel preview deployments; deny everything else.
+  // Requests with no Origin header (server-to-server, e.g. the Stripe webhook,
+  // health probes) are always allowed. Outside production we stay permissive
+  // for local dev. Bearer-token auth means no cookies, so credentials stay
+  // disabled.
+  //
+  // The rule itself lives in `config/cors.ts` — pure, and therefore testable —
+  // because this file cannot be imported from Jest. That is how it shipped
+  // allowing exactly one origin, which was not the production domain: every
+  // browser call from https://www.carsalepro.de was blocked (F-01).
   const isProd = config.get('nodeEnv', { infer: true }) === 'production';
+  const { corsOrigins } = config.get('web', { infer: true });
   if (isProd) {
-    const webOrigin = config.get('web', { infer: true }).origin.replace(/\/$/, '');
-    const vercelPreview = /^https:\/\/[a-z0-9-]+\.vercel\.app$/i;
-    app.enableCors({
-      origin: (
-        origin: string | undefined,
-        callback: (err: Error | null, allow?: boolean) => void,
-      ) => {
-        // No Origin header → not a browser CORS request (server-to-server). Allow.
-        if (!origin) return callback(null, true);
-        if (origin === webOrigin || vercelPreview.test(origin)) {
-          return callback(null, true);
-        }
-        return callback(null, false);
-      },
-      credentials: false,
-    });
+    app.enableCors({ origin: buildCorsOriginChecker(corsOrigins), credentials: false });
   } else {
     app.enableCors({ origin: true, credentials: false });
   }
@@ -96,6 +89,13 @@ async function bootstrap(): Promise<void> {
 
   await app.listen(port, '0.0.0.0');
   Logger.log(`CarSalePro backend listening on :${port} (NODE_ENV=${config.get('nodeEnv', { infer: true })})`, 'Bootstrap');
+  // One line that turns "why does the site get a CORS error?" from an audit
+  // finding into a five-second diagnosis.
+  Logger.log(
+    `CORS ${isProd ? 'allow-list' : 'permissive (non-production); production allow-list would be'}: ` +
+      `${corsOrigins.join(', ') || '(empty)'} + https://*.vercel.app`,
+    'Bootstrap',
+  );
   Logger.log(`Swagger UI:    http://localhost:${port}/docs`, 'Bootstrap');
   Logger.log(`OpenAPI JSON:  http://localhost:${port}/docs-json`, 'Bootstrap');
 }

@@ -4,10 +4,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import { SettingsService } from '../settings/settings.service';
 import { ListingQueryDto } from './dto/listing-query.dto';
+import {
+  MAX_LISTING_PHOTOS,
+  manifestPhotoRefs,
+  mirroredPhotoKey,
+  photoLocation,
+} from '../listings/listing-photo-urls';
 
 const PAGE_SIZE = 12;
-
-type PhotoRef = { s3Key?: string; kind?: string; angle?: string };
 
 type ListingWithReport = Prisma.ListingGetPayload<{ include: { report: true } }>;
 
@@ -253,15 +257,23 @@ export class PublicService {
    * Photos for a listing card/detail, resolved from whichever gallery the
    * listing actually has: the inspector's `photosManifest` for a report-backed
    * listing, the seller's own `ListingPhoto` rows for a manual one.
+   *
+   * Both branches answer the same question per image — is there a permanent
+   * public copy of this object, or does it still need a 15-minute signature?
+   * The two provenances answer it from different columns (`Listing`.
+   * `publicPhotosMirroredAt` for the mirrored report subset, `ListingPhoto`.
+   * `bucket` per row) because they are stored differently, but the fallback is
+   * identical and it is the behaviour that shipped before this feature existed.
    */
   private async listingPhotos(
     listing: ListingWithReport,
     limit: number,
   ): Promise<{ url: string; kind?: string }[]> {
     if (listing.source === 'report' && listing.report) {
-      return this.signPhotos(listing.report.photosManifest, limit);
+      return this.reportPhotos(listing, listing.report.photosManifest, limit);
     }
-    if (!this.r2.isConfigured()) return [];
+    const publicConfigured = this.r2.isPublicBucketConfigured();
+    if (!this.r2.isConfigured() && !publicConfigured) return [];
     const rows = await this.prisma.listingPhoto.findMany({
       where: { listingId: listing.id },
       orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
@@ -269,6 +281,10 @@ export class PublicService {
     });
     const out: { url: string; kind?: string }[] = [];
     for (const row of rows) {
+      if (photoLocation(row.bucket, publicConfigured) === 'public') {
+        out.push({ url: this.r2.publicObjectUrl(row.r2Key), kind: 'listing' });
+        continue;
+      }
       try {
         const { url } = await this.r2.createPresignedDownloadUrl(row.r2Key);
         out.push({ url, kind: 'listing' });
@@ -279,17 +295,52 @@ export class PublicService {
     return out;
   }
 
+  /**
+   * The report-backed gallery.
+   *
+   * `publicPhotosMirroredAt` is the switch: once the showroom subset has been
+   * copied into the public bucket, every URL is the deterministic mirror key,
+   * recomputed here from the same manifest entry the mirror read. No join table
+   * remembers the mapping — the key IS the mapping, which is also what makes a
+   * re-run of the mirror idempotent.
+   *
+   * The subset is capped at `MAX_LISTING_PHOTOS` on both sides. Asking for more
+   * than was mirrored would produce URLs for objects that were never copied, so
+   * anything past the cap falls back to a signed URL against the original.
+   */
+  private async reportPhotos(
+    listing: ListingWithReport,
+    manifest: Prisma.JsonValue | null,
+    limit: number,
+  ): Promise<{ url: string; kind?: string }[]> {
+    if (listing.publicPhotosMirroredAt && this.r2.isPublicBucketConfigured()) {
+      const refs = manifestPhotoRefs(manifest, Math.min(limit, MAX_LISTING_PHOTOS));
+      const mirrored = refs.map((ref) => ({
+        url: this.r2.publicObjectUrl(mirroredPhotoKey(listing.id, ref.s3Key)),
+        ...(ref.kind ? { kind: ref.kind } : {}),
+      }));
+      // Every showroom caller asks for 1 or 12, so this is the only branch that
+      // ever runs. The tail below exists so that raising the display limit past
+      // the mirrored subset degrades to signed URLs instead of returning URLs
+      // for objects that were never copied.
+      if (limit <= MAX_LISTING_PHOTOS || mirrored.length < MAX_LISTING_PHOTOS) return mirrored;
+      const rest = await this.signPhotos(manifest, limit);
+      return [...mirrored, ...rest.slice(mirrored.length)];
+    }
+    return this.signPhotos(manifest, limit);
+  }
+
   private async signPhotos(
     manifest: Prisma.JsonValue | null,
     limit: number,
   ): Promise<{ url: string; kind?: string }[]> {
-    if (!Array.isArray(manifest) || !this.r2.isConfigured()) return [];
-    const refs = (manifest as PhotoRef[]).filter((p) => p?.s3Key).slice(0, limit);
+    if (!this.r2.isConfigured()) return [];
+    const refs = manifestPhotoRefs(manifest, limit);
     const out: { url: string; kind?: string }[] = [];
     for (const ref of refs) {
       try {
-        const { url } = await this.r2.createPresignedDownloadUrl(ref.s3Key!);
-        out.push({ url, kind: ref.kind });
+        const { url } = await this.r2.createPresignedDownloadUrl(ref.s3Key);
+        out.push({ url, ...(ref.kind ? { kind: ref.kind } : {}) });
       } catch {
         /* skip unsignable */
       }

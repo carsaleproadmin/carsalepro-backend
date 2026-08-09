@@ -137,16 +137,21 @@ describe('Reports (e2e)', () => {
       expect(res.status).toBe(402);
       expect(res.body.error).toBe('PaymentRequired');
       expect(res.body.message).toMatch(/FREE-tier limit/);
-      // NB: AllExceptionsFilter projects every 4xx onto
-      // {statusCode, error, message, path, timestamp}, so the freeReportsUsed /
-      // freeReportsLimit keys the service puts on the thrown payload never reach
-      // the wire — the limit only survives inside `message`. That has always been
-      // true; the mobile client parses the message-bearing shape asserted here.
+      // AllExceptionsFilter used to project every 4xx onto exactly
+      // {statusCode, error, message, path, timestamp}, dropping the
+      // freeReportsUsed / freeReportsLimit keys the service puts on the thrown
+      // payload — so the documented 402 body reached the wire missing two of its
+      // four fields and the limit survived only inside `message`. The filter now
+      // passes extra fields through (the same mechanism a quality gate needs to
+      // report a score), which restores the body CLAUDE.md documents. Purely
+      // additive for the shipped Flutter app, which parses the message-bearing
+      // shape asserted here.
       expect(res.body.statusCode).toBe(402);
       expect(res.body.message).toBe(
         'FREE-tier limit of 3 reports reached. Upgrade to PRO to continue.',
       );
-      expect(res.body).not.toHaveProperty('freeReportsUsed');
+      expect(res.body.freeReportsUsed).toBe(3);
+      expect(res.body.freeReportsLimit).toBe(3);
 
       // Nothing was created and the counter was not touched by the refusal.
       const quota = await prisma.deviceQuota.findUnique({ where: { deviceId: did } });

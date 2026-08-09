@@ -1,6 +1,8 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { R2Service } from '../src/r2/r2.service';
+import { mirroredPhotoKey } from '../src/listings/listing-photo-urls';
 import { createTestApp } from './helpers/test-app';
 
 describe('Public showroom + report check (e2e)', () => {
@@ -334,5 +336,90 @@ describe('Public showroom + report check (e2e)', () => {
       await prisma.listing.delete({ where: { id: stdListing.id } });
       await prisma.report.delete({ where: { id: stdReport.id } });
     }
+  });
+
+  // ============================================================
+  // Permanent image URLs — the showroom read path
+  //
+  // The listing seeded above is report-backed, so its images are entries in
+  // `report.photosManifest` and it owns no `ListingPhoto` rows at all. Which URL
+  // the showroom serves for them is decided by ONE column,
+  // `listing.publicPhotosMirroredAt`, plus whether a public bucket is wired.
+  // ============================================================
+  describe('permanent showroom image URLs', () => {
+    const BASE = 'https://img.test.invalid';
+
+    afterEach(async () => {
+      jest.restoreAllMocks();
+      await prisma.listing.update({
+        where: { id: listingId },
+        data: { publicPhotosMirroredAt: null },
+      });
+    });
+
+    it('12. unmirrored + no public bucket => exactly today’s signed URLs', async () => {
+      const r2 = app.get(R2Service);
+      expect(r2.isPublicBucketConfigured()).toBe(false);
+
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/listings/${listingId}`)
+        .expect(200);
+
+      if (r2.isConfigured()) {
+        expect(res.body.photos).toHaveLength(1);
+        expect(res.body.photos[0].url).toContain('X-Amz-Signature');
+        expect(res.body.photos[0].kind).toBe('front');
+      } else {
+        // No credentials in this environment: nothing to sign, nothing to show.
+        expect(res.body.photos).toEqual([]);
+      }
+    });
+
+    it('13. mirrored + public bucket => a permanent, query-string-free URL', async () => {
+      const r2 = app.get(R2Service);
+      jest.spyOn(r2, 'isPublicBucketConfigured').mockReturnValue(true);
+      jest.spyOn(r2, 'publicObjectUrl').mockImplementation((key: string) => `${BASE}/${key}`);
+      await prisma.listing.update({
+        where: { id: listingId },
+        data: { publicPhotosMirroredAt: new Date() },
+      });
+
+      const expected = `${BASE}/${mirroredPhotoKey(listingId, `report-photos/${did}/front.jpg`)}`;
+
+      const detail = await request(app.getHttpServer())
+        .get(`/api/v1/public/listings/${listingId}`)
+        .expect(200);
+      expect(detail.body.photos[0].url).toBe(expected);
+      expect(detail.body.photos[0].url).not.toContain('?');
+      expect(detail.body.photos[0].kind).toBe('front');
+
+      const search = await request(app.getHttpServer())
+        .get('/api/v1/public/listings?make=BMW&model=320d&city=Berlin')
+        .expect(200);
+      const card = search.body.items.find((i: { id: string }) => i.id === listingId);
+      expect(card).toBeTruthy();
+      expect(card.thumbnailUrl).toBe(expected);
+    });
+
+    /**
+     * The rollback case. A stamped listing in an environment whose `R2_PUBLIC_*`
+     * vars were removed must not emit `${BASE}`-less garbage; it goes back to
+     * signing, which still works because the mirror never deleted the original.
+     */
+    it('14. mirrored but the bucket was un-configured => back to signed URLs', async () => {
+      const r2 = app.get(R2Service);
+      await prisma.listing.update({
+        where: { id: listingId },
+        data: { publicPhotosMirroredAt: new Date() },
+      });
+
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/listings/${listingId}`)
+        .expect(200);
+      for (const photo of res.body.photos) {
+        expect(photo.url.startsWith(BASE)).toBe(false);
+        if (r2.isConfigured()) expect(photo.url).toContain('X-Amz-Signature');
+      }
+    });
   });
 });

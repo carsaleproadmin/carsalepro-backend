@@ -1,15 +1,15 @@
 import { Module } from '@nestjs/common';
+import { PhotoModule } from '../common/photo/photo.module';
 import { PaymentsModule } from '../payments/payments.module';
-import { PhotoProcessingService } from './photo-processing.service';
 import { ReportAccessController } from './report-access.controller';
 import { ReportAccessService } from './report-access.service';
 import { ReportsController } from './reports.controller';
 import { ReportsService } from './reports.service';
 
 @Module({
-  imports: [PaymentsModule],
+  imports: [PaymentsModule, PhotoModule],
   controllers: [ReportsController, ReportAccessController],
-  providers: [ReportsService, ReportAccessService, PhotoProcessingService],
+  providers: [ReportsService, ReportAccessService],
   exports: [ReportsService],
 })
 export class ReportsModule {}

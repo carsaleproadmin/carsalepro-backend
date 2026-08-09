@@ -23,7 +23,7 @@ import {
 } from './dto/report-response.dto';
 import { UpdateReportDto, UpdateReportResponseDto } from './dto/update-report.dto';
 import { ReportPhotoDto, ReportPhotoListDto, UploadPhotoDto } from './dto/upload-photo.dto';
-import { PhotoProcessingService } from './photo-processing.service';
+import { PhotoProcessingService } from '../common/photo/photo-processing.service';
 import {
   extractDenormalizedFields,
   ExtractedReportFields,
@@ -60,6 +60,13 @@ export class ReportsService {
 
     if (dto.orderId) {
       await this.assertOrderSubmitter(deviceId, dto.orderId);
+      // The completeness gate, before quota and before R2 — a refused report
+      // must not burn a credit or leave an orphaned upload URL. Only the ORDER
+      // path is gated: every legacy mobile submission has no orderId, carries no
+      // score, and gating those would brick the shipped app.
+      await this.assertOrderReportQuality(
+        dto.qualityScore ?? extracted?.qualityScore ?? null,
+      );
     }
 
     // Idempotent create: a UUID code re-posted by the same device (mobile retry
@@ -359,6 +366,31 @@ export class ReportsService {
   }
 
   /**
+   * Apply the order completeness gate to a report being filed from a device.
+   *
+   * The rule itself lives in `OrdersService.assertReportQuality` — one gate, one
+   * threshold, one pair of error codes, shared with `POST /orders/:id/report`.
+   * OrdersService is resolved lazily through ModuleRef for the same reason
+   * `submitOrderForReport` does: ReportsModule must not import OrdersModule.
+   *
+   * Unlike `submitOrderForReport`, a failure here is NOT swallowed. This is a
+   * refusal, and the whole point is that the inspector is told.
+   */
+  private async assertOrderReportQuality(qualityScore: number | null): Promise<void> {
+    let orders: { assertReportQuality(score: number | null): Promise<void> };
+    try {
+      const { OrdersService } = await import('../orders/orders.service');
+      orders = this.moduleRef.get(OrdersService, { strict: false });
+    } catch {
+      // A narrow test graph without OrdersModule. Refusing every order-linked
+      // report because our own wiring is absent would be the worse failure.
+      this.logger.warn('OrdersService unavailable — report quality gate skipped');
+      return;
+    }
+    await orders.assertReportQuality(qualityScore);
+  }
+
+  /**
    * Advance the linked order to SUBMITTED via OrdersService (the single place
    * for order transitions). Resolved lazily through ModuleRef to avoid a
    * circular module dependency. Best-effort: a failure here must never break the
@@ -571,6 +603,30 @@ export class ReportsService {
         photosManifest: rows.map((r) => ({ s3Key: r.r2Key, kind: r.kind })) as Prisma.InputJsonValue,
       },
     });
+
+    // Invalidate the showroom mirror of any listing backed by this report.
+    //
+    // Report photo keys embed a content hash, so re-taking one shot produces a
+    // NEW `s3Key` — and the public read path recomputes the mirrored key from
+    // the CURRENT manifest. Without this, a listing whose report was re-synced
+    // points at a public-bucket object that was never written: a permanently
+    // broken image on a live advert. The nightly backlog pass could not repair
+    // it either, since it selects on a null stamp or a photo row with a null
+    // bucket, and a report-backed listing has no photo rows at all.
+    //
+    // Clearing the stamp falls the read path back to signed URLs — correct but
+    // temporary — and puts the listing back in the mirror job's queue. Wrapped
+    // because a photo upload must not fail over a cache-invalidation detail.
+    try {
+      await this.prisma.listing.updateMany({
+        where: { reportId, publicPhotosMirroredAt: { not: null } },
+        data: { publicPhotosMirroredAt: null },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Could not invalidate the showroom mirror for report ${reportId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   private async toPhotoDto(row: ReportPhoto, replaced: boolean): Promise<ReportPhotoDto> {

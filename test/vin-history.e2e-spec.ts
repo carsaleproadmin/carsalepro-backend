@@ -302,13 +302,14 @@ describe('VIN history — paid provenance (e2e)', () => {
       where: { id: unlock.body.purchaseId as string },
     });
     const res = await request(app.getHttpServer())
-      .get(`/api/v1/me/vin-checks/${unlock.body.purchaseId}/download`)
+      .get(`/api/v1/me/vin-checks/${unlock.body.purchaseId}/download?format=json`)
       .set('Authorization', `Bearer ${user.token}`);
 
     if (purchase.s3Key) {
       expect(res.status).toBe(200);
       expect(res.body.url).toContain('X-Amz-Signature');
       expect(res.body.contentType).toBe('application/json');
+      expect(res.body.format).toBe('json');
       expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
     } else {
       // R2 unconfigured in this environment — no archive was written.
@@ -678,6 +679,197 @@ describe('VIN history — paid provenance (e2e)', () => {
     });
     expect(purchase.payload).not.toBeNull();
     expect(await prisma.vinHistoryPurchase.count({ where: { userId: user.userId, vin } })).toBe(1);
+  });
+
+  // ============================================================
+  // Wave 4 — the rendered document, and counts that mean what they say
+  // ============================================================
+
+  async function readyPurchase(seed: string) {
+    const user = await newUser();
+    const vin = track(uniqueVin(seed));
+    const unlock = await request(app.getHttpServer())
+      .post(`/api/v1/vin-history/${vin}/unlock`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    return { user, vin, purchaseId: unlock.body.purchaseId as string };
+  }
+
+  it('22. the PDF is rendered at fulfilment, in the locale on the profile', async () => {
+    const { purchaseId } = await readyPurchase('t');
+    const row = await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } });
+
+    if (!row.s3Key) return; // R2 unconfigured here — nothing was archived at all.
+
+    expect(row.pdfS3Key).toBeTruthy();
+    // The key carries the locale, so a second language ADDS a document.
+    expect(row.pdfS3Key).toContain(`${purchaseId}-${row.pdfLocale}`);
+    expect(row.pdfS3Key!.endsWith('.pdf')).toBe(true);
+    expect(row.pdfLocale).toBe('de'); // User.locale default
+    expect(row.pdfRenderedAt).toBeTruthy();
+    expect(row.pdfAttempts).toBe(0);
+  });
+
+  it('23. download defaults to the PDF and names the file after the VIN', async () => {
+    const { user, vin, purchaseId } = await readyPurchase('u');
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${purchaseId}/download`)
+      .set('Authorization', `Bearer ${user.token}`);
+
+    const row = await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } });
+    if (!row.pdfS3Key) {
+      expect(res.status).toBe(404);
+      return;
+    }
+
+    expect(res.status).toBe(200);
+    expect(res.body.format).toBe('pdf');
+    expect(res.body.contentType).toBe('application/pdf');
+    expect(res.body.filename).toBe(`carsalepro-vin-history-${vin}.pdf`);
+    // Private, signed, and carrying the download name — never a public URL.
+    expect(res.body.url).toContain('X-Amz-Signature');
+    expect(res.body.url.toLowerCase()).toContain('response-content-disposition');
+    expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('24. a purchase made before the PDF existed gets one on first download', async () => {
+    // The lazy path IS the backfill: a migration would have to re-read every
+    // old payload out of R2 to render documents most buyers never open.
+    const { user, purchaseId } = await readyPurchase('v');
+    const before = await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } });
+    if (!before.s3Key) return;
+
+    await prisma.vinHistoryPurchase.update({
+      where: { id: purchaseId },
+      data: { pdfS3Key: null, pdfLocale: null, pdfRenderedAt: null, pdfAttempts: 0 },
+    });
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${purchaseId}/download`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(200);
+    expect(res.body.contentType).toBe('application/pdf');
+
+    const after = await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } });
+    expect(after.pdfS3Key).toBeTruthy();
+    expect(after.pdfRenderedAt).toBeTruthy();
+  });
+
+  it('25. a render that keeps failing stops retrying, and never touches the sale', async () => {
+    const { user, purchaseId } = await readyPurchase('w');
+    const before = await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } });
+    if (!before.s3Key) return;
+
+    // Three failures already recorded and no document: the cap is reached.
+    await prisma.vinHistoryPurchase.update({
+      where: { id: purchaseId },
+      data: { pdfS3Key: null, pdfLocale: null, pdfAttempts: 3 },
+    });
+
+    const pdf = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${purchaseId}/download`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(404);
+    expect(pdf.body.error.code).toBe('download_unavailable');
+
+    // The sale stands and the buyer keeps everything they paid for.
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${purchaseId}`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(200);
+    expect(detail.body.status).toBe('ready');
+    expect(detail.body.payload.vin).toBeTruthy();
+
+    const json = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${purchaseId}/download?format=json`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(200);
+    expect(json.body.contentType).toBe('application/json');
+
+    const after = await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } });
+    expect(after.pdfAttempts).toBe(3); // capped, not incremented again
+  });
+
+  it('26. an unknown download format is a 400, not a silent default', async () => {
+    const { user, purchaseId } = await readyPurchase('x');
+    await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${purchaseId}/download?format=docx`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(400);
+  });
+
+  it('27. preview counts are real counts on a COLD cache, not zeros', async () => {
+    // Those five counters were hardcoded 0 whenever no payload was cached —
+    // which is exactly the state every first-time visitor sees.
+    const vin = track(uniqueVin('y'));
+    const paid = await provider.fetch(vin);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/vin-history/${vin}/preview`)
+      .expect(200);
+
+    expect(res.body.summary.mileageRecordCount).toBe(paid.mileageRecords.length);
+    expect(res.body.summary.damageRecordCount).toBe(paid.damageRecords.length);
+    expect(res.body.summary.registrationCount).toBe(paid.registrations.length);
+    expect(res.body.summary.recallCount).toBe(paid.recalls.length);
+    expect(res.body.summary.inspectionCount).toBe(paid.inspections.length);
+    // The registration count is not the country count — different facts.
+    expect(res.body.summary.countriesCount).toBe(paid.summary.countriesSeen.length);
+
+    // And the free probe must NOT warm the cache: a cached counts-only answer
+    // would leave a hollow report row for the next unlock to sell.
+    expect(await prisma.vinHistoryReport.count({ where: { vin } })).toBe(0);
+  });
+
+  it('28. a provider that does not publish a count answers null, and null reaches the wire', async () => {
+    // null is "we are not telling you before you pay"; 0 is "there are none".
+    // Flattening the first into the second makes a claim about the car out of
+    // an absence of data.
+    const vin = track(uniqueVin('z'));
+    const base = await provider.fetch(vin);
+    const withheld = jest.spyOn(provider, 'preview').mockResolvedValue({
+      ...base.summary,
+      mileageRecordCount: null,
+      damageRecordCount: null,
+      registrationCount: null,
+      recallCount: null,
+      inspectionCount: null,
+    });
+    try {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/vin-history/${vin}/preview`)
+        .expect(200);
+      expect(res.body.summary.mileageRecordCount).toBeNull();
+      expect(res.body.summary.damageRecordCount).toBeNull();
+      expect(res.body.summary.registrationCount).toBeNull();
+      expect(res.body.summary.recallCount).toBeNull();
+      expect(res.body.summary.inspectionCount).toBeNull();
+      // The counts that ARE known stay numbers.
+      expect(typeof res.body.summary.recordCount).toBe('number');
+      expect(typeof res.body.summary.countriesCount).toBe('number');
+    } finally {
+      withheld.mockRestore();
+    }
+  });
+
+  it('29. "generated data" reaches the payload, the preview and the report page', async () => {
+    // The fourth surface — the warning frame and the per-page footer in the PDF
+    // — is asserted in vin-history-report-model.spec.ts, the layer whose text
+    // can actually be read.
+    const { user, vin, purchaseId } = await readyPurchase('ab');
+
+    const preview = await request(app.getHttpServer())
+      .get(`/api/v1/vin-history/${vin}/preview`)
+      .expect(200);
+    expect(preview.body.synthetic).toBe(true);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/me/vin-checks/${purchaseId}`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(200);
+    expect(detail.body.synthetic).toBe(true);
+    expect(detail.body.payload.synthetic).toBe(true);
+    expect(detail.body.payload.provider).toBe('mock');
   });
 
   it('21. a pending payment superseded by a price change is closed, not left hanging', async () => {

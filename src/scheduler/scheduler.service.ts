@@ -75,6 +75,51 @@ export class SchedulerService {
   }
 
   /**
+   * Every five minutes: orders nobody accepted inside the search window get
+   * their authorization hold released and are cancelled.
+   *
+   * Five minutes, not hourly, because this holds real money on a real card. The
+   * window itself is `orderSearchWindowMinutes` (six hours); the granularity of
+   * this job is only how far past the deadline a hold may linger.
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'expire-unfilled-searches' })
+  async expireUnfilledSearches(): Promise<void> {
+    if (this.disabled) return;
+    try {
+      const { expired } = await this.orders.expireUnfilledSearches();
+      if (expired > 0) {
+        this.logger.log(`expireUnfilledSearches: ${expired} order(s) cancelled, holds released`);
+      }
+    } catch (err) {
+      this.logger.error(`expireUnfilledSearches failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Every fifteen minutes: a payment whose webhook never arrived.
+   *
+   * Insurance, NOT the plan — Stripe must be subscribed to
+   * `payment_intent.amount_capturable_updated` before manual capture deploys,
+   * or every order authorizes and sits in CREATED, and this job becomes the only
+   * thing moving them. There is no `EVERY_15_MINUTES` in CronExpression, hence
+   * the literal.
+   */
+  @Cron('0 */15 * * * *', { name: 'reconcile-stuck-order-payments' })
+  async reconcileStuckOrderPayments(): Promise<void> {
+    if (this.disabled) return;
+    try {
+      const { scanned, advanced } = await this.orders.reconcileStuckOrderPayments();
+      if (scanned > 0) {
+        this.logger.log(
+          `reconcileStuckOrderPayments: ${scanned} scanned, ${advanced} driven to the right state`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(`reconcileStuckOrderPayments failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
    * Every ten minutes: retry payouts whose backoff has elapsed. Separate from
    * the hourly sweep because a stuck payout is money owed — the first retry
    * should land in minutes, not at the top of the next hour.
@@ -89,6 +134,51 @@ export class SchedulerService {
       }
     } catch (err) {
       this.logger.error(`retryStuckPayouts failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Every ten minutes: retry refunds whose backoff has elapsed. Money owed BACK
+   * to a customer is as urgent as money owed to an inspector, and a refund the
+   * provider refused is invisible to the customer — they simply never see it.
+   */
+  @Cron(CronExpression.EVERY_10_MINUTES, { name: 'retry-stuck-refunds' })
+  async retryStuckRefunds(): Promise<void> {
+    if (this.disabled) return;
+    try {
+      const { retried, settled } = await this.orders.retryStuckRefunds();
+      if (retried > 0) {
+        this.logger.log(`retryStuckRefunds: ${retried} attempted, ${settled} settled`);
+      }
+    } catch (err) {
+      this.logger.error(`retryStuckRefunds failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Nightly: copy the showroom photos of report-backed listings into the public
+   * bucket, so their images get permanent URLs.
+   *
+   * Publication already mirrors, so this pass exists for the backlog: every
+   * listing published before the public bucket was configured, plus anything a
+   * transient R2 failure left unstamped. Batched at 50 because each photo is a
+   * download from one bucket and an upload to another; a nightly run that tries
+   * to drain years of history in one pass is how a "harmless" cron takes the
+   * service down.
+   *
+   * A no-op when `R2_PUBLIC_*` is unset — which is the normal state, and the
+   * whole point of the per-row design.
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_1AM, { name: 'mirror-showroom-photos' })
+  async mirrorShowroomPhotos(): Promise<void> {
+    if (this.disabled) return;
+    try {
+      const { scanned, mirrored } = await this.listings.mirrorPendingShowroomPhotos(50);
+      if (scanned > 0) {
+        this.logger.log(`mirrorPendingShowroomPhotos: ${scanned} scanned, ${mirrored} mirrored`);
+      }
+    } catch (err) {
+      this.logger.error(`mirrorPendingShowroomPhotos failed: ${(err as Error).message}`);
     }
   }
 
