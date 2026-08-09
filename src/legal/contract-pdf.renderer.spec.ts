@@ -1,4 +1,5 @@
 // Category: DOCUMENT RENDERING. Pure — no DB, no R2, no Nest container.
+import { pdfPageCount, trackPageVisits } from '../../test/helpers/pdf-inspect';
 import { parseInline, parseMarkdownBlocks, spansToText } from './markdown-blocks';
 import { contractFontsAvailable, renderContractPdf } from './contract-pdf.renderer';
 
@@ -114,5 +115,46 @@ describe('renderContractPdf', () => {
   it('renders an empty document rather than rejecting', async () => {
     const pdf = await renderContractPdf('', OPTS);
     expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+  });
+
+  /*
+   * Two footer bugs lived here behind a test that only measured file size.
+   *
+   *  1. The document was created WITHOUT `bufferPages`, so pdfkit flushed each
+   *     page as the next one opened and `bufferedPageRange()` reported the one
+   *     page still in memory. Every multi-page contract got a single footer, on
+   *     the last page, reading "1 / 1".
+   *  2. Each footer `text` call carried a `width` and sat below the bottom
+   *     margin, so pdfkit's line wrapper appended a fresh page for it —
+   *     `lineBreak: false` does not stop that. A seven-page contract shipped as
+   *     twenty-one pages, fourteen of them blank.
+   *
+   * Neither changed the file size in a way an assertion would notice, so both
+   * are pinned structurally instead.
+   */
+  const longContract = Array.from(
+    { length: 200 },
+    (_, i) => `Absatz ${i + 1}. Ein Satz Text zur Fahrzeugprüfung.`,
+  ).join('\n\n');
+
+  it('footers every page of a multi-page contract, not just the last', async () => {
+    const tracker = trackPageVisits();
+    try {
+      const pdf = await renderContractPdf(longContract, OPTS);
+      const pages = pdfPageCount(pdf);
+      expect(pages).toBeGreaterThan(1);
+      // One visit per page, in order — the page numbering is drawn against the
+      // real total, so "3 / 7" is possible at all.
+      expect(tracker.visited()).toEqual(Array.from({ length: pages }, (_, i) => i));
+    } finally {
+      tracker.restore();
+    }
+  });
+
+  it('does not append a blank page for every footer it draws', async () => {
+    const pdf = await renderContractPdf(longContract, OPTS);
+    // 200 one-line paragraphs are ~7 A4 pages. Three times that is the wrapper
+    // paginating the footer itself.
+    expect(pdfPageCount(pdf)).toBeLessThan(12);
   });
 });

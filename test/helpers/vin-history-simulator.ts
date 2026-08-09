@@ -37,7 +37,10 @@ import {
   VinHistorySummary,
   VinHistoryTheft,
 } from '../../src/vin-history/vin-history-payload-v1';
-import { VinHistoryProvider } from '../../src/vin-history/vin-history.provider';
+import {
+  VinHistoryPreviewSummary,
+  VinHistoryProvider,
+} from '../../src/vin-history/vin-history.provider';
 import { RawAmount, RawProviderResponse } from './vin-history-raw';
 
 const KM_PER_MILE = 1.609344;
@@ -355,6 +358,7 @@ export class SimulatedProvider implements VinHistoryProvider {
 
   private behaviour: SimulatedBehaviour = { kind: 'throw', error: new Error('no behaviour set') };
   private configuredFlag = true;
+  private publishesCounts = true;
 
   /** Billable full lookups. */
   fetchCalls: string[] = [];
@@ -367,6 +371,18 @@ export class SimulatedProvider implements VinHistoryProvider {
 
   setConfigured(value: boolean): void {
     this.configuredFlag = value;
+  }
+
+  /**
+   * Simulate a provider whose FREE probe does not publish per-array counts.
+   *
+   * Not a hypothetical: a free probe that answered "0 damage records" for a car
+   * it holds three of would be a claim it cannot make for free. Those counters
+   * are then `null`, which is a different answer from `0` all the way to the
+   * wire.
+   */
+  withholdPreviewCounts(value = true): void {
+    this.publishesCounts = !value;
   }
 
   /** Answer with this body until told otherwise. */
@@ -387,9 +403,27 @@ export class SimulatedProvider implements VinHistoryProvider {
     this.previewCalls = [];
   }
 
-  async preview(vin: string) {
+  async preview(vin: string): Promise<VinHistoryPreviewSummary> {
     this.previewCalls.push(vin);
-    return (await this.produce(vin)).summary;
+    const payload = await this.produce(vin);
+    if (!this.publishesCounts) {
+      return {
+        ...payload.summary,
+        mileageRecordCount: null,
+        damageRecordCount: null,
+        registrationCount: null,
+        recallCount: null,
+        inspectionCount: null,
+      };
+    }
+    return {
+      ...payload.summary,
+      mileageRecordCount: payload.mileageRecords.length,
+      damageRecordCount: payload.damageRecords.length,
+      registrationCount: payload.registrations.length,
+      recallCount: payload.recalls.length,
+      inspectionCount: payload.inspections.length,
+    };
   }
 
   async fetch(vin: string): Promise<VinHistoryPayloadV1> {
