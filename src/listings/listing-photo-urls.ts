@@ -1,16 +1,22 @@
 import { createHash } from 'node:crypto';
 
+import { angleForKind, comparePhotoKinds } from '../catalog/catalog-photo-order';
+
 /**
- * Photos per listing. A gallery is a sales tool, not an archive: twenty shots
- * covers every angle a buyer looks at, and the cap bounds both the R2 spend and
- * the size of the public listing response.
+ * Photos per listing. A gallery is a sales tool, not an archive, and the cap
+ * bounds both the R2 spend and the size of the public listing response.
  *
  * It is also the size of the showroom SUBSET mirrored into the public bucket
  * for a report-backed listing — an inspection may carry three hundred photos,
- * and the showroom shows twenty of them at most, so mirroring more would double
- * the storage of pictures nobody ever requests.
+ * and the showroom shows this many at most, so mirroring more would double the
+ * storage of pictures nobody ever requests.
+ *
+ * Raised 20 -> 32 on 2026-08-10. The number is derived, not chosen: the manual
+ * seller editor builds its guided slots straight from the catalog, and that is
+ * now 17 exterior angles plus 12 interior ones = 29. At 20 the editor would
+ * have offered nine slots the API answers with `photo_limit_reached`.
  */
-export const MAX_LISTING_PHOTOS = 20;
+export const MAX_LISTING_PHOTOS = 32;
 
 /**
  * Where a photo's bytes live, and therefore how its URL is produced.
@@ -91,20 +97,37 @@ export function mirroredPhotoKey(listingId: string, sourceKey: string): string {
  * `s3Key`. Both the mirror and the read path have to agree on exactly which
  * refs count, or a mirrored key would be missing for a photo the showroom tries
  * to render — hence one parser, used by both.
+ *
+ * It SORTS BEFORE IT TRUNCATES, and that is the whole point of the sort living
+ * here rather than only at write time. `ReportsService.mirrorPhotosManifest`
+ * writes the manifest in walk-around order, but every report written before
+ * 2026-08-10 is still stored in the old `kind ASC` order — which is
+ * alphabetical, and puts `checklist-` and `damage-` ahead of `exterior-`. Those
+ * reports would otherwise keep serving a gallery of scratch macros with no
+ * picture of the car, until something happened to re-upload a photo. Sorting on
+ * read fixes every existing listing the moment this deploys, with no migration.
+ *
+ * `angle` is filled in from `kind` for the same reason: the field is only
+ * written by the current mirror, so on an older manifest it is absent, and the
+ * website would show an uncaptioned gallery until the report was touched.
  */
 export function manifestPhotoRefs(manifest: unknown, limit: number): ManifestPhotoRef[] {
   if (!Array.isArray(manifest) || limit <= 0) return [];
-  const out: ManifestPhotoRef[] = [];
+  const parsed: ManifestPhotoRef[] = [];
   for (const entry of manifest) {
     if (!entry || typeof entry !== 'object') continue;
     const ref = entry as Partial<ManifestPhotoRef>;
     if (typeof ref.s3Key !== 'string' || ref.s3Key.length === 0) continue;
-    out.push({
+    const kind = typeof ref.kind === 'string' ? ref.kind : undefined;
+    const angle = typeof ref.angle === 'string' ? ref.angle : angleForKind(kind);
+    parsed.push({
       s3Key: ref.s3Key,
-      ...(typeof ref.kind === 'string' ? { kind: ref.kind } : {}),
-      ...(typeof ref.angle === 'string' ? { angle: ref.angle } : {}),
+      ...(kind ? { kind } : {}),
+      ...(angle ? { angle } : {}),
     });
-    if (out.length >= limit) break;
   }
-  return out;
+  // Stable: entries of equal rank keep their stored order, which is capture
+  // order within a slot.
+  parsed.sort((a, b) => comparePhotoKinds(a.kind, b.kind));
+  return parsed.slice(0, limit);
 }

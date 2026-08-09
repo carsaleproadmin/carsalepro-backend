@@ -29,6 +29,7 @@ import {
   ExtractedReportFields,
   validateReportDataV1,
 } from './report-data.validator';
+import { angleForKind, comparePhotoKinds } from '../catalog/catalog-photo-order';
 
 const UUID_CODE_RE =
   /^CSP-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -590,17 +591,41 @@ export class ReportsService {
   /**
    * Keep `report.photosManifest` in sync with the ReportPhoto rows so existing
    * website consumers (`signPhotos`, showroom, PPV) keep working unmodified.
+   *
+   * MANIFEST ORDER IS GALLERY ORDER. Every reader takes the first N entries —
+   * the showroom detail page, the mirrored public-bucket subset, the advert
+   * thumbnail — so the order written here is what a buyer sees.
+   *
+   * It used to be `kind ASC`, which is alphabetical, and `checklist-` and
+   * `damage-` sort before `exterior-`. A well-documented inspection therefore
+   * opened its advert on a scratch macro and, past a dozen damage photos,
+   * showed no picture of the car at all. Sorting by the catalog's walk-around
+   * puts the front-left three-quarter first and the boot and engine-bay shots
+   * where the inspector took them.
+   *
+   * `angle` is written beside `kind` for anything that maps to a catalog angle.
+   * The field has been in the read DTOs since report-sync v2 and was never
+   * populated, so `FullReportPhotoDto.angle` was permanently `undefined`.
    */
   private async mirrorPhotosManifest(reportId: string): Promise<void> {
     const rows = await this.prisma.reportPhoto.findMany({
       where: { reportId },
-      orderBy: [{ kind: 'asc' }, { position: 'asc' }],
+      orderBy: [{ position: 'asc' }],
       select: { r2Key: true, kind: true },
     });
+    // Stable by construction: Array.prototype.sort is stable in V8, and the
+    // rows already arrive in `position` order, which is the only meaningful
+    // order inside a slot that holds several shots (`exterior-extra`).
+    const ordered = [...rows].sort((a, b) => comparePhotoKinds(a.kind, b.kind));
     await this.prisma.report.update({
       where: { id: reportId },
       data: {
-        photosManifest: rows.map((r) => ({ s3Key: r.r2Key, kind: r.kind })) as Prisma.InputJsonValue,
+        photosManifest: ordered.map((r) => {
+          const angle = angleForKind(r.kind);
+          // Omitted rather than null: `manifestPhotoRefs` only copies a string,
+          // and an absent key is what every existing reader already tolerates.
+          return { s3Key: r.r2Key, kind: r.kind, ...(angle ? { angle } : {}) };
+        }) as Prisma.InputJsonValue,
       },
     });
 

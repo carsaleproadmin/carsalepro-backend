@@ -186,10 +186,16 @@ export class ReportsController {
   @Post(':id/photos')
   @HttpCode(200)
   @ApiOperation({
-    summary: 'Reserve a presigned R2 upload URL for a report photo',
+    deprecated: true,
+    summary: 'Reserve a presigned R2 upload URL for a report photo (LEGACY)',
     description:
       'Verifies the report is owned by the device and returns a presigned PUT URL for a ' +
-      'single JPEG photo stored under report-photos/<reportId>/. 503 when R2 is unconfigured.',
+      'single JPEG photo stored under report-photos/<reportId>/. 503 when R2 is unconfigured. ' +
+      'DEPRECATED: this route creates no ReportPhoto row and no photosManifest entry, so an ' +
+      'object uploaded through it is invisible to the showroom, the report view and the ' +
+      'quality score. Use POST /reports/:id/photos/upload (multipart), which the shipped ' +
+      'mobile app uses exclusively. Its `kind` vocabulary is the pre-catalog one and is ' +
+      'deliberately not extended — see PHOTO_KINDS.',
   })
   @ApiParam({ name: 'id' })
   @ApiOkResponse({ type: CreatePhotoUploadResponseDto })

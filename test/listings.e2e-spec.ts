@@ -6,7 +6,7 @@ import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { ListingsService } from '../src/listings/listings.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { R2Service } from '../src/r2/r2.service';
-import { mirroredPhotoKey } from '../src/listings/listing-photo-urls';
+import { MAX_LISTING_PHOTOS, mirroredPhotoKey } from '../src/listings/listing-photo-urls';
 
 const FIXTURE_PHOTO = join(__dirname, 'fixtures', 'small-800x600.png');
 
@@ -895,7 +895,10 @@ describe('Listings (e2e)', () => {
         .set('Authorization', `Bearer ${seller.token}`)
         .expect(200);
       expect(listed.body.items).toHaveLength(2);
-      expect(listed.body.max).toBe(20);
+      // Read from the constant: the seller UI renders this number as its "n of
+      // max" hint, and the cap is derived from the catalog's guided slot count
+      // (17 exterior + 12 interior), so it moves when the catalog does.
+      expect(listed.body.max).toBe(MAX_LISTING_PHOTOS);
       expect(listed.body.items[0].id).toBe(first.body.id);
 
       const reordered = await request(app.getHttpServer())
@@ -939,14 +942,15 @@ describe('Listings (e2e)', () => {
         .expect(403);
     });
 
-    it('19. the 21st photo is refused with photo_limit_reached', async () => {
+    it('19. the photo past the cap is refused with photo_limit_reached', async () => {
       const seller = await newSeller();
       const listing = await createManual(seller.token, { city: 'Kiel' });
 
-      // Seed the cap directly: twenty real uploads would spend twenty sharp
-      // transforms and twenty R2 round-trips to test one integer comparison.
+      // Seed the cap directly: that many real uploads would spend as many sharp
+      // transforms and R2 round-trips to test one integer comparison. Sized off
+      // the constant so the case survives the next catalog growth.
       await prisma.listingPhoto.createMany({
-        data: Array.from({ length: 20 }, (_, i) => ({
+        data: Array.from({ length: MAX_LISTING_PHOTOS }, (_, i) => ({
           listingId: listing.id,
           r2Key: `listings/${seller.userId}/${listing.id}/seed-${i}-${randomUUID()}.jpg`,
           sizeBytes: 1000,
@@ -962,7 +966,21 @@ describe('Listings (e2e)', () => {
         .attach('file', FIXTURE_PHOTO)
         .expect(400);
       expect(res.body.error.code).toBe('photo_limit_reached');
-      expect(res.body.error.max).toBe(20);
+      expect(res.body.error.max).toBe(MAX_LISTING_PHOTOS);
+    });
+
+    it('19b. the cap leaves room for every guided slot the editor offers', async () => {
+      // The manual editor builds its slots straight from the catalog: 17
+      // exterior angles plus 12 interior ones. A cap below that would advertise
+      // slots the API answers with `photo_limit_reached`, which is how a seller
+      // discovers the mismatch.
+      const res = await request(app.getHttpServer()).get('/catalog').expect(200);
+      const angles = res.body.angles as { group: string }[];
+      const guided =
+        angles.filter((a) => a.group === 'exterior').length +
+        angles.filter((a) => a.group === 'interior').length;
+      expect(guided).toBe(29);
+      expect(MAX_LISTING_PHOTOS).toBeGreaterThanOrEqual(guided);
     });
 
     it('20. publishing an incomplete manual listing returns incomplete_listing with missing[]', async () => {
@@ -1302,9 +1320,14 @@ describe('Listings (e2e)', () => {
         const stamped = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
         expect(stamped.publicPhotosMirroredAt).not.toBeNull();
 
+        // Catalog order, not manifest order: `rear` is angle 4 of the
+        // walk-around and `front` is angle 9, so the showroom serves the rear
+        // shot first even though the manifest lists the front one first. That
+        // is the point of the ordering — the gallery follows the inspection,
+        // not the order rows happened to be written in.
         const expectedKeys = [
-          mirroredPhotoKey(listingId, `report-photos/${deviceId}/front.jpg`),
           mirroredPhotoKey(listingId, `report-photos/${deviceId}/rear.jpg`),
+          mirroredPhotoKey(listingId, `report-photos/${deviceId}/front.jpg`),
         ];
         for (const key of expectedKeys) expect(objects.has(key)).toBe(true);
         // The source key never appears in the public one — a permanent public

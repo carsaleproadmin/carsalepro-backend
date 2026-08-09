@@ -90,8 +90,36 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    * the reason this is a setting rather than a constant: an inspector on an
    * older mobile build may file a report with no score at all, and discovering
    * that in production must be fixable from the admin panel in a minute.
+   *
+   * 90 -> 85 on 2026-08-10, because the required walk-around grew from 8
+   * exterior angles to 17 and the mobile score prorates a fixed 25 points over
+   * the required count (`quality_score_service.dart`: identity 20, exterior 25,
+   * wheels 10, mileage 5, calibration 6+4, thickness 15, signature 15). The
+   * same inspection therefore scores less than it did, and the window is
+   * bounded on BOTH sides:
+   *
+   *   17/17, everything filled ................................. 100  pass
+   *   12/17, engine bay + open bonnet skipped (no lift, hot
+   *     engine — the case the client asked to keep passing) ...   93  pass
+   *    8/17, a report shot before the expansion and re-synced
+   *     from a newer build .....................................   87  pass  <- upper bound
+   *   17/17 with no inspector signature ........................   85  pass
+   *   17/17 with no make/model/VIN .............................   80  FAIL  <- lower bound
+   *   12/17 with no paint gauge at all .........................   78  FAIL
+   *
+   * So it must sit in [81, 87]. 85 keeps a legacy report closable with two
+   * points to spare and still refuses a report that does not identify the
+   * vehicle, which is the thing this gate exists to refuse. Note the one
+   * deliberate trade: at 85 a complete-but-unsigned report passes the SERVER
+   * gate. The signature is enforced separately, by the mobile Finish flow; this
+   * gate is about coverage.
+   *
+   * Changing it here only affects fresh installs — production is moved by
+   * `prisma/migrations/20260810120000_lower_min_report_quality_score`, because
+   * `prisma/seed.ts` upserts settings with `update: {}` and Render never runs
+   * the seed anyway.
    */
-  minReportQualityScore: 90,
+  minReportQualityScore: 85,
   refundBeforeAssignPercent: 100,
   refundAfterAssignPercent: 80,
   signedUrlTtlMinutes: 15,

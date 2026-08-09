@@ -2,25 +2,43 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { createTestApp } from './helpers/test-app';
 
-/** The inspector's dictated walk-around (diagonal → side → front/rear). */
+/**
+ * The inspector's dictated walk-around, as revised on 2026-08-10: down the left
+ * flank, across the rear, open the boot, round to the front, open the bonnet,
+ * then down the right flank.
+ *
+ * This is the client's requirement expressed as a SEQUENCE. Asserting it as a
+ * set would let a reordering through, and the order is the deliverable.
+ */
 const REQUIRED_EXTERIOR_ORDER = [
   'diag_front_left',
   'left',
+  'diag_rear_left',
+  'rear',
+  'trunk_open',
+  'trunk_left',
+  'trunk_right',
+  'trunk_tools',
   'front',
+  'hood_open',
+  'engine_bay',
+  'hood_underside',
+  'engine_bay_left',
+  'engine_bay_right',
   'diag_front_right',
   'right',
   'diag_rear_right',
-  'rear',
-  'diag_rear_left',
 ];
 
 /**
- * Every required exterior angle carries a wheel-position hint, and the two
- * kinds of shot carry DIFFERENT guidance: on a diagonal the near front wheel is
- * turned outward so the rim reads, on a straight view the wheels are square.
- * QA scenario 10 checks exactly that difference on all eight angles, so the
- * four rear/straight angles that shipped without a hint are no longer allowed
- * to be empty.
+ * Every required exterior angle carries a hint, and the hints fall into THREE
+ * families that say different things — that difference is the instruction.
+ * On a diagonal the near front wheel is turned outward so the rim reads; on a
+ * straight view the wheels are square; on a boot or bonnet angle nothing is
+ * visible until something is opened or lifted. QA scenario 10 checks exactly
+ * that, which is why the four straight angles that once shipped with no hint at
+ * all are no longer allowed to be empty — and why the nine added in August are
+ * not allowed to inherit a wheel-position hint that makes no sense for them.
  */
 const DIAGONAL_ANGLES = [
   'diag_front_left',
@@ -29,7 +47,19 @@ const DIAGONAL_ANGLES = [
   'diag_rear_left',
 ];
 const STRAIGHT_ANGLES = ['left', 'right', 'front', 'rear'];
-const HINTED_ANGLES = [...DIAGONAL_ANGLES, ...STRAIGHT_ANGLES];
+/** The luggage-compartment and engine-bay angles added on 2026-08-10. */
+const OPENING_ANGLES = [
+  'trunk_open',
+  'trunk_left',
+  'trunk_right',
+  'trunk_tools',
+  'hood_open',
+  'engine_bay',
+  'hood_underside',
+  'engine_bay_left',
+  'engine_bay_right',
+];
+const HINTED_ANGLES = [...DIAGONAL_ANGLES, ...STRAIGHT_ANGLES, ...OPENING_ANGLES];
 
 interface Label {
   de?: string;
@@ -82,7 +112,9 @@ describe('Catalog (e2e)', () => {
     const res = await request(app.getHttpServer()).get('/catalog').expect(200);
     expect(res.body.version).toBeDefined();
     expect(Array.isArray(res.body.angles)).toBe(true);
-    expect(res.body.angles.length).toBeGreaterThanOrEqual(8);
+    // Exact, not a floor: a count that can only go up catches nothing, and this
+    // one has moved twice (26 -> 35 on 2026-08-10).
+    expect(res.body.angles.length).toBe(35);
     expect(Array.isArray(res.body.kstCodes)).toBe(true);
     expect(res.body.kstCodes.length).toBe(68);
     expect(Array.isArray(res.body.checklist)).toBe(true);
@@ -166,13 +198,45 @@ describe('Catalog (e2e)', () => {
   });
 
   describe('exterior angles', () => {
-    it('the 8 required exterior angles follow the dictated walk-around order', async () => {
+    it('the 17 required exterior angles follow the dictated walk-around order', async () => {
       const catalog = await getCatalog();
       const required = catalog.angles
         .filter((a) => a.group === 'exterior' && a.required)
         .sort((a, b) => a.order - b.order);
       expect(required.map((a) => a.id)).toEqual(REQUIRED_EXTERIOR_ORDER);
-      expect(required.map((a) => a.order)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(required.map((a) => a.order)).toEqual(
+        Array.from({ length: 17 }, (_, i) => i + 1),
+      );
+    });
+
+    it('every exterior angle is required, and there are no others', async () => {
+      const catalog = await getCatalog();
+      const exterior = catalog.angles.filter((a) => a.group === 'exterior');
+      expect(exterior).toHaveLength(17);
+      expect(exterior.every((a) => a.required)).toBe(true);
+    });
+
+    /**
+     * The website indexes angle labels and part labels into ONE flat map
+     * (`carsalepro-frontend/lib/catalog.ts` labelIndex), so an angle id equal to
+     * a part id silently replaces that part's label in the damages and
+     * paint-thickness tables. Nothing else checks this, and the August
+     * additions came close: the catalog already has parts named `hood`,
+     * `trunk_lid` and `trunk_mat`.
+     */
+    it('no angle id collides with a part id', async () => {
+      const catalog = await getCatalog();
+      const partIds = new Set(catalog.parts.map((p) => p.id));
+      const collisions = catalog.angles.filter((a) => partIds.has(a.id)).map((a) => a.id);
+      expect(collisions).toEqual([]);
+    });
+
+    it('every exterior photo kind fits the upload DTO slot pattern', async () => {
+      const catalog = await getCatalog();
+      const pattern = /^[a-z][a-z0-9_-]{0,47}$/;
+      for (const angle of catalog.angles.filter((a) => a.group === 'exterior')) {
+        expect(pattern.test(`exterior-${angle.id}`)).toBe(true);
+      }
     });
 
     it('exposes a four-locale hint on every required exterior angle', async () => {
@@ -206,12 +270,53 @@ describe('Catalog (e2e)', () => {
         expect(hintOf(id)?.uk).toContain('прямо');
       }
 
-      // The two sets must not collide — the whole point of scenario 10 is that
-      // an inspector can tell from the instruction which shot they are on.
+      // The three sets must not collide — the whole point of scenario 10 is
+      // that an inspector can tell from the instruction which shot they are on.
       const diagonalTexts = new Set(DIAGONAL_ANGLES.map((id) => hintOf(id)?.en));
       const straightTexts = new Set(STRAIGHT_ANGLES.map((id) => hintOf(id)?.en));
+      const openingTexts = new Set(OPENING_ANGLES.map((id) => hintOf(id)?.en));
       for (const text of diagonalTexts) {
         expect(straightTexts.has(text)).toBe(false);
+        expect(openingTexts.has(text)).toBe(false);
+      }
+      for (const text of straightTexts) {
+        expect(openingTexts.has(text)).toBe(false);
+      }
+    });
+
+    it('the boot and bonnet angles say what to open, never where to steer', async () => {
+      const catalog = await getCatalog();
+      const hintOf = (id: string) => catalog.angles.find((a) => a.id === id)?.hint;
+      for (const id of OPENING_ANGLES) {
+        expect(hintOf(id)?.en?.toLowerCase()).not.toContain('wheel');
+        expect(hintOf(id)?.de).not.toContain('Vorderrad');
+      }
+    });
+
+    /**
+     * English is the PIVOT for the 26 machine-translated locales, so an
+     * ambiguous English word is a correctness bug rather than a style one.
+     * Every word below shipped once during this cycle and came back wrong in a
+     * double-digit number of languages: "boot" as footwear (cs "kopačka",
+     * pl "but", ja "ブーツ"), "shot" as a gunshot (pl "strzał", da "bredskud"),
+     * and — when they stand alone — "bay" as a coastal bay in all 26 and "hood"
+     * as a garment hood (el "κουκούλα", pl "kaptur"). The compounds
+     * "engine bay" and "engine hood" translate correctly everywhere.
+     */
+    it('no English exterior string uses a word the translation pivot mangles', async () => {
+      const catalog = await getCatalog();
+      for (const angle of catalog.angles.filter((a) => a.group === 'exterior')) {
+        const en = `${angle.label.en ?? ''} ${angle.hint?.en ?? ''}`.toLowerCase();
+        const words = en.split(/[^a-z]+/);
+        expect(words).not.toContain('boot');
+        expect(words).not.toContain('shot');
+        for (const word of ['bay', 'hood']) {
+          for (const match of en.matchAll(new RegExp(`(\\w+) ${word}`, 'g'))) {
+            expect(match[1]).toBe('engine');
+          }
+          // A bare occurrence with nothing before it would slip past the loop.
+          expect(en.startsWith(`${word} `)).toBe(false);
+        }
       }
     });
   });

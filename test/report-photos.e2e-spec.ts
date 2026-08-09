@@ -76,10 +76,62 @@ describe('Report photos — server-side compression (e2e)', () => {
     expect(row?.sourceBytes).toBe(original.length);
 
     const reportRow = await prisma.report.findUnique({ where: { id: report.id } });
+    // `angle` is the bare catalog id beside the full slot key. It has been in
+    // the read DTOs since report-sync v2 and was written by nothing until
+    // 2026-08-10, so `FullReportPhotoDto.angle` was permanently undefined.
     expect(reportRow?.photosManifest).toEqual([
-      { s3Key: res.body.r2Key, kind: 'exterior-front' },
+      { s3Key: res.body.r2Key, kind: 'exterior-front', angle: 'front' },
     ]);
   }, 60_000);
+
+  it('writes the manifest in walk-around order, with damage photos last', async () => {
+    if (!r2Configured) return;
+    const did = uniqueDeviceId();
+    const report = await seedReport(did);
+    const png = fixture('small-800x600.png');
+
+    // Uploaded in a deliberately unhelpful order. Under the old `kind ASC`
+    // manifest this came back damage-first, and the showroom rendered a
+    // gallery of scratch macros with no picture of the car in it.
+    const dmg = await upload(did, report.id, png, { kind: 'damage-abc' }).expect(201);
+    const rear = await upload(did, report.id, png, { kind: 'exterior-diag_rear_right' }).expect(201);
+    const odo = await upload(did, report.id, png, { kind: 'odometer' }).expect(201);
+    const open = await upload(did, report.id, png, { kind: 'exterior-diag_front_left' }).expect(201);
+    cleanupKeys.push(dmg.body.r2Key, rear.body.r2Key, odo.body.r2Key, open.body.r2Key);
+
+    const reportRow = await prisma.report.findUnique({ where: { id: report.id } });
+    expect(reportRow?.photosManifest).toEqual([
+      { s3Key: open.body.r2Key, kind: 'exterior-diag_front_left', angle: 'diag_front_left' },
+      { s3Key: rear.body.r2Key, kind: 'exterior-diag_rear_right', angle: 'diag_rear_right' },
+      { s3Key: odo.body.r2Key, kind: 'odometer', angle: 'odometer' },
+      // No `angle` key at all — a damage close-up is not a catalog angle, and a
+      // caption naming one would describe the wrong photograph.
+      { s3Key: dmg.body.r2Key, kind: 'damage-abc' },
+    ]);
+  }, 90_000);
+
+  it('accepts every one of the 17 required exterior slot keys', async () => {
+    if (!r2Configured) return;
+    const did = uniqueDeviceId();
+    const report = await seedReport(did);
+    const png = fixture('small-800x600.png');
+
+    const catalog = await request(app.getHttpServer()).get('/catalog').expect(200);
+    const exterior = (catalog.body.angles as { id: string; group: string }[]).filter(
+      (a) => a.group === 'exterior',
+    );
+    expect(exterior).toHaveLength(17);
+
+    for (const angle of exterior) {
+      const res = await upload(did, report.id, png, { kind: `exterior-${angle.id}` }).expect(201);
+      cleanupKeys.push(res.body.r2Key);
+    }
+    expect(await prisma.reportPhoto.count({ where: { reportId: report.id } })).toBe(17);
+
+    const reportRow = await prisma.report.findUnique({ where: { id: report.id } });
+    const manifest = reportRow?.photosManifest as { kind: string; angle?: string }[];
+    expect(manifest.map((m) => m.angle)).toEqual(exterior.map((a) => a.id));
+  }, 180_000);
 
   it('re-uploading the same slot replaces the photo; identical bytes short-circuit', async () => {
     if (!r2Configured) return;
@@ -153,6 +205,8 @@ describe('Report photos — server-side compression (e2e)', () => {
     expect(await prisma.reportPhoto.count({ where: { reportId: report.id } })).toBe(1);
     expect(await r2.objectExists(p1.body.r2Key)).toBe(false);
     const reportRow = await prisma.report.findUnique({ where: { id: report.id } });
+    // `interior` on its own is not a catalog angle id (those read
+    // `interior_front` and are keyed `interior-interior_front`), so no `angle`.
     expect(reportRow?.photosManifest).toEqual([{ s3Key: p2.body.r2Key, kind: 'interior' }]);
 
     // Deleting a photo of a foreign report → 404 (not found under that report).

@@ -881,10 +881,20 @@ export class ListingsService {
       select: { id: true, report: { select: { photosManifest: true } } },
     });
 
+    // Derived from the WHOLE manifest, not from the mirrored subset.
+    //
+    // The subset is "the first MAX_LISTING_PHOTOS entries in manifest order",
+    // and both halves of that have moved: the cap went 20 -> 32, and the order
+    // is now the catalog walk-around rather than `kind ASC`. Anything mirrored
+    // under the old rule and no longer in the new top-N would be skipped here —
+    // leaving a permanent, unsigned, CDN-cached public photograph of a car
+    // whose owner has just asked to be erased. Computing the key set from every
+    // entry costs a few `publicDeleteObject` calls that 404 harmlessly, and
+    // this method already treats a failed delete as non-fatal.
     const keys = [
       ...rows.map((r) => r.r2Key),
       ...listings.flatMap((l) =>
-        manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).map((ref) =>
+        manifestPhotoRefs(l.report?.photosManifest, Number.MAX_SAFE_INTEGER).map((ref) =>
           mirroredPhotoKey(l.id, ref.s3Key),
         ),
       ),

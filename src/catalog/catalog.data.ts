@@ -6,7 +6,7 @@
  * and (later) bundled into the mobile app as a read-only asset.
  *
  * Transcribed from `docs/05_Списки_осмотра_и_повреждений.md` (catalog v1.1):
- *  - §1.3  — 8 exterior view angles
+ *  - §1.3  — exterior view angles (8 in v1.1; 17 since 2026-08-10)
  *  - §2.1  — 36 K-codes (body / paint)
  *  - §2.2  —  5 S-codes (service)
  *  - §2.3  — 27 T-codes (technical condition / equipment)
@@ -54,9 +54,13 @@ export interface AngleDef {
   label: LocalizedLabel;
   required: boolean;
   /**
-   * Short capture instruction rendered under the angle label. Explains why the
-   * required walk-around zigzags: the near front wheel is turned outward for
-   * the diagonal shots and straightened again for the side shots.
+   * Short capture instruction rendered under the angle label, as the third line
+   * of the mobile capture screen's instruction box.
+   *
+   * Three families, and the difference between them IS the instruction:
+   * the diagonals say to turn the near front wheel outward, the straight views
+   * say wheels square, and the boot/bonnet angles say what to open or lift.
+   * Every required exterior angle carries one.
    */
   hint?: LocalizedLabel;
 }
@@ -135,6 +139,21 @@ export interface ChecklistItemDef {
   partId: string | null;
 }
 
+/**
+ * Bumping this is NOT a tidy-up — it is an over-the-air content push.
+ *
+ * `GET /catalog?version=<v>` answers `{upToDate: true}` when the caller's
+ * version equals this one, and the mobile app sends the version of the copy
+ * BUNDLED in its build. So while this reads '1', an installed app keeps its own
+ * bundle and only picks up catalog changes when the user updates the app.
+ *
+ * Bump it and every installed build hot-adopts the new catalog — including any
+ * new required angle, for which that build has no example thumbnail and no
+ * overlay (both live in the app bundle, not here), and whose absence
+ * immediately lowers the quality score of every report in progress. The 8 → 17
+ * exterior expansion of 2026-08-10 was shipped deliberately WITHOUT a bump: the
+ * angles reach the app through its next release, together with their assets.
+ */
 export const CATALOG_VERSION = '1';
 
 export interface CatalogV1 {
@@ -152,21 +171,43 @@ export interface CatalogV1 {
 // ---------------------------------------------------------------------------
 
 const ANGLES: AngleDef[] = [
-  // Walk-around order dictated by the inspector: diagonal (near front wheel
-  // turned outward) → side (wheels straight) → front, then the same on the
-  // right half and finally the rear. Ids/labels are unchanged; only `order` is.
+  // Walk-around order dictated by the inspector, and the array is kept in that
+  // order so the block reads as the job is done. Down the LEFT flank (diagonal
+  // with the near front wheel turned outward → side with the wheels straight),
+  // across the REAR, then the boot is opened and documented, round to the FRONT,
+  // then the bonnet is opened and the engine bay documented, and finally back
+  // down the RIGHT flank. `order` is what the clients sort by; array position is
+  // for the reader.
   //
-  // All eight required angles carry a `hint`, and the two kinds carry different
-  // guidance on purpose — that difference IS the instruction. The four rear and
-  // straight angles shipped without one until 2026-08-05, so the capture screen
-  // showed no wheel guidance on half the walk-around (QA scenario 10).
+  // Grew from 8 to 17 required angles on 2026-08-10 (client request): four boot
+  // angles and five engine-bay angles. Consequences worth knowing before you
+  // touch this list:
+  //  - Angle IDS are persisted (mobile photo kinds `exterior-<id>`, R2 cloud
+  //    slot keys, `ReportPhoto.kind`). Renaming one orphans every shot already
+  //    taken with it. `order` is persisted nowhere and is free to move.
+  //  - The mobile quality score spreads a fixed 25 points over the REQUIRED
+  //    exterior angles, so adding one lowers the score of every report that does
+  //    not have it. That is why `minReportQualityScore` moved 90 → 85 in the
+  //    same release.
+  //  - `CATALOG_VERSION` deliberately stays '1'; see the note on that constant.
+  //
+  // ALL required exterior angles carry a `hint`, and the hints fall into three
+  // families that carry different guidance on purpose — that difference IS the
+  // instruction: diagonals say to turn the near front wheel outward, straight
+  // views say wheels square, and the boot/bonnet angles say what to open or
+  // lift. Four of the original eight shipped without any hint until 2026-08-05,
+  // so the capture screen showed no wheel guidance on half the walk-around
+  // (QA scenario 10); `catalog.i18n.spec.ts` and the mobile `catalog_test.dart`
+  // both pin the families so that cannot recur.
   //
   // The diagonal hint deliberately does NOT name a side ("near front wheel",
   // not "left front wheel"): on a diagonal the near wheel is the one closest to
   // the camera and the label already says which corner you are standing at, and
   // the longer wording wrapped to a second line in RU/UK, which pushed the
   // capture screen's instruction box past what a 320 dp screen can host at the
-  // 1.3 font clamp (`capture_instruction_budget_test.dart`).
+  // 1.3 font clamp (`capture_instruction_budget_test.dart`). Every label and
+  // hint below is held to that same budget — a string that does not fit gets
+  // SHORTER, the budget never gets larger.
   {
     id: 'diag_front_left',
     group: 'exterior',
@@ -199,9 +240,140 @@ const ANGLES: AngleDef[] = [
     },
   },
   {
-    id: 'front',
+    id: 'diag_rear_left',
     group: 'exterior',
     order: 3,
+    required: true,
+    label: {
+      de: 'Diagonal hinten links',
+      en: 'Rear left (3/4)',
+      ru: 'Диагональ сзади-слева',
+      uk: 'Діагональ ззаду-зліва',
+    },
+    hint: {
+      de: 'Schlagen Sie das Vorderrad nach außen ein.',
+      en: 'Turn the near front wheel outward.',
+      ru: 'Поверните переднее колесо наружу.',
+      uk: 'Поверніть переднє колесо назовні.',
+    },
+  },
+  {
+    id: 'rear',
+    group: 'exterior',
+    order: 4,
+    required: true,
+    label: { de: 'Rückansicht', en: 'Rear view', ru: 'Задняя часть', uk: 'Задня частина' },
+    hint: {
+      de: 'Stellen Sie die Räder gerade.',
+      en: 'Keep the wheels straight.',
+      ru: 'Поставьте колёса прямо.',
+      uk: 'Поставте колеса прямо.',
+    },
+  },
+  // Luggage-compartment block. Shot with the tailgate up, from wide to detail,
+  // ending with the under-floor tray — the one place a missing jack or warning
+  // triangle shows.
+  //
+  // The English says "luggage area", never "boot" and never "shot". English is
+  // the PIVOT for the 26 machine locales, so an ambiguous English word is a
+  // correctness bug, not a style question: "Open boot, wide shot" came back as
+  // open FOOTWEAR in twenty languages (cs "kopačka", a football boot; pl "but";
+  // ja "ブーツ"; es "bota") and "shot" as a GUNSHOT in nine ("szeroki strzał",
+  // "bredskud", "الطلقة الواسعة"). Below, "bay" and "hood" appear ONLY in the
+  // compounds "engine bay" and "engine hood", which every locale rendered
+  // correctly; bare "bay" came back as a coastal bay in all 26 and bare "hood"
+  // as a garment hood (el "κουκούλα", pl "kaptur"). A bare "right" is avoided
+  // too — it came back as "correct" (hu "igen", it "giusto", pl "prawda",
+  // es "¿verdad?"), which is why the side lives in the label, not the hint.
+  //
+  // These strings are also the shortest wording that fits: the capture
+  // instruction box may occupy 166.5 dp on a 320 dp screen at the 1.3 clamp,
+  // and `capture_instruction_budget_test.dart` measures every one of them.
+  {
+    id: 'trunk_open',
+    group: 'exterior',
+    order: 5,
+    required: true,
+    // Kept short on purpose. The first draft ("Kofferraum offen, Übersicht" /
+    // "Heckklappe öffnen, zurücktreten.") measured 184 dp against the 166.5 dp
+    // an instruction box may occupy on a 320 dp screen at the 1.3 font clamp,
+    // and `capture_instruction_budget_test.dart` refused it — correctly. The
+    // label carries the subject and the hint carries the action; neither needs
+    // to repeat the other.
+    label: {
+      de: 'Kofferraum offen',
+      en: 'Luggage area, open',
+      ru: 'Открытый багажник издалека',
+      uk: 'Відкритий багажник здалеку',
+    },
+    hint: {
+      de: 'Heckklappe öffnen, zurücktreten.',
+      en: 'Open it and step back.',
+      ru: 'Откройте и отойдите.',
+      uk: 'Відкрийте й відійдіть.',
+    },
+  },
+  // The two side hints are identical on purpose — the label already says which
+  // side, and a hint repeating "left"/"right" is where the machine locales put
+  // "the CORRECT inner wall" (th, hi).
+  {
+    id: 'trunk_left',
+    group: 'exterior',
+    order: 6,
+    required: true,
+    label: {
+      de: 'Kofferraum links',
+      en: 'Luggage area, left side',
+      ru: 'Левая сторона багажника',
+      uk: 'Ліва сторона багажника',
+    },
+    hint: {
+      de: 'Innenwand und Verkleidung zeigen.',
+      en: 'Show the inner wall and trim.',
+      ru: 'Покажите стенку и обшивку.',
+      uk: 'Покажіть стінку й обшивку.',
+    },
+  },
+  {
+    id: 'trunk_right',
+    group: 'exterior',
+    order: 7,
+    required: true,
+    label: {
+      de: 'Kofferraum rechts',
+      en: 'Luggage area, right side',
+      ru: 'Правая сторона багажника',
+      uk: 'Права сторона багажника',
+    },
+    hint: {
+      de: 'Innenwand und Verkleidung zeigen.',
+      en: 'Show the inner wall and trim.',
+      ru: 'Покажите стенку и обшивку.',
+      uk: 'Покажіть стінку й обшивку.',
+    },
+  },
+  {
+    id: 'trunk_tools',
+    group: 'exterior',
+    order: 8,
+    required: true,
+    label: {
+      de: 'Bordwerkzeug',
+      en: 'Tool kit',
+      ru: 'Инструменты',
+      uk: 'Інструменти',
+    },
+    hint: {
+      de: 'Kofferraumboden anheben.',
+      en: 'Lift the luggage area floor.',
+      ru: 'Поднимите пол багажника.',
+      uk: 'Підніміть підлогу багажника.',
+    },
+  },
+  {
+    id: 'front',
+    group: 'exterior',
+    order: 9,
     required: true,
     label: { de: 'Vorderansicht', en: 'Front view', ru: 'Вид спереди', uk: 'Вид спереду' },
     hint: {
@@ -211,10 +383,105 @@ const ANGLES: AngleDef[] = [
       uk: 'Поставте колеса прямо.',
     },
   },
+  // Engine-bay block. Bonnet up: the whole bay, the underside of the lid (where
+  // a repainted or replaced bonnet gives itself away), then each half in detail.
+  // These five are the angles an inspector working without a lift or on a hot
+  // engine is most likely to skip, which is exactly what the 85-point quality
+  // gate was sized to tolerate.
+  {
+    id: 'hood_open',
+    group: 'exterior',
+    order: 10,
+    required: true,
+    label: {
+      de: 'Motorhaube offen',
+      en: 'Engine hood open',
+      ru: 'Открытый капот',
+      uk: 'Відкритий капот',
+    },
+    hint: {
+      de: 'Motorhaube ganz öffnen.',
+      en: 'Open the engine hood fully.',
+      ru: 'Откройте капот полностью.',
+      uk: 'Відкрийте капот повністю.',
+    },
+  },
+  {
+    id: 'engine_bay',
+    group: 'exterior',
+    order: 11,
+    required: true,
+    label: {
+      de: 'Motorraum',
+      en: 'Engine bay',
+      ru: 'Моторный отсек',
+      uk: 'Моторний відсік',
+    },
+    hint: {
+      de: 'Ganzen Motorraum zeigen.',
+      en: 'Show it all in one frame.',
+      ru: 'Снимите весь моторный отсек.',
+      uk: 'Зніміть увесь моторний відсік.',
+    },
+  },
+  {
+    id: 'hood_underside',
+    group: 'exterior',
+    order: 12,
+    required: true,
+    label: {
+      de: 'Motorhaube Unterseite',
+      en: 'Engine hood, inside',
+      ru: 'Открытая крышка капота',
+      uk: 'Відкрита кришка капота',
+    },
+    hint: {
+      de: 'Haubenunterseite zeigen.',
+      en: 'Shoot it from below.',
+      ru: 'Снимите капот с изнанки.',
+      uk: 'Зніміть капот зсередини.',
+    },
+  },
+  {
+    id: 'engine_bay_left',
+    group: 'exterior',
+    order: 13,
+    required: true,
+    label: {
+      de: 'Motorraum links',
+      en: 'Engine bay, left side',
+      ru: 'Моторный отсек слева',
+      uk: 'Моторний відсік зліва',
+    },
+    hint: {
+      de: 'Linke Motorraumhälfte.',
+      en: 'Left half of the engine bay.',
+      ru: 'Левая половина отсека.',
+      uk: 'Ліва половина відсіку.',
+    },
+  },
+  {
+    id: 'engine_bay_right',
+    group: 'exterior',
+    order: 14,
+    required: true,
+    label: {
+      de: 'Motorraum rechts',
+      en: 'Engine bay, right side',
+      ru: 'Моторный отсек справа',
+      uk: 'Моторний відсік справа',
+    },
+    hint: {
+      de: 'Rechte Motorraumhälfte.',
+      en: 'Right half of the engine bay.',
+      ru: 'Правая половина отсека.',
+      uk: 'Права половина відсіку.',
+    },
+  },
   {
     id: 'diag_front_right',
     group: 'exterior',
-    order: 4,
+    order: 15,
     required: true,
     label: {
       de: 'Diagonal vorne rechts',
@@ -232,7 +499,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'right',
     group: 'exterior',
-    order: 5,
+    order: 16,
     required: true,
     label: { de: 'Rechte Seite', en: 'Right side', ru: 'Правая сторона', uk: 'Права сторона' },
     hint: {
@@ -245,7 +512,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'diag_rear_right',
     group: 'exterior',
-    order: 6,
+    order: 17,
     required: true,
     label: {
       de: 'Diagonal hinten rechts',
@@ -261,40 +528,9 @@ const ANGLES: AngleDef[] = [
     },
   },
   {
-    id: 'rear',
-    group: 'exterior',
-    order: 7,
-    required: true,
-    label: { de: 'Rückansicht', en: 'Rear view', ru: 'Задняя часть', uk: 'Задня частина' },
-    hint: {
-      de: 'Stellen Sie die Räder gerade.',
-      en: 'Keep the wheels straight.',
-      ru: 'Поставьте колёса прямо.',
-      uk: 'Поставте колеса прямо.',
-    },
-  },
-  {
-    id: 'diag_rear_left',
-    group: 'exterior',
-    order: 8,
-    required: true,
-    label: {
-      de: 'Diagonal hinten links',
-      en: 'Rear left (3/4)',
-      ru: 'Диагональ сзади-слева',
-      uk: 'Діагональ ззаду-зліва',
-    },
-    hint: {
-      de: 'Schlagen Sie das Vorderrad nach außen ein.',
-      en: 'Turn the near front wheel outward.',
-      ru: 'Поверните переднее колесо наружу.',
-      uk: 'Поверніть переднє колесо назовні.',
-    },
-  },
-  {
     id: 'interior_front',
     group: 'interior',
-    order: 9,
+    order: 18,
     required: false,
     label: {
       de: 'Innenraum vorne',
@@ -306,14 +542,14 @@ const ANGLES: AngleDef[] = [
   {
     id: 'interior_rear',
     group: 'interior',
-    order: 10,
+    order: 19,
     required: false,
     label: { de: 'Innenraum hinten', en: 'Interior rear', ru: 'Салон сзади', uk: 'Салон ззаду' },
   },
   {
     id: 'interior_dashboard',
     group: 'interior',
-    order: 11,
+    order: 20,
     required: false,
     label: {
       de: 'Armaturenbrett',
@@ -325,35 +561,35 @@ const ANGLES: AngleDef[] = [
   {
     id: 'interior_boot',
     group: 'interior',
-    order: 12,
+    order: 21,
     required: false,
     label: { de: 'Kofferraum', en: 'Boot / trunk', ru: 'Багажник', uk: 'Багажник' },
   },
   {
     id: 'interior_seats',
     group: 'interior',
-    order: 13,
+    order: 22,
     required: false,
     label: { de: 'Sitze', en: 'Seats', ru: 'Сиденья', uk: 'Сидіння' },
   },
   {
     id: 'interior_steering_wheel',
     group: 'interior',
-    order: 14,
+    order: 23,
     required: false,
     label: { de: 'Lenkrad', en: 'Steering wheel', ru: 'Руль', uk: 'Кермо' },
   },
   {
     id: 'interior_pedals',
     group: 'interior',
-    order: 15,
+    order: 24,
     required: false,
     label: { de: 'Pedalerie', en: 'Pedals', ru: 'Педали', uk: 'Педалі' },
   },
   {
     id: 'interior_overview',
     group: 'interior',
-    order: 16,
+    order: 25,
     required: false,
     label: {
       de: 'Innenraum Gesamtübersicht',
@@ -365,7 +601,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'interior_door_trim_fl',
     group: 'interior',
-    order: 17,
+    order: 26,
     required: false,
     label: {
       de: 'Türverkleidung vorne links',
@@ -377,7 +613,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'interior_door_trim_fr',
     group: 'interior',
-    order: 18,
+    order: 27,
     required: false,
     label: {
       de: 'Türverkleidung vorne rechts',
@@ -389,7 +625,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'interior_door_trim_rl',
     group: 'interior',
-    order: 19,
+    order: 28,
     required: false,
     label: {
       de: 'Türverkleidung hinten links',
@@ -401,7 +637,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'interior_door_trim_rr',
     group: 'interior',
-    order: 20,
+    order: 29,
     required: false,
     label: {
       de: 'Türverkleidung hinten rechts',
@@ -413,7 +649,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_fl',
     group: 'wheel',
-    order: 21,
+    order: 30,
     required: false,
     label: {
       de: 'Rad vorne links',
@@ -425,7 +661,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_fr',
     group: 'wheel',
-    order: 22,
+    order: 31,
     required: false,
     label: {
       de: 'Rad vorne rechts',
@@ -437,7 +673,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_rl',
     group: 'wheel',
-    order: 23,
+    order: 32,
     required: false,
     label: {
       de: 'Rad hinten links',
@@ -449,7 +685,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_rr',
     group: 'wheel',
-    order: 24,
+    order: 33,
     required: false,
     label: {
       de: 'Rad hinten rechts',
@@ -461,14 +697,14 @@ const ANGLES: AngleDef[] = [
   {
     id: 'odometer',
     group: 'misc',
-    order: 25,
+    order: 34,
     required: false,
     label: { de: 'Kilometerstand', en: 'Odometer', ru: 'Одометр', uk: 'Одометр' },
   },
   {
     id: 'vin_plate',
     group: 'misc',
-    order: 26,
+    order: 35,
     required: false,
     label: { de: 'FIN-Schild', en: 'VIN plate', ru: 'Табличка VIN', uk: 'Табличка VIN' },
   },
