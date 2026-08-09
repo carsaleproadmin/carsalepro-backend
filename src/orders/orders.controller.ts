@@ -47,7 +47,12 @@ export class OrdersController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Create an order (re-prices server-side) + start payment' })
+  @ApiOperation({
+    summary:
+      'Create an order (re-prices server-side) + start payment. The PaymentIntent ' +
+      'uses MANUAL capture: confirming it holds the funds, and they are only taken ' +
+      'when an inspector accepts.',
+  })
   async create(@CurrentUser('id') userId: string, @Body() dto: CreateOrderDto) {
     return this.orders.createOrder(userId, dto);
   }
@@ -96,7 +101,12 @@ export class OrdersController {
 
   @Post(':id/cancel')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Cancel an order (100% / 80% refund per status)' })
+  @ApiOperation({
+    summary:
+      'Cancel an order. Before acceptance the authorization hold is RELEASED ' +
+      '(refundCents 0, refundMode authorization_released); after it the captured ' +
+      'amount is refunded 100% / 80% per status.',
+  })
   async cancel(@CurrentUser('id') userId: string, @Param('id') id: string) {
     return this.orders.cancel(id, userId);
   }

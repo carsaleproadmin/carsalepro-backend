@@ -23,7 +23,7 @@ import {
 } from './dto/report-response.dto';
 import { UpdateReportDto, UpdateReportResponseDto } from './dto/update-report.dto';
 import { ReportPhotoDto, ReportPhotoListDto, UploadPhotoDto } from './dto/upload-photo.dto';
-import { PhotoProcessingService } from './photo-processing.service';
+import { PhotoProcessingService } from '../common/photo/photo-processing.service';
 import {
   extractDenormalizedFields,
   ExtractedReportFields,
@@ -60,6 +60,13 @@ export class ReportsService {
 
     if (dto.orderId) {
       await this.assertOrderSubmitter(deviceId, dto.orderId);
+      // The completeness gate, before quota and before R2 — a refused report
+      // must not burn a credit or leave an orphaned upload URL. Only the ORDER
+      // path is gated: every legacy mobile submission has no orderId, carries no
+      // score, and gating those would brick the shipped app.
+      await this.assertOrderReportQuality(
+        dto.qualityScore ?? extracted?.qualityScore ?? null,
+      );
     }
 
     // Idempotent create: a UUID code re-posted by the same device (mobile retry
@@ -356,6 +363,31 @@ export class ReportsService {
         message: 'This device is not linked to the inspector assigned to this order',
       });
     }
+  }
+
+  /**
+   * Apply the order completeness gate to a report being filed from a device.
+   *
+   * The rule itself lives in `OrdersService.assertReportQuality` — one gate, one
+   * threshold, one pair of error codes, shared with `POST /orders/:id/report`.
+   * OrdersService is resolved lazily through ModuleRef for the same reason
+   * `submitOrderForReport` does: ReportsModule must not import OrdersModule.
+   *
+   * Unlike `submitOrderForReport`, a failure here is NOT swallowed. This is a
+   * refusal, and the whole point is that the inspector is told.
+   */
+  private async assertOrderReportQuality(qualityScore: number | null): Promise<void> {
+    let orders: { assertReportQuality(score: number | null): Promise<void> };
+    try {
+      const { OrdersService } = await import('../orders/orders.service');
+      orders = this.moduleRef.get(OrdersService, { strict: false });
+    } catch {
+      // A narrow test graph without OrdersModule. Refusing every order-linked
+      // report because our own wiring is absent would be the worse failure.
+      this.logger.warn('OrdersService unavailable — report quality gate skipped');
+      return;
+    }
+    await orders.assertReportQuality(qualityScore);
   }
 
   /**

@@ -130,6 +130,29 @@ export function classifyStripeError(err: unknown): StripeFailure {
   return { retryable: false, code: code ?? type ?? 'unknown_error', message };
 }
 
+/**
+ * Map our refund/release reason keys onto Stripe's closed `cancellation_reason`
+ * enum ('duplicate' | 'fraudulent' | 'requested_by_customer' | 'abandoned').
+ *
+ * Anything the customer or an operator asked for is `requested_by_customer`;
+ * everything else — nobody accepted in time, a capture we could not complete —
+ * is `abandoned`. Sending an unrecognised value is a 400 from Stripe, which
+ * would turn a routine hold release into a fatal error.
+ */
+export function stripeCancellationReason(
+  reason?: string,
+): 'requested_by_customer' | 'abandoned' {
+  switch (reason) {
+    case 'cancel_before_assign':
+    case 'cancel_after_assign':
+    case 'dispute':
+    case 'admin':
+      return 'requested_by_customer';
+    default:
+      return 'abandoned';
+  }
+}
+
 export interface CreateTransferParams {
   amountCents: number;
   destinationAccountId: string;
@@ -303,8 +326,23 @@ export class StripeService implements OnModuleInit {
 
   /**
    * Create a PaymentIntent for an inspection order. Automatic payment methods
-   * are enabled; the order/payment ids ride along in metadata so the
-   * `payment_intent.succeeded` webhook can settle the order.
+   * are enabled; the order/payment ids ride along in metadata so the webhooks
+   * can settle the order.
+   *
+   * **`capture_method: 'manual'`** is the whole ride-hailing model in one line.
+   * Confirming the intent places a HOLD on the customer's card; the funds are
+   * only taken by {@link capturePaymentIntent}, which runs when an inspector
+   * actually accepts the job. Before this, the card was charged the instant the
+   * order was created — before anyone had agreed to do the work — so an order
+   * nobody accepted left the platform holding real money it owed back.
+   *
+   * The consequence to design around: an uncaptured authorization expires at
+   * Stripe after 7 days, which is why `orderSearchWindowMinutes` exists and why
+   * `expireUnfilledSearches` must release the hold long before that.
+   *
+   * The event that says "the hold is in place" is
+   * `payment_intent.amount_capturable_updated`, NOT `payment_intent.succeeded` —
+   * the latter now means "capture confirmed".
    */
   async createOrderPaymentIntent(
     params: CreateOrderPaymentIntentParams,
@@ -312,6 +350,7 @@ export class StripeService implements OnModuleInit {
     return this.requireClient().paymentIntents.create({
       amount: params.amountCents,
       currency: 'eur',
+      capture_method: 'manual',
       automatic_payment_methods: { enabled: true },
       metadata: {
         orderId: params.orderId,
@@ -320,6 +359,69 @@ export class StripeService implements OnModuleInit {
         purpose: 'order',
       },
     });
+  }
+
+  /**
+   * Take the money that is being held. Called exactly once per order, at the
+   * moment an inspector accepts — never before.
+   *
+   * The idempotency key is derived from the payment id, so a retried request
+   * (a dropped response, two clicks on Accept) replays Stripe's original answer
+   * for 24 hours instead of raising `payment_intent_unexpected_state`. That
+   * matters more here than anywhere else in the money path, because the caller
+   * reacts to a FATAL capture failure by cancelling the order and releasing the
+   * hold: a "failure" that was really a duplicate of a successful capture would
+   * cancel an order whose money we had already taken.
+   *
+   * The key is not a complete answer — it expires after 24 hours and our own
+   * reconciler may retry later — so callers must still tolerate the raced case.
+   * `OrdersService.captureOrderPayment` does, by re-reading the intent whenever
+   * Stripe reports an unexpected state.
+   *
+   * `amountCents` captures LESS than was authorized and releases the remainder.
+   * Unused today: the fare is frozen at quote time.
+   */
+  async capturePaymentIntent(
+    paymentIntentId: string,
+    paymentId: string,
+    amountCents?: number,
+  ): Promise<StripePaymentIntent> {
+    return this.requireClient().paymentIntents.capture(
+      paymentIntentId,
+      amountCents === undefined ? {} : { amount_to_capture: amountCents },
+      { idempotencyKey: `capture_${paymentId}` },
+    );
+  }
+
+  /**
+   * Release an authorization hold without taking anything — nobody accepted the
+   * job, or the customer cancelled before assignment.
+   *
+   * This is NOT a refund and must never be recorded as one: the money never
+   * left the customer's account, so a Refund row would double-count every
+   * hold-and-release in the finance ledger (see `OrdersService.settleRefund`).
+   *
+   * A CAPTURED intent cannot be cancelled — Stripe answers
+   * `payment_intent_unexpected_state`, which `classifyStripeError` treats as
+   * fatal. That is the right outcome: money that has been taken has to be
+   * refunded, not un-held.
+   *
+   * `reason` is OUR reason key ('cancel_before_assign', 'search_expired', …).
+   * Stripe's `cancellation_reason` is a closed four-value enum and rejects
+   * anything outside it, so the key is mapped onto that enum for the dashboard
+   * and recorded verbatim in the order's own `authorization_released` event,
+   * which is where anyone actually looks.
+   */
+  async cancelPaymentIntent(
+    paymentIntentId: string,
+    paymentId: string,
+    reason?: string,
+  ): Promise<StripePaymentIntent> {
+    return this.requireClient().paymentIntents.cancel(
+      paymentIntentId,
+      { cancellation_reason: stripeCancellationReason(reason) },
+      { idempotencyKey: `cancel_${paymentId}` },
+    );
   }
 
   /** Refund (full or partial) a captured PaymentIntent. */

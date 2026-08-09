@@ -11,6 +11,7 @@ import {
   FinanceSummaryQueryDto,
   MarkPayoutPaidDto,
   PayoutQueueQueryDto,
+  RefundQueueQueryDto,
 } from './dto/admin-finance.dto';
 
 @ApiTags('admin')
@@ -61,6 +62,27 @@ export class AdminFinanceController {
     const payout = await this.orders.adminRetryPayout(orderId);
     await this.audit.log(adminId, 'payout.retry', 'payout', orderId, null, payout);
     return payout;
+  }
+
+  // ------------------------------------------------------------------
+  // Refund queue. The mirror image of the payout queue: a refund Stripe refused
+  // parks a row with a retry schedule, and a parked refund nobody can see is
+  // indistinguishable from one that never happened.
+  // ------------------------------------------------------------------
+
+  @Get('refunds')
+  @ApiOperation({ summary: 'Refund queue with retry state (admin)' })
+  refunds(@Query() query: RefundQueueQueryDto) {
+    return this.orders.listRefunds(query.status, query.page ?? 1, query.pageSize ?? 50);
+  }
+
+  @Post('refunds/:refundId/retry')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Retry a parked refund now, ignoring the backoff (admin)' })
+  async retryRefund(@Param('refundId') refundId: string, @CurrentUser('id') adminId: string) {
+    const refund = await this.orders.adminRetryRefund(refundId);
+    await this.audit.log(adminId, 'refund.retry', 'refund', refundId, null, refund);
+    return refund;
   }
 
   @Post('payouts/:orderId/mark-paid')

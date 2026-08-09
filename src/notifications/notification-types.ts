@@ -16,10 +16,12 @@ export type NotificationType =
   | 'order.approved'
   | 'order.completed'
   | 'order.cancelled'
+  | 'order.search_expired'
   | 'order.disputed'
   | 'payout.sent'
   | 'payout.delayed'
   | 'payout.failed'
+  | 'refund.failed'
   | 'kyc.approved'
   | 'kyc.rejected'
   | 'ppv.purchased'
@@ -54,12 +56,26 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   'order.approved': ['inapp', 'email'],
   'order.completed': ['inapp'],
   'order.cancelled': ['inapp', 'email'],
+  /**
+   * Nobody accepted inside the search window: the hold is released, nothing was
+   * charged. Distinct from `order.cancelled` because the customer did nothing
+   * wrong and needs to be told about their money, not about a status change —
+   * "your order was cancelled" after an authorization that still shows on the
+   * statement is exactly how a support ticket starts.
+   */
+  'order.search_expired': ['inapp', 'email'],
   'order.disputed': ['inapp', 'email'],
   'payout.sent': ['inapp', 'email'],
   /** Inspector-facing: their money is late. Sent once, not on every retry. */
   'payout.delayed': ['inapp', 'email'],
   /** Operator-facing: a transfer is stuck and needs attention. */
   'payout.failed': ['inapp', 'email'],
+  /**
+   * Operator-facing: money owed BACK to a customer is not moving. Same channels
+   * as payout.failed — the two failures are the same class of incident seen from
+   * opposite ends of the ledger.
+   */
+  'refund.failed': ['inapp', 'email'],
   'kyc.approved': ['inapp', 'email'],
   'kyc.rejected': ['inapp', 'email'],
   'ppv.purchased': ['inapp', 'email'],

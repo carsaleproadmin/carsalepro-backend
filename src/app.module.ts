@@ -36,6 +36,7 @@ import { R2Module } from './r2/r2.module';
 import { ReportsModule } from './reports/reports.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { SettingsModule } from './settings/settings.module';
+import { TestingModule } from './testing/testing.module';
 import { VinModule } from './vin/vin.module';
 import { VinHistoryModule } from './vin-history/vin-history.module';
 
@@ -92,6 +93,10 @@ import { VinHistoryModule } from './vin-history/vin-history.module';
     FontsModule,
     SettingsModule,
     SchedulerModule,
+    // Test-only affordances. Gated at the IMPORT, not by a guard inside the
+    // module: outside the test environment these routes do not exist at all,
+    // so no misconfiguration can expose them. See `src/testing/testing.module.ts`.
+    ...(process.env.NODE_ENV === 'test' ? [TestingModule] : []),
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

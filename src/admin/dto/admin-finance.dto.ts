@@ -13,12 +13,18 @@ import {
 } from 'class-validator';
 
 export class FinanceSummaryQueryDto {
-  @ApiPropertyOptional({ example: '2026-05-01T00:00:00.000Z', description: 'Window start (default: 30 days ago).' })
+  @ApiPropertyOptional({
+    example: '2026-05-01T00:00:00.000Z',
+    description: 'Window start (default: 30 days ago).',
+  })
   @IsOptional()
   @IsISO8601()
   from?: string;
 
-  @ApiPropertyOptional({ example: '2026-06-01T00:00:00.000Z', description: 'Window end (default: now).' })
+  @ApiPropertyOptional({
+    example: '2026-06-01T00:00:00.000Z',
+    description: 'Window end (default: now).',
+  })
   @IsOptional()
   @IsISO8601()
   to?: string;
@@ -39,6 +45,33 @@ export class PayoutQueueQueryDto {
   @IsOptional()
   @IsIn(['pending', 'paid', 'failed'])
   status?: 'pending' | 'paid' | 'failed';
+
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ example: 50 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  pageSize?: number;
+}
+
+/**
+ * The refund queue's own filter. `pending` here means "parked, waiting for its
+ * next attempt", not "not started" — a refund row is only written once a
+ * provider call has been attempted or refused.
+ */
+export class RefundQueueQueryDto {
+  @ApiPropertyOptional({ enum: ['pending', 'succeeded', 'failed'] })
+  @IsOptional()
+  @IsIn(['pending', 'succeeded', 'failed'])
+  status?: 'pending' | 'succeeded' | 'failed';
 
   @ApiPropertyOptional({ example: 1 })
   @IsOptional()

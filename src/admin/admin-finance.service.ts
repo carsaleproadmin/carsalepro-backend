@@ -59,8 +59,16 @@ export class AdminFinanceService {
       }
     }
 
+    // `status: 'succeeded'` only. A Refund row is now written BEFORE the
+    // provider call so a rejection is recorded rather than lost, which means a
+    // pending or failed row is money that has NOT gone back. Counting those
+    // overstated refunds and understated `platformNetCents` — the platform's own
+    // revenue figure — by exactly the amount it had failed to return.
+    //
+    // The filter mirrors the payout aggregate directly below, which has always
+    // required `status: 'paid'` for the same reason.
     const refundAgg = await this.prisma.refund.aggregate({
-      where: { createdAt: window },
+      where: { status: 'succeeded', createdAt: window },
       _count: { _all: true },
       _sum: { amountCents: true },
     });

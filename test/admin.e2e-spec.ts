@@ -470,7 +470,9 @@ describe('Admin panel (E9) (e2e)', () => {
       ).expect(200);
       expect(detail.body.id).toBe(orderId);
       expect(detail.body.payment).toBeTruthy();
-      expect(detail.body.payment.status).toBe('succeeded');
+      // Nobody has accepted yet, so the money is HELD, not taken. `succeeded`
+      // here would mean the platform charged a card for work no one agreed to.
+      expect(detail.body.payment.status).toBe('authorized');
       expect(Array.isArray(detail.body.refunds)).toBe(true);
       expect(Array.isArray(detail.body.events)).toBe(true);
     });
@@ -526,11 +528,14 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(res.body.error.code).toBe('inspector_not_eligible');
     });
 
-    it('14. adminCancel with refundPercent produces correct Refund cents + CANCELLED', async () => {
+    it('14. adminCancel of an ACCEPTED order refunds the requested percent', async () => {
       const admin = await makeAdmin();
       const customer = await makeUser('cust');
       await makeInspector(ORDER_LAT, ORDER_LNG);
       const orderId = await createPaidOrder(customer);
+      // Acceptance is what CAPTURES the money, and only captured money can be
+      // refunded. Before it there is a hold, and a hold is released — see 14b.
+      await acceptPendingOffer(orderId);
       const half = Math.round(FARE.totalCents * 0.5);
 
       const res = await bearer(
@@ -541,12 +546,36 @@ describe('Admin panel (E9) (e2e)', () => {
       ).expect(200);
       expect(res.body.status).toBe('CANCELLED');
       expect(res.body.refundCents).toBe(half);
+      expect(res.body.refundMode).toBe('refunded');
 
       const refund = await prisma.refund.findFirst({ where: { orderId } });
       expect(refund!.amountCents).toBe(half);
       expect(refund!.reason).toBe('admin');
       const order = await prisma.order.findUnique({ where: { id: orderId } });
       expect(order!.status).toBe('CANCELLED');
+    });
+
+    it('14b. adminCancel before acceptance releases the hold instead of refunding', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+
+      const res = await bearer(
+        request(app.getHttpServer())
+          .post(`/api/v1/admin/orders/${orderId}/cancel`)
+          .send({ refundPercent: 50 }),
+        admin.token,
+      ).expect(200);
+      expect(res.body.status).toBe('CANCELLED');
+      // The admin asked for 50% back. There is nothing to give back: the money
+      // never left the customer. Answering "2450 refunded" would put a refund in
+      // the finance ledger that Stripe never made.
+      expect(res.body.refundCents).toBe(0);
+      expect(res.body.refundMode).toBe('authorization_released');
+      expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
+      const payment = await prisma.payment.findUnique({ where: { orderId } });
+      expect(payment!.status).toBe('cancelled');
     });
 
     it('15. adminCancel out-of-range percent → 400 validation', async () => {
@@ -910,6 +939,38 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(res.body.byPurpose.order.cents).toBeGreaterThanOrEqual(FARE.totalCents);
       expect(res.body.payouts.cents).toBeGreaterThanOrEqual(FARE.inspectorShareCents);
       expect(typeof res.body.platformNetCents).toBe('number');
+    });
+
+    it('27b. revenue is recognised at CAPTURE, not at authorization', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+
+      const before = await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/finance/summary'),
+        admin.token,
+      ).expect(200);
+
+      // An order whose card is merely HELD. The platform has no claim on this
+      // money — it is still the customer's — so counting it as revenue would
+      // book income the business might have to hand straight back.
+      const orderId = await createPaidOrder(customer);
+      const held = await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/finance/summary'),
+        admin.token,
+      ).expect(200);
+      expect(held.body.byPurpose.order.cents).toBe(before.body.byPurpose.order.cents);
+      expect(held.body.payments.grossCents).toBe(before.body.payments.grossCents);
+
+      // Acceptance takes the money, and only then is it revenue.
+      await acceptPendingOffer(orderId);
+      const captured = await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/finance/summary'),
+        admin.token,
+      ).expect(200);
+      expect(captured.body.byPurpose.order.cents).toBe(
+        before.body.byPurpose.order.cents + FARE.totalCents,
+      );
     });
 
     it('28. DAC7 CSV: text/csv, header row, one row per inspector with paid payouts', async () => {
