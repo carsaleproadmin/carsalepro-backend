@@ -64,7 +64,7 @@ describe('env hygiene - the other silent defects', () => {
   });
 
   it('does not flag inner spaces', () => {
-    expect(inspectEnvValue('EMAIL_FROM', 'CarSalePro <no-reply@carsalepro.com>').issues).toEqual([]);
+    expect(inspectEnvValue('EMAIL_FROM', 'CarSalePro <no-reply@carsalepro.de>').issues).toEqual([]);
   });
 
   it('flags quotes a dashboard did not strip', () => {

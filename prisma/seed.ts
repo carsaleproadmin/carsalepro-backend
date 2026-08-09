@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   }
   console.log(`Seeded ${Object.keys(PLATFORM_SETTING_DEFAULTS).length} platform settings`);
 
-  const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@carsalepro.com';
+  const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@carsalepro.de';
   await prisma.user.upsert({
     where: { email: adminEmail },
     create: {
