@@ -1049,10 +1049,31 @@ export class OrdersService {
       });
     }
 
-    await this.prisma.order.update({
-      where: { id: orderId },
+    // The SAME conditional claim `acceptOffer` uses, for the same reason. An
+    // unconditional write here loses the race it looks like it wins: an
+    // inspector accepting their pending offer at the same moment claims the
+    // order, captures the money and gets a contract rendered in their name —
+    // and then this overwrites `inspectorId`. The capture below would answer
+    // `already_captured`, the transition would no-op on `from === to` so the
+    // contract is never re-rendered, and the order would end up assigned to one
+    // inspector while its legal contract names another, with two ACCEPTED
+    // offers and the losing inspector holding a 200.
+    //
+    // The undo path made it worse: `releaseOrderClaim` is guarded on
+    // PAID/UNASSIGNED, so once the other inspector moved the order to ASSIGNED
+    // it silently no-ops and the admin's inspector stays on the row.
+    const claimed = await this.prisma.order.updateMany({
+      where: { id: orderId, status: order.status, inspectorId: null },
       data: { inspectorId },
     });
+    if (claimed.count === 0) {
+      throw new ConflictException({
+        error: {
+          code: 'already_assigned',
+          message: 'This order was assigned to an inspector while you were assigning it',
+        },
+      });
+    }
 
     // An admin override is still an assignment, so the same invariant applies:
     // an order must never be ASSIGNED with uncaptured money. Capturing here is
@@ -1454,11 +1475,12 @@ export class OrdersService {
    * One bad order must not stop the batch: the loop is individually guarded.
    */
   async expireUnfilledSearches(limit = 50): Promise<{ expired: number }> {
+    const now = new Date();
     const due = await this.prisma.order.findMany({
       where: {
         status: { in: [OrderStatus.PAID, OrderStatus.UNASSIGNED] },
         inspectorId: null,
-        searchExpiresAt: { not: null, lt: new Date() },
+        searchExpiresAt: { not: null, lt: now },
       },
       orderBy: { searchExpiresAt: 'asc' },
       take: limit,
@@ -1467,6 +1489,36 @@ export class OrdersService {
     let expired = 0;
     for (const order of due) {
       try {
+        // ── The claim, and why it comes first ──────────────────────────────
+        //
+        // The rows above are a SNAPSHOT. A batch of fifty spends a Stripe round
+        // trip and a notification on each, so tens of seconds pass before the
+        // last one is reached — and an offer's own timeout is unrelated to the
+        // search deadline, so a live PENDING offer past the deadline is normal.
+        // An inspector can therefore accept an order that is sitting in this
+        // list: they capture the money, the contract renders, and this loop then
+        // arrives with a stale row, refunds a CAPTURED payment as
+        // `search_expired`, and cancels a job someone may already be driving to.
+        //
+        // So the status change is the claim, not the conclusion: one conditional
+        // write, and `count === 0` means acceptOffer won the race.
+        //
+        // This deliberately inverts the settle-before-transition rule the cancel
+        // paths follow. That rule protects against transitioning with the money
+        // still taken; here the money is a HOLD, `settleRefund` never throws, and
+        // a release that fails is parked and retried. Refunding a captured order
+        // by accident is not recoverable in the same way.
+        const claimed = await this.prisma.order.updateMany({
+          where: {
+            id: order.id,
+            status: { in: [OrderStatus.PAID, OrderStatus.UNASSIGNED] },
+            inspectorId: null,
+            searchExpiresAt: { not: null, lt: now },
+          },
+          data: { status: OrderStatus.CANCELLED },
+        });
+        if (claimed.count === 0) continue;
+
         await this.prisma.orderOffer.updateMany({
           where: { orderId: order.id, status: 'PENDING' },
           data: { status: 'EXPIRED' },
@@ -1482,13 +1534,25 @@ export class OrdersService {
           release: outcome.status,
           detail: outcome.detail,
         });
-        await this.transition(order.id, OrderStatus.CANCELLED, 'system');
-        // `transition` already sent `order.cancelled`, which is true but useless
-        // here: the customer did nothing, and what they need to hear is about
-        // their money. A released authorization can sit in a card statement for
-        // several working days, so a message that only says "cancelled" reads
-        // as "charged me and cancelled anyway". Notifications never throw into a
-        // domain flow, so this cannot un-expire the order.
+        // The claim above already wrote the status, so this records the change
+        // `transition` would have recorded. Its other work for CANCELLED is a
+        // `status_change` event and an `order.cancelled` notification — the
+        // event is written here, and the notification is deliberately replaced
+        // by the one below.
+        await this.writeEvent(
+          order.id,
+          'system',
+          'status_change',
+          order.status,
+          OrderStatus.CANCELLED,
+          null,
+        );
+        // `order.cancelled` would be true and useless: the customer did nothing,
+        // and what they need to hear is about their money. A released
+        // authorization can sit in a card statement for several working days, so
+        // a message that only says "cancelled" reads as "charged me and
+        // cancelled anyway". Notifications never throw into a domain flow, so
+        // this cannot un-expire the order.
         await this.notifications.notify(order.customerId, 'order.search_expired', {
           orderId: order.id,
           orderNumber: order.number,
@@ -1524,7 +1588,7 @@ export class OrdersService {
     const staleBefore = new Date(Date.now() - RECONCILE_MIN_AGE_MS);
     const uncaptured = { in: ['pending', 'authorized'] };
 
-    const [waiting, working] = await Promise.all([
+    const [waiting, working, stranded] = await Promise.all([
       this.prisma.payment.findMany({
         where: {
           purpose: 'order',
@@ -1545,9 +1609,45 @@ export class OrdersService {
         orderBy: { createdAt: 'asc' },
         take: limit,
       }),
+      // A hold whose release FAILED, on an order that was cancelled anyway.
+      //
+      // Nothing else picks these up. `releaseAuthorization` writes no `Refund`
+      // row by design (a Refund means money went back, and nothing was ever
+      // taken), so the refund retry cron cannot see it; and the two selections
+      // above are both scoped to statuses that exclude CANCELLED. The result was
+      // a customer told "nothing was charged and the hold has been released"
+      // while their funds stayed frozen until Stripe expired the authorization
+      // on its own — up to seven days.
+      this.prisma.payment.findMany({
+        where: {
+          purpose: 'order',
+          status: 'authorized',
+          createdAt: { lt: staleBefore },
+          order: { is: { status: { in: [OrderStatus.CANCELLED, OrderStatus.REFUNDED] } } },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+      }),
     ]);
 
     let advanced = 0;
+
+    for (const payment of stranded) {
+      const orderId = payment.orderId as string;
+      try {
+        const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+        if (!order) continue;
+        const outcome = await this.releaseAuthorization(order, payment, 'reconcile_stranded_hold');
+        if (outcome.status === 'released') {
+          advanced += 1;
+          this.logger.warn(`reconcile: released a stranded hold on cancelled order ${orderId}`);
+        }
+      } catch (err) {
+        this.logger.error(
+          `reconcile: stranded hold on order ${orderId} threw: ${(err as Error).message}`,
+        );
+      }
+    }
 
     for (const payment of working) {
       const orderId = payment.orderId as string;
@@ -1580,7 +1680,7 @@ export class OrdersService {
       }
     }
 
-    return { scanned: waiting.length + working.length, advanced };
+    return { scanned: waiting.length + working.length + stranded.length, advanced };
   }
 
   /**
@@ -1733,6 +1833,9 @@ export class OrdersService {
           destinationAccountId: profile.stripeAccountId,
           sourceChargeId: chargeId,
           transferGroup: order.number,
+          // One payout per order (`Payout.orderId` is unique), so the order id
+          // IS the payout's identity and is stable across every retry.
+          idempotencyKey: `transfer_${order.id}`,
         });
         stripeTransferId = transfer.id;
       } catch (err) {
@@ -2149,6 +2252,20 @@ export class OrdersService {
       return this.releaseAuthorization(order, payment, reason);
     }
 
+    // `search_expired` can only ever mean a hold was released — the reason IS
+    // "nobody accepted", and money is captured only when someone does. A
+    // captured payment here means the caller is working from a stale read, and
+    // refunding on it would take a paid job away from an inspector who accepted
+    // it. `expireUnfilledSearches` claims the order atomically so this should be
+    // unreachable; it is checked anyway because the failure is a customer
+    // charged and refunded for an inspection that is going ahead.
+    if (reason === 'search_expired') {
+      const detail = `payment is ${paymentStatus} — the order was accepted after the search window closed`;
+      this.logger.warn(`settleRefund: refusing search_expired refund on order ${order.id}: ${detail}`);
+      await this.skipRefund(order, amountCents, reason, paymentStatus, detail);
+      return this.skippedRefund(reason, detail);
+    }
+
     // paymentStatus === 'succeeded' — the money really is out there.
     let stripeRefundId: string;
     if (this.stripe.configured) {
@@ -2163,6 +2280,10 @@ export class OrdersService {
           payment.stripePaymentIntentId,
           amountCents,
           reason,
+          // `(orderId, reason)` is the refund's identity and is unique, so this
+          // is stable across retries and identical for two callers racing on the
+          // same row — which is the case that matters.
+          `refund_${order.id}_${reason}`,
         );
         stripeRefundId = refund.id;
       } catch (err) {
@@ -2229,6 +2350,13 @@ export class OrdersService {
           this.logger.error(
             `settleRefund: could not release the hold on order ${order.id}: ${detail}`,
           );
+          // A failed release writes no Refund row (correctly — no money moved),
+          // so it cannot enter the refund retry queue and used to leave nothing
+          // behind but this log line. Meanwhile the customer has been told the
+          // hold is gone, and their funds stay frozen until Stripe expires the
+          // authorization on its own. `reconcileStuckOrderPayments` retries it;
+          // this is what makes it visible in the meantime.
+          await this.notifyAdminsOfStrandedHold(order, detail);
         }
       } else {
         detail = 'provider cannot release holds — released locally only';
@@ -2354,6 +2482,33 @@ export class OrdersService {
         error,
         attempts,
         terminal,
+      });
+    }
+  }
+
+  /**
+   * A hold we could not release. Reuses `refund.failed` rather than minting a
+   * type: to an operator this is the same task — money the customer should not
+   * be without — and the payload says which it is. `amountCents: 0` is the
+   * honest figure, because nothing was ever taken; what is stuck is the hold.
+   */
+  private async notifyAdminsOfStrandedHold(
+    order: RefundableOrder,
+    error: string,
+  ): Promise<void> {
+    const admins = await this.prisma.user.findMany({
+      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
+      select: { id: true },
+    });
+    for (const admin of admins) {
+      await this.notifications.notify(admin.id, 'refund.failed', {
+        orderId: order.id,
+        orderNumber: order.number,
+        amountCents: 0,
+        reason: 'authorization_release_failed',
+        error,
+        attempts: 1,
+        terminal: false,
       });
     }
   }

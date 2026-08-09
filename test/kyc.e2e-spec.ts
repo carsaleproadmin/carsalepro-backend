@@ -570,11 +570,16 @@ describe('KYC verification (e2e)', () => {
       leaky = await createTestApp();
       const leakyR2 = leaky.get(R2Service);
 
-      // Sanity: the sentinel is live for this app AND the public report path
-      // really does short-circuit to it. That short-circuit is the hazard this
-      // test exists to keep away from KYC.
-      const publicUrl = await leakyR2.createPresignedDownloadUrl('free/dev/report.pdf');
-      expect(publicUrl.url.startsWith(PUBLIC_URL_SENTINEL)).toBe(true);
+      // The hazard is GONE, not merely routed around: `R2_PUBLIC_URL` no longer
+      // short-circuits anything. This used to assert the opposite — that the
+      // report path DID resolve to the sentinel — as the setup for proving KYC
+      // ignored it. Defending one caller against a global switch was always the
+      // weaker guarantee; the switch is deleted, so even a report PDF is signed
+      // with the variable set. In production a non-empty value now refuses the
+      // boot outright.
+      const reportUrl = await leakyR2.createPresignedDownloadUrl('free/dev/report.pdf');
+      expect(reportUrl.url).not.toContain(PUBLIC_URL_SENTINEL);
+      expect(reportUrl.url).toContain('X-Amz-Signature');
 
       // The KYC accessor must ignore it — for a dedicated-bucket row AND for a
       // legacy row whose bucket column is still NULL.

@@ -866,9 +866,14 @@ describe('Listings (e2e)', () => {
       expect(first.body.width).toBeGreaterThan(0);
       expect(first.body.caption).toBe('Front');
 
-      // Stored under the seller-scoped prefix GDPR erasure sweeps.
+      // Keyed by LISTING, and deliberately not by seller. Once the public
+      // bucket is configured this key is a permanent unsigned URL, and a stable
+      // seller id in it would make every advert by one pseudonymous seller
+      // correlatable from an image URL alone. Erasure finds the objects through
+      // the rows, which is why the key does not have to carry the owner.
       const row = await prisma.listingPhoto.findUniqueOrThrow({ where: { id: first.body.id } });
-      expect(row.r2Key.startsWith(`listings/${seller.userId}/${listing.id}/`)).toBe(true);
+      expect(row.r2Key.startsWith(`listings/${listing.id}/`)).toBe(true);
+      expect(row.r2Key).not.toContain(seller.userId);
       expect(row.format).toBe('jpeg');
 
       // Identical bytes are a retry, not a second photo.

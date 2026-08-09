@@ -36,7 +36,6 @@ export class R2Service implements OnModuleInit {
   private uploadTtl!: number;
   private downloadTtl!: number;
   private signedUrlTtl!: number;
-  private publicUrl?: string;
 
   /**
    * Second client, authenticated with the narrowly-scoped `R2_KYC_*` token, for
@@ -68,7 +67,6 @@ export class R2Service implements OnModuleInit {
     const quota = this.config.get('quota', { infer: true });
     this.bucket = r2.bucket;
     this.accountId = r2.accountId;
-    this.publicUrl = r2.publicUrl;
     this.uploadTtl = quota.presignedUploadTtl;
     this.downloadTtl = quota.presignedDownloadTtl;
     // Dedicated TTL for always-signed private URLs (KYC docs). Minutes → seconds.
@@ -229,13 +227,17 @@ export class R2Service implements OnModuleInit {
     return { url, expiresAt };
   }
 
+  /**
+   * A short-lived SIGNED URL for an object in the reports bucket. Always signed.
+   *
+   * The `R2_PUBLIC_URL` short-circuit that used to live here is **gone**, not
+   * merely discouraged. Defending it in production only would have left every
+   * staging and preview deployment that still carried the variable serving the
+   * whole reports bucket — paid inspection PDFs included — unsigned. And the
+   * feature it existed for, permanent showroom images, now comes from a
+   * separate public bucket, so there is nothing left for it to do.
+   */
   async createPresignedDownloadUrl(key: string): Promise<{ url: string; expiresAt: Date }> {
-    if (this.publicUrl) {
-      return {
-        url: `${this.publicUrl.replace(/\/$/, '')}/${key}`,
-        expiresAt: new Date(Date.now() + this.downloadTtl * 1000),
-      };
-    }
     const cmd = new GetObjectCommand({ Bucket: this.bucket, Key: key });
     const url = await getSignedUrl(this.requireClient(), cmd, { expiresIn: this.downloadTtl });
     const expiresAt = new Date(Date.now() + this.downloadTtl * 1000);
