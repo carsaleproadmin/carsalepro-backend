@@ -100,10 +100,6 @@ scripts/  verify-deployed.mjs · generate-api-md.js
 
 ## Deploy & operations
 
-**Two branches.** `main` is what Render deploys; `dev` carries the work in progress and is deployed nowhere. The website repository does the same, and its `main` now serves only a placeholder page at www.carsalepro.de while its `dev` serves the complete site from a Vercel preview address (see `../carsalepro-frontend/README.md` → Environments). Keep `branch: main` in [render.yaml](./render.yaml) and in the service settings: a `dev` branch pointed at this service would put unfinished work behind the live API.
-
-This one service still answers both branches of the website. A second Render service and database for `dev` is the next step and is not done, so the demonstration and the live domain continue to share a database, the Stripe keys and the R2 buckets.
-
 Render auto-deploys on push to `main` and runs `prisma migrate deploy` on start. Environment is validated by Joi at boot (a missing/weak `JWT_SECRET` or missing R2 creds fail the boot in production). The env var matrix lives in [.env.example](./.env.example); provider/credential setup and the prioritized go-live items are in [SECURITY.md](./SECURITY.md) and the development report under `../docs/reports/`.
 
 **A boot-time self-check runs after Joi and refuses to start on a silently-wrong environment**: a BOM or stray quoting in a secret, a KYC bucket that equals the reports bucket, a CORS list with no https origin, `R2_PUBLIC_URL` still set. It exists because four of the nine blocking defects in the 2026-08-08 audit were environment values and not one of them failed a build, a test or `/health` — a BOM in the Mapbox token made every geocode 401, so the order form told people their valid address did not exist. Values are never printed, only `MISSING` / `set (len 64)` / `has BOM`. A third party being briefly unreachable is deliberately *not* fatal. Read the result at `GET /health/startup`; `/health` itself is unchanged, because it is Render's `healthCheckPath` and a Mapbox outage must not pull the service out of rotation. Escapes, both logged loudly: `STARTUP_CHECK_STRICT=false`, `ALLOW_SHARED_KYC_BUCKET=true`.
