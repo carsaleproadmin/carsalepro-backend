@@ -13,7 +13,7 @@ The shared NestJS backend for the **CarSalePro** ecosystem. One service, one Pos
 - **Source:** https://github.com/carsaleproadmin/carsalepro-backend
 - **Render service:** `srv-d83o7j1kh4rs73cgjfng` (auto-deploys on push to `main`; start command runs `prisma migrate deploy`)
 - **Render Postgres:** `dpg-d83o5v3rjlhs73900aig-a` (PostgreSQL 16 + PostGIS)
-- **Cloudflare R2 bucket:** `carsalepro-reports` (prefixes: `free/`, `pro/`, `report-photos/`, `listings/`, `kyc/`, `contracts/`, `fonts/`)
+- **Cloudflare R2 buckets:** `carsalepro-reports` — private (prefixes: `free/`, `pro/`, `report-photos/`, `listings/`, `kyc/`, `contracts/`, `fonts/`) · optional **public** image bucket (`R2_PUBLIC_*`, served from `https://img.carsalepro.de`) for showroom photos
 
 ## Tech stack
 
@@ -29,7 +29,7 @@ The shared NestJS backend for the **CarSalePro** ecosystem. One service, one Pos
 | Notifications | Channel providers (email/SMS/push) with a **dev-outbox** fallback; in-process `@nestjs/schedule` cron |
 | Validation / docs | class-validator + global `ValidationPipe` · Joi env schema · `@nestjs/swagger` |
 | Observability | helmet · pino-style logging interceptor · Sentry (optional, when `SENTRY_DSN` set) |
-| Testing | Jest unit + Supertest e2e (**302 e2e across 22 suites**, 97 unit) |
+| Testing | Jest unit + Supertest e2e (**448 e2e across 25 suites**, 285 unit) |
 | Deploy | Render (auto-deploy from `main`) |
 
 ## Run locally
@@ -51,7 +51,7 @@ $env:PORT=3001; npm run start:dev                      # website dev on :3001 (m
 
 ```bash
 npm test                                               # unit tests
-npm run test:e2e -- --forceExit                        # 302 e2e / 22 suites (needs Postgres+PostGIS on :5433)
+npm run test:e2e -- --forceExit                        # 448 e2e / 25 suites (needs Postgres+PostGIS on :5433)
 node scripts/verify-deployed.mjs https://carsalepro-backend.onrender.com   # deployed smoke
 ```
 
@@ -63,16 +63,22 @@ Two route families share the app; the global `JwtAuthGuard` enforces a Bearer JW
 
 **Mobile (root, `X-Device-Id`, frozen — extended additively by report-sync v2):** `GET /health` · `GET /vin/:vin` · `GET|POST /quota` · `POST|GET /reports` (+`PUT /:id` quota-free re-sync, `/:id/complete`, `DELETE /:id`; `POST /reports` is **unlimited for FREE and PRO alike** — the 3-report lifetime cap was retired 2026-08 and only comes back with `ENFORCE_FREE_REPORT_LIMIT=true`, in which case the frozen 402 body returns; accepts globally unique `CSP-<uuid>` codes as an idempotency key and a validated **structured `reportData` payload, contract v1**) · `POST /reports/:id/photos/upload` (multipart — **server-side sharp compression** to 1920 px / mozjpeg q80, slot-keyed replace + hash short-circuit) + `GET /reports/:id/photos`, `DELETE /reports/:id/photos/:photoId` (legacy presigned `POST /reports/:id/photos` still works) · `DELETE /me` (GDPR erasure incl. photo prefixes) · `GET /catalog` (**all 30 app languages**) · `GET /legal/:doc` · `GET /fonts/manifest` (presigned CJK PDF font packs with SHA-256).
 
-**Website (`/api/v1`, JWT):** `auth` (login/register/verify/reset/oauth-upsert) · `users` (+ device-links) · `me/reports` archive · `public` (showroom/inspectors/report-check) · `reports` (PPV access + download) · `payments` (Stripe Checkout/PPV/gold) + `/webhooks/stripe` · `listings` (report-claimed **and** `POST /listings/manual` — a seller-declared listing with no inspection, its own photo gallery, badged `verified:false` in the showroom) · `vin-history` (paid provenance check: free `GET /:vin/preview` with counts only, `POST /:vin/unlock`, `me/vin-checks`) · `orders` (quote/create/transition/contract) + `offers` + `geo` matching · `inspector` (profile, Stripe Connect onboarding, earnings) · `kyc` · `legal-templates` + per-order contracts · `notifications` (+ preferences) · `settings/public` · `admin/*` (users, orders, listings, settings, legal, finance + DAC7 CSV, dashboard, audit, KYC queue). **Swagger at `/docs` is the authoritative endpoint reference.**
+**Website (`/api/v1`, JWT):** `auth` (login/register/verify/reset/oauth-upsert) · `users` (+ device-links) · `me/reports` archive · `public` (showroom/inspectors/report-check) · `reports` (PPV access + download) · `payments` (Stripe Checkout/PPV/gold) + `/webhooks/stripe` · `listings` (report-claimed **and** `POST /listings/manual` — a seller-declared listing with no inspection, its own photo gallery, badged `verified:false` in the showroom) · `vin-history` (paid provenance check: free `GET /:vin/preview` with counts only — a count is `null` when the provider does not publish it, which is **not** `0` — `POST /:vin/unlock`, `me/vin-checks` + `GET /me/vin-checks/:id/download?format=pdf|json`, a rendered de/en/ru PDF report written at fulfilment and lazily on first download) · `orders` (quote/create/transition/contract) + `offers` + `geo` matching · `inspector` (profile, Stripe Connect onboarding, earnings) · `kyc` (**multipart document upload** — `POST /kyc/applications/:id/documents/upload`; there is deliberately no presigned variant: the KYC bucket has no CORS and must not get any, so the bytes pass through the API, which checks the multipart part's content type against the file's magic bytes, keeps PDFs verbatim and compresses images) · `legal-templates` + per-order contracts · `notifications` (+ preferences) · `settings/public` · `admin/*` (users, orders, listings, settings, legal, finance + DAC7 CSV, dashboard, audit, KYC queue). **Swagger at `/docs` is the authoritative endpoint reference.**
 
 ## Cross-cutting conventions
 
 - **FREE tier is unlimited.** `DeviceQuota` still records `freeReportsUsed` / `freeReportsLimit` (historical counters) and, more importantly, `isPro`; `GET /quota` exposes `freeLimitEnforced` so a client can tell a counter from a paywall.
 - **Money is integer cents** end to end; tariffs/fees live in the `PlatformSetting` table (read via `SettingsService` — never hardcoded).
 - **Order lifecycle** flows through a single state machine (`src/orders/order-state-machine.ts`); refunds/transfers/payouts fire only from legal transitions; the contract is auto-rendered on `ASSIGNED`.
-- **Stripe** runs in **mock mode** when no key is set or `NODE_ENV==='test'`; the webhook needs the raw body and records its idempotency row only after successful handling.
+- **Order payments are authorized on creation and captured when an inspector accepts.** If nobody accepts inside `orderSearchWindowMinutes` (six hours), a cron releases the hold and cancels — nothing was ever charged, so no `Refund` row is written. Money state lives on `Payment` (`pending → authorized → succeeded`, or `cancelled`), not in `OrderStatus`: `PAID` has always meant "the customer's money is committed", and whether it is held or taken is a payment fact. `GET /orders/:id` carries optional `payment` / `search` / `reportRequirement` blocks so the website can render the difference without depending on deploy order.
+- **A report may only close an order if its completeness score reaches `minReportQualityScore`** (PlatformSetting, 90). Zero disables the gate; a missing score is a distinct refusal, because that means an old mobile build rather than poor work.
+- **Orders authorize first and capture at acceptance** (the ride-hailing model). Creating an order places a **hold** (`capture_method: 'manual'`); `payment_intent.amount_capturable_updated` starts a search window (`orderSearchWindowMinutes`, 6 h) and dispatches; the funds are taken only when an inspector accepts, so an order is never `ASSIGNED` with uncaptured money. Nobody accepts → a cron releases the hold and cancels. Cancelling before acceptance therefore answers `refundCents: 0` + `refundMode: "authorization_released"` and writes **no** `Refund` row — the money never left the customer. **Stripe must be subscribed to `payment_intent.amount_capturable_updated`, `.canceled` and `.payment_failed`.**
+- **An order can only be closed with a complete report.** `minReportQualityScore` (PlatformSetting, 90) gates both `POST /orders/:id/report` and `POST /reports` with an `orderId`; `0` turns the gate off from the admin panel. A missing score is `report_quality_unknown` (update the app), a low one `report_quality_too_low` (carrying both numbers).
+- **Stripe** runs in **mock mode** when no key is set or `NODE_ENV==='test'`; the webhook needs the raw body and **claims** its idempotency row before handling, marking it processed afterwards (a failure deletes the claim, so Stripe's retry still works, and two concurrent deliveries of one event run the handler once).
+- **Money that fails becomes a task, not an exception.** Refunds and payouts both park a row with a retry schedule, a cron drains them, and the admin finance area lists both queues (`/api/v1/admin/finance/payouts|refunds`). Cancelling an order that was never charged is a no-op, not an error; refunding a purchase revokes what it bought.
 - **PostGIS geography** columns are Prisma `Unsupported` → all geo I/O is parameterized raw SQL.
 - **The reference catalog is served in 30 languages.** Four are authored by hand in `catalog.data.ts`; the other 26 are machine-translated sidecars under `src/catalog/i18n/`, merged at boot and at export. Because every label has a client-side fallback chain, a locale that merged nothing would render another language silently — so completeness is asserted, not assumed.
+- **Showroom images have permanent URLs when — and only when — a second, deliberately PUBLIC R2 bucket is configured.** Publicity in R2 is a property of the bucket, so a "public prefix" of the reports bucket cannot exist and would publish the paid PDFs; `R2_PUBLIC_URL` is retired and fails a production boot. Each `ListingPhoto` records which bucket holds it, and a report-backed listing's showroom photos are *mirrored* into the public bucket under a deterministic key (`Listing.publicPhotosMirroredAt`). With `R2_PUBLIC_*` unset nothing changes: photos stay on 15-minute signed URLs. Backfill with `npx ts-node scripts/migrate-listing-photos-public.ts --dry-run` (it deletes nothing from the reports bucket).
 - **Notification channels** default to a dev-outbox (logs) until provider env keys are set; the in-app channel is always live. The scheduler is disabled when `NODE_ENV==='test'` or `SCHEDULER_ENABLED='false'`.
 
 ## Project layout
@@ -88,12 +94,16 @@ src/
   admin/    notifications/   scheduler/   worker/   # admin panel, notifications, cron, scale-out entrypoint
   health/   main.ts                                  # health probe + bootstrap (helmet, raw-body webhook, Swagger)
 prisma/   schema.prisma · migrations · seed.ts
-test/     *.e2e-spec.ts (22 suites) + fixtures + helpers
+test/     *.e2e-spec.ts (25 suites) + fixtures + helpers
 scripts/  verify-deployed.mjs · generate-api-md.js
 ```
 
 ## Deploy & operations
 
 Render auto-deploys on push to `main` and runs `prisma migrate deploy` on start. Environment is validated by Joi at boot (a missing/weak `JWT_SECRET` or missing R2 creds fail the boot in production). The env var matrix lives in [.env.example](./.env.example); provider/credential setup and the prioritized go-live items are in [SECURITY.md](./SECURITY.md) and the development report under `../docs/reports/`.
+
+**A boot-time self-check runs after Joi and refuses to start on a silently-wrong environment**: a BOM or stray quoting in a secret, a KYC bucket that equals the reports bucket, a CORS list with no https origin, `R2_PUBLIC_URL` still set. It exists because four of the nine blocking defects in the 2026-08-08 audit were environment values and not one of them failed a build, a test or `/health` — a BOM in the Mapbox token made every geocode 401, so the order form told people their valid address did not exist. Values are never printed, only `MISSING` / `set (len 64)` / `has BOM`. A third party being briefly unreachable is deliberately *not* fatal. Read the result at `GET /health/startup`; `/health` itself is unchanged, because it is Render's `healthCheckPath` and a Mapbox outage must not pull the service out of rotation. Escapes, both logged loudly: `STARTUP_CHECK_STRICT=false`, `ALLOW_SHARED_KYC_BUCKET=true`.
+
+**Deploy order matters twice.** Set `R2_KYC_*` on Render *before* the self-check ships, or the boot fails. Subscribe the Stripe webhook to `payment_intent.amount_capturable_updated`, `.canceled` and `.payment_failed` *before* manual capture ships, or every order authorizes the customer's card and then sits in `CREATED` — under manual capture `payment_intent.succeeded` fires at capture, not at payment. The reconciler is insurance against a lost webhook, not a substitute for the subscription. Full sequence with verification commands: `../docs/reports/2026-08-09_production-config-runbook.md`.
 
 > The older `docs/{API,ARCHITECTURE,DEPLOY,DEV_REPORT}.md` files describe the original **mobile MVP** only. For the website, treat Swagger (`/docs`), this README, and the `../docs/reports/` development report as current.
