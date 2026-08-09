@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import { PhotoProcessingService } from './photo-processing.service';
 
 const fixture = (name: string): Buffer =>
-  readFileSync(join(__dirname, '..', '..', 'test', 'fixtures', name));
+  readFileSync(join(__dirname, '..', '..', '..', 'test', 'fixtures', name));
 
 describe('PhotoProcessingService', () => {
   let service: PhotoProcessingService;

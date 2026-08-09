@@ -12,7 +12,31 @@ export interface AppConfig {
     accessKeyId: string;
     secretAccessKey: string;
     bucket: string;
+    /**
+     * DEPRECATED and fatal in production — see `envValidationSchema`.
+     *
+     * This is a GLOBAL short-circuit inside `createPresignedDownloadUrl`: set it
+     * and every private object in the reports bucket, paid inspection PDFs
+     * included, resolves to an unsigned URL. Permanent listing photos are served
+     * from a separate PUBLIC bucket instead (`r2Public`).
+     */
     publicUrl?: string;
+  };
+  /**
+   * Dedicated PUBLIC bucket for showroom listing photos, with its own scoped
+   * token and a custom domain in front of it.
+   *
+   * A separate bucket rather than a public prefix, because publicity in R2 is a
+   * property of the bucket: there is no way to expose `listings/` without
+   * exposing the paid report PDFs sitting next to it. Blank => the code stays
+   * dark and photos keep being served through signed URLs, exactly as before.
+   */
+  r2Public: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    bucket: string;
+    /** Public base URL of that bucket, e.g. `https://img.carsalepro.de`. */
+    baseUrl: string;
   };
   quota: {
     freeReportsLimit: number;
@@ -41,6 +65,17 @@ export interface AppConfig {
   vinHistory: {
     provider: string;
     apiKey: string;
+    /**
+     * Lets the MOCK provider sell in production. Off by default, because
+     * charging for generated data without meaning to is the worst possible
+     * failure here.
+     *
+     * A separate flag rather than flipping `MockVinHistoryProvider.configured`,
+     * so `synthetic: true` keeps riding on every payload, DTO, page and PDF —
+     * the buyer is told what they bought in all four places whether or not this
+     * is on.
+     */
+    allowSyntheticSale: boolean;
   };
   iap: {
     mode: 'client-trust' | 'server';
@@ -93,6 +128,19 @@ export interface AppConfig {
     secretAccessKey: string;
     bucket: string;
   };
+  /**
+   * Boot-time self-check (`src/health/startup-check.service.ts`).
+   *
+   * `strict` false downgrades every fatal finding to an error log — the
+   * emergency exit when a check is wrong and production must come up anyway.
+   * `allowSharedKycBucket` acknowledges, explicitly, that identity documents are
+   * sharing the reports bucket.
+   */
+  startupCheck: {
+    strict: boolean;
+    allowSharedKycBucket: boolean;
+    internalKey: string;
+  };
   stripe: {
     secretKey: string;
     publishableKey: string;
@@ -132,6 +180,12 @@ export default (): AppConfig => ({
     bucket: process.env.R2_BUCKET ?? 'carsalepro-reports',
     publicUrl: process.env.R2_PUBLIC_URL || undefined,
   },
+  r2Public: {
+    accessKeyId: process.env.R2_PUBLIC_ACCESS_KEY_ID ?? '',
+    secretAccessKey: process.env.R2_PUBLIC_SECRET_ACCESS_KEY ?? '',
+    bucket: process.env.R2_PUBLIC_BUCKET ?? '',
+    baseUrl: (process.env.R2_PUBLIC_BASE_URL ?? '').replace(/\/+$/, ''),
+  },
   quota: {
     freeReportsLimit: parseInt(process.env.FREE_REPORTS_LIMIT ?? '3', 10),
     enforceFreeLimit: (process.env.ENFORCE_FREE_REPORT_LIMIT ?? 'false') === 'true',
@@ -144,6 +198,7 @@ export default (): AppConfig => ({
   vinHistory: {
     provider: process.env.VIN_HISTORY_PROVIDER ?? 'mock',
     apiKey: process.env.VIN_HISTORY_API_KEY ?? '',
+    allowSyntheticSale: (process.env.VIN_HISTORY_ALLOW_SYNTHETIC_SALE ?? 'false') === 'true',
   },
   iap: {
     mode: (process.env.IAP_VALIDATION_MODE as 'client-trust' | 'server') || 'client-trust',
@@ -192,6 +247,11 @@ export default (): AppConfig => ({
     accessKeyId: process.env.R2_KYC_ACCESS_KEY_ID ?? '',
     secretAccessKey: process.env.R2_KYC_SECRET_ACCESS_KEY ?? '',
     bucket: process.env.R2_KYC_BUCKET ?? '',
+  },
+  startupCheck: {
+    strict: (process.env.STARTUP_CHECK_STRICT ?? 'true') === 'true',
+    allowSharedKycBucket: (process.env.ALLOW_SHARED_KYC_BUCKET ?? 'false') === 'true',
+    internalKey: process.env.INTERNAL_API_KEY ?? '',
   },
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY ?? '',

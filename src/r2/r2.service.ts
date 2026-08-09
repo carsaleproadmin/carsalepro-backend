@@ -13,6 +13,20 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { AppConfig } from '../config/configuration';
 
+/**
+ * RFC 6266 `Content-Disposition`, with the ASCII fallback AND the UTF-8 form.
+ *
+ * A VIN or a locale can be pure ASCII, but the filename passes through a signed
+ * URL query parameter, and a stray quote or non-Latin character in the ASCII
+ * form truncates the header at the wrong place — the browser then saves the file
+ * under a mangled name, or under the key. Emitting both forms is what the RFC
+ * prescribes and costs nothing.
+ */
+function contentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
 @Injectable()
 export class R2Service implements OnModuleInit {
   private readonly logger = new Logger(R2Service.name);
@@ -33,6 +47,19 @@ export class R2Service implements OnModuleInit {
   private kycClient?: S3Client;
   private kycBucket!: string;
   private kycDedicated = false;
+
+  /**
+   * Third client, for the dedicated PUBLIC bucket that serves showroom listing
+   * photos as permanent URLs.
+   *
+   * Public in R2 is a property of the BUCKET, so this cannot be a prefix of the
+   * reports bucket — that would publish the paid inspection PDFs sitting beside
+   * it. Unconfigured is the normal state in dev and CI: every accessor answers
+   * false/undefined and callers fall back to signed URLs.
+   */
+  private publicClient?: S3Client;
+  private publicBucket = '';
+  private publicBaseUrl = '';
 
   constructor(@Inject(ConfigService) private readonly config: ConfigService<AppConfig, true>) {}
 
@@ -67,6 +94,49 @@ export class R2Service implements OnModuleInit {
     this.logger.log(`R2 client ready (bucket=${this.bucket})`);
 
     this.initKycClient();
+    this.initPublicClient();
+  }
+
+  /**
+   * Wire the public-bucket client, or leave it off.
+   *
+   * Off is a supported, silent state — unlike the KYC fallback, nothing is
+   * degraded by its absence: listing photos keep being served through signed
+   * URLs exactly as they were. That is what lets this whole feature ship dark
+   * and be switched on per environment by setting four variables.
+   */
+  private initPublicClient(): void {
+    const pub = this.config.get('r2Public', { infer: true });
+    const r2 = this.config.get('r2', { infer: true });
+
+    if (!pub.accessKeyId || !pub.secretAccessKey || !pub.bucket || !pub.baseUrl) {
+      this.logger.log(
+        'R2_PUBLIC_* not configured — listing photos are served through signed URLs',
+      );
+      return;
+    }
+    if (pub.bucket === this.bucket || pub.bucket === this.kycBucket) {
+      // Refusing here is the whole point of the separation. A misconfiguration
+      // that pointed the public bucket at the reports bucket would publish every
+      // paid PDF, and nothing downstream would notice.
+      this.logger.error(
+        `R2_PUBLIC_BUCKET (${pub.bucket}) must not be the reports or KYC bucket — ` +
+          'public URLs stay disabled',
+      );
+      return;
+    }
+
+    this.publicClient = new S3Client({
+      region: 'auto',
+      endpoint: `https://${r2.accountId}.r2.cloudflarestorage.com`,
+      credentials: {
+        accessKeyId: pub.accessKeyId,
+        secretAccessKey: pub.secretAccessKey,
+      },
+    });
+    this.publicBucket = pub.bucket;
+    this.publicBaseUrl = pub.baseUrl;
+    this.logger.log(`R2 public client ready (bucket=${this.publicBucket} at ${this.publicBaseUrl})`);
   }
 
   /**
@@ -183,12 +253,38 @@ export class R2Service implements OnModuleInit {
   async createPrivateSignedUrl(
     key: string,
     ttlSeconds?: number,
+    options?: { filename?: string; contentType?: string },
   ): Promise<{ url: string; expiresAt: Date }> {
     const expiresIn = ttlSeconds ?? this.signedUrlTtl;
-    const cmd = new GetObjectCommand({ Bucket: this.bucket, Key: key });
+    const cmd = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      // Without this the browser saves the object under its KEY — a cuid and a
+      // locale suffix. Someone who paid for a vehicle history should get
+      // `carsalepro-vin-history-<VIN>.pdf` in their downloads folder.
+      ...(options?.filename
+        ? { ResponseContentDisposition: contentDisposition(options.filename) }
+        : {}),
+      ...(options?.contentType ? { ResponseContentType: options.contentType } : {}),
+    });
     const url = await getSignedUrl(this.requireClient(), cmd, { expiresIn });
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
     return { url, expiresAt };
+  }
+
+  /** Read an object back out of the main bucket (used by the photo mirror). */
+  async getObjectBytes(key: string): Promise<Buffer | null> {
+    try {
+      const res = await this.requireClient().send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      const body = res.Body as { transformToByteArray?: () => Promise<Uint8Array> } | undefined;
+      if (!body?.transformToByteArray) return null;
+      return Buffer.from(await body.transformToByteArray());
+    } catch (err: unknown) {
+      if (this.isNotFound(err)) return null;
+      throw err;
+    }
   }
 
   async objectExists(key: string): Promise<boolean> {
@@ -262,7 +358,55 @@ export class R2Service implements OnModuleInit {
     return { client: this.requireClient(), bucket: storedBucket };
   }
 
-  /** Presign an upload for a KYC document into the KYC bucket. */
+  /** `HeadBucket` against the KYC bucket — used by the boot-time self-check. */
+  async kycHeadBucket(): Promise<void> {
+    await this.requireKycClient().send(new HeadBucketCommand({ Bucket: this.kycBucket }));
+  }
+
+  /**
+   * Write a KYC document straight into the KYC bucket.
+   *
+   * This exists because `putObject` hardcodes the REPORTS bucket, so using it
+   * for an identity document would silently reproduce the exact defect the
+   * dedicated bucket was created to fix — and the call site would look correct.
+   * Returns what belongs in `KycDocument.bucket`: null for the legacy shared
+   * bucket, the bucket name once the dedicated one is live.
+   */
+  async kycPutObject(
+    key: string,
+    body: Uint8Array | Buffer,
+    contentType: string,
+  ): Promise<string | null> {
+    await this.requireKycClient().send(
+      new PutObjectCommand({
+        Bucket: this.kycBucket,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+      }),
+    );
+    return this.kycDedicated ? this.kycBucket : null;
+  }
+
+  /**
+   * Presign an upload for a KYC document into the KYC bucket.
+   *
+   * ⚠ THIS HAS NO CALLER, AND THAT IS THE POINT — DO NOT DELETE IT AS DEAD CODE,
+   * AND DO NOT WIRE IT BACK UP TO A BROWSER.
+   *
+   * It is kept as a PRIMITIVE, symmetrical with `kycSignedDownloadUrl`, for a
+   * server-to-server hand-off that does not exist yet (an external verification
+   * provider pushing a document, a migration job). The one caller it used to
+   * have was the inspector KYC wizard, which was handed the URL and PUT the file
+   * from the browser: the KYC bucket has no CORS rules, so that request never
+   * left the browser and no inspector could ever be verified.
+   *
+   * Adding CORS to the bucket is NOT the fix and must never be the fix — it
+   * leaves a browser-reachable write path into the identity-document store
+   * permanently open. Uploads go through
+   * `POST /api/v1/kyc/applications/:id/documents/upload`, which keeps the
+   * credentials server-side and validates the bytes.
+   */
   async kycPresignedUploadUrl(
     key: string,
     contentType = 'application/octet-stream',
@@ -325,6 +469,75 @@ export class R2Service implements OnModuleInit {
       deleted += await this.deletePrefixIn(this.client, this.bucket, prefix);
     }
     return deleted;
+  }
+
+  // ============================================================
+  // Public-bucket surface (permanent showroom image URLs)
+  //
+  // Separate methods for the same reason the KYC ones are separate: a bucket
+  // argument with a default is how a private object ends up published.
+  // ============================================================
+
+  /** True when all four `R2_PUBLIC_*` vars are set and the bucket is distinct. */
+  isPublicBucketConfigured(): boolean {
+    return this.publicClient !== undefined;
+  }
+
+  get publicBucketName(): string {
+    return this.publicBucket;
+  }
+
+  /** The permanent, CDN-cacheable URL of an object in the public bucket. */
+  publicObjectUrl(key: string): string {
+    return `${this.publicBaseUrl}/${key}`;
+  }
+
+  /** `HeadBucket` against the public bucket — used by the boot-time self-check. */
+  async publicHeadBucket(): Promise<void> {
+    await this.requirePublicClient().send(new HeadBucketCommand({ Bucket: this.publicBucket }));
+  }
+
+  /**
+   * Write an object to the public bucket. Returns the bucket name, which is what
+   * `ListingPhoto.bucket` stores.
+   *
+   * `Cache-Control: immutable` for a year is safe because keys are derived from
+   * a UUID (seller uploads) or from a SHA-256 of the source key (mirrored report
+   * photos): the bytes behind a given key never change. A replaced photo is a
+   * new key and a new row.
+   */
+  async publicPutObject(
+    key: string,
+    body: Uint8Array | Buffer,
+    contentType = 'image/jpeg',
+  ): Promise<string> {
+    await this.requirePublicClient().send(
+      new PutObjectCommand({
+        Bucket: this.publicBucket,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+        CacheControl: 'public, max-age=31536000, immutable',
+      }),
+    );
+    return this.publicBucket;
+  }
+
+  async publicDeleteObject(key: string): Promise<void> {
+    try {
+      await this.requirePublicClient().send(
+        new DeleteObjectCommand({ Bucket: this.publicBucket, Key: key }),
+      );
+    } catch (err: unknown) {
+      if (!this.isNotFound(err)) throw err;
+    }
+  }
+
+  private requirePublicClient(): S3Client {
+    if (!this.publicClient) {
+      throw new Error('R2 public bucket not configured');
+    }
+    return this.publicClient;
   }
 
   // ============================================================
