@@ -10,12 +10,12 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { KycApplication, KycDocument, KycStatus, Prisma } from '@prisma/client';
+import { PhotoProcessingService } from '../common/photo/photo-processing.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import {
   ACTIVE_KYC_STATUSES,
-  ALLOWED_KYC_CONTENT_TYPE,
   KYC_TRANSITIONS,
   KycDocumentKind,
   REQUIRED_KYC_KINDS,
@@ -27,9 +27,10 @@ import {
 } from './dto/admin-kyc-response.dto';
 import {
   KycApplicationDto,
-  PresignDocumentResultDto,
+  KycDocumentUploadResultDto,
   SubmitKycResultDto,
 } from './dto/kyc-response.dto';
+import { KycUploadPart, resolveKycObject } from './kyc-upload';
 
 type KycApplicationWithDocs = KycApplication & { documents: KycDocument[] };
 
@@ -44,6 +45,7 @@ export class KycService {
     private readonly prisma: PrismaService,
     private readonly r2: R2Service,
     private readonly notifications: NotificationsService,
+    private readonly photoProcessing: PhotoProcessingService,
   ) {}
 
   // ============================================================
@@ -73,16 +75,42 @@ export class KycService {
   }
 
   /**
-   * Reserve a presigned upload URL for one document kind and upsert its
-   * KycDocument row (one row per kind — re-uploading a kind replaces the s3Key).
-   * The application must be DRAFT and owned by the caller.
+   * Store ONE document for a DRAFT application the caller owns.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * WHY THE BYTES GO THROUGH THE API AND NOT STRAIGHT TO R2
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * This replaces a presigned-PUT flow that could never work in production and
+   * must not be restored. The browser was handed a presigned URL for the
+   * private KYC bucket, and that bucket has no CORS configuration — so the PUT
+   * was refused by the browser before a byte left it, and no inspector could
+   * be verified, which meant no inspection order could ever complete.
+   *
+   * ADDING CORS TO THAT BUCKET IS NOT THE FIX. A CORS rule permitting PUT is a
+   * standing browser-reachable write path into the identity-document store; a
+   * leaked or logged presigned URL becomes an upload endpoint for anyone.
+   * Routing the bytes through the API keeps the KYC credentials server-side,
+   * lets the content be validated against its own bytes (`resolveKycObject`)
+   * instead of against a claim, and is what makes the object key, the content
+   * type and the row agree with each other.
+   *
+   * ORDER OF OPERATIONS IS PART OF THE CONTRACT:
+   * ownership → DRAFT → a file is present → storage configured → the file is
+   * what it says it is → write the object → upsert the row → delete whatever
+   * the upsert displaced.
+   *
+   * The row is written LAST, on purpose. The presign path wrote it FIRST, so a
+   * server with no R2 credentials still recorded a `KycDocument` pointing at an
+   * object that was never uploaded — an application could be submitted, and
+   * approved, with no documents behind it at all.
    */
-  async presignDocument(
+  async uploadDocument(
     userId: string,
     applicationId: string,
     kind: KycDocumentKind,
-    contentType?: string,
-  ): Promise<PresignDocumentResultDto> {
+    file: KycUploadPart,
+  ): Promise<KycDocumentUploadResultDto> {
     const application = await this.requireOwnedApplication(userId, applicationId);
     if (application.status !== KycStatus.DRAFT) {
       throw new BadRequestException({
@@ -93,56 +121,94 @@ export class KycService {
       });
     }
 
-    const resolvedContentType = contentType ?? 'application/octet-stream';
-    if (contentType && !ALLOWED_KYC_CONTENT_TYPE.test(contentType)) {
+    if (!file?.buffer || file.buffer.length === 0) {
       throw new BadRequestException({
         error: {
-          code: 'unsupported_content_type',
-          message: 'Only image/* or application/pdf uploads are allowed',
+          code: 'file_required',
+          message: 'Send the document in the `file` multipart field',
         },
       });
     }
 
-    const s3Key = `kyc/${userId}/${applicationId}/${kind}-${randomUUID()}.bin`;
-    // H2: record WHICH bucket this object goes to. NULL = the legacy shared
-    // reports bucket (dev fallback / pre-migration rows), a value = the
-    // dedicated private KYC bucket. Reads resolve the client from this field.
-    const bucket = this.r2.isKycDedicated() ? this.r2.kycBucketName : null;
-
-    // Upsert the document row first so the s3Key is recorded regardless of R2
-    // state. Re-uploading the same kind replaces the prior row (and its key).
-    const existing = await this.prisma.kycDocument.findFirst({
-      where: { applicationId, kind },
-    });
-    if (existing) {
-      await this.prisma.kycDocument.update({
-        where: { id: existing.id },
-        data: { s3Key, bucket, uploadedAt: new Date(), purgedAt: null },
-      });
-    } else {
-      await this.prisma.kycDocument.create({
-        data: { applicationId, kind, s3Key, bucket },
-      });
-    }
-
     if (!this.r2.isKycConfigured()) {
-      // Storage not configured — the row is recorded but no upload URL can be
-      // minted. Mirror the reports suite contract (503).
       throw new HttpException(
-        'Cloud storage is not configured on this server',
+        {
+          error: {
+            code: 'storage_unavailable',
+            message: 'Cloud storage is not configured on this server',
+          },
+        },
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
 
-    const { url, expiresAt } = await this.r2.kycPresignedUploadUrl(s3Key, resolvedContentType);
+    const plan = resolveKycObject(file);
+
+    // PDFs are stored verbatim — they are the Gewerbeschein and the insurance
+    // certificate, vector text that must stay legible and must not be
+    // rasterised. Images are compressed by the SHARED PhotoProcessingService
+    // (one instance, one sharp semaphore).
+    //
+    // The settings deliberately differ from the report pipeline's. Those are
+    // tuned for car paint on a body panel; this is a photograph of an A4 sheet
+    // of small print. 2400 px keeps a registration number readable, q88 keeps
+    // the compression artefacts off the glyph edges, and 4:4:4 chroma matters
+    // most of all — 4:2:0 discards three quarters of the colour resolution,
+    // which is invisible on a wing and smears coloured stamp ink into mush.
+    const body = plan.compress
+      ? (
+          await this.photoProcessing.compress(file.buffer, {
+            maxEdgePx: 2400,
+            quality: 88,
+            chromaSubsampling: '4:4:4',
+          })
+        ).data
+      : file.buffer;
+
+    const s3Key = `kyc/${userId}/${applicationId}/${kind}-${randomUUID()}.${plan.extension}`;
+
+    // What this upload displaces, captured BEFORE the upsert: the old object is
+    // deleted only after the row stops pointing at it, so a failure between the
+    // two leaves an orphan in the bucket rather than a row pointing at nothing.
+    const previous = await this.prisma.kycDocument.findUnique({
+      where: { applicationId_kind: { applicationId, kind } },
+    });
+
+    // The write must name the KYC bucket. `putObject` hardcodes the REPORTS
+    // bucket, so using it here would put an identity document in the public
+    // store while the call site still read as correct.
+    const bucket = await this.r2.kycPutObject(s3Key, body, plan.storedContentType);
+
+    const row = await this.prisma.kycDocument.upsert({
+      where: { applicationId_kind: { applicationId, kind } },
+      create: { applicationId, kind, s3Key, bucket },
+      update: { s3Key, bucket, uploadedAt: new Date(), purgedAt: null },
+    });
+
+    if (previous && previous.s3Key !== s3Key) {
+      // Best effort: a superseded identity document must not linger, but a
+      // delete that fails must not fail the upload the user just completed.
+      // `purgeOldDocuments` is the backstop.
+      await this.r2.kycDeleteObject(previous.s3Key, previous.bucket).catch((err) => {
+        this.logger.warn(
+          `Failed to delete superseded KYC object ${previous.s3Key}: ${String(err)}`,
+        );
+      });
+    }
+
     this.logger.log(
-      `KYC presign app=${applicationId} kind=${kind} user=${this.mask(userId)}`,
+      `KYC upload app=${applicationId} kind=${kind} user=${this.mask(userId)} ` +
+        `${plan.sniffed} ${file.buffer.length} -> ${body.length} bytes` +
+        `${previous ? ' (replaced)' : ''}`,
     );
+
     return {
-      presignedUploadUrl: url,
-      s3Key,
       kind,
-      expiresAt: expiresAt.toISOString(),
+      uploadedAt: row.uploadedAt.toISOString(),
+      contentType: plan.storedContentType,
+      sizeBytes: body.length,
+      sourceBytes: file.buffer.length,
+      replaced: previous !== null,
     };
   }
 

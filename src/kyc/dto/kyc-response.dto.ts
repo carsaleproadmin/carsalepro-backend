@@ -35,22 +35,38 @@ export class KycApplicationDto {
   createdAt!: string;
 }
 
-/** Response of POST /applications/:id/documents. */
-export class PresignDocumentResultDto {
-  @ApiPropertyOptional({
-    example: 'https://<account>.r2.cloudflarestorage.com/kyc/...',
-    description: 'Presigned PUT URL. Absent (and a 503 is returned) when R2 is unconfigured.',
-  })
-  presignedUploadUrl?: string;
-
-  @ApiProperty({ example: 'kyc/<userId>/<applicationId>/id_front-<uuid>.bin' })
-  s3Key!: string;
-
+/**
+ * Response of POST /applications/:id/documents/upload.
+ *
+ * Deliberately says nothing about WHERE the object went. The s3Key and the
+ * bucket are server-side facts; the presign DTO this replaces had to leak the
+ * key (the browser needed it) and that key was the one piece of the KYC store
+ * a client should never hold.
+ */
+export class KycDocumentUploadResultDto {
   @ApiProperty({ enum: KYC_DOCUMENT_KINDS, example: 'id_front' })
   kind!: string;
 
-  @ApiPropertyOptional({ example: '2026-06-14T10:15:00.000Z' })
-  expiresAt?: string;
+  @ApiProperty({ example: '2026-06-14T10:00:00.000Z' })
+  uploadedAt!: string;
+
+  @ApiProperty({
+    example: 'image/jpeg',
+    description: 'What the object was STORED as. Images are re-encoded to JPEG; PDFs are kept.',
+  })
+  contentType!: string;
+
+  @ApiProperty({ example: 412_338, description: 'Bytes stored, after compression.' })
+  sizeBytes!: number;
+
+  @ApiProperty({ example: 3_918_221, description: 'Bytes received from the client.' })
+  sourceBytes!: number;
+
+  @ApiProperty({
+    example: false,
+    description: 'True when this upload replaced an earlier document of the same kind.',
+  })
+  replaced!: boolean;
 }
 
 /** Response of POST /applications/:id/submit. */
