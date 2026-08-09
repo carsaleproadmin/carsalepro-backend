@@ -83,7 +83,7 @@ export const envValidationSchema = Joi.object({
 
   // Notifications — email goes through Resend; blank key => dev outbox (logs).
   RESEND_API_KEY: Joi.string().allow('').default(''),
-  EMAIL_FROM: Joi.string().allow('').default('no-reply@carsalepro.com'),
+  EMAIL_FROM: Joi.string().allow('').default('no-reply@carsalepro.de'),
   EMAIL_REPLY_TO: Joi.string().allow('').default(''),
   TWILIO_ACCOUNT_SID: Joi.string().allow('').default(''),
   TWILIO_AUTH_TOKEN: Joi.string().allow('').default(''),

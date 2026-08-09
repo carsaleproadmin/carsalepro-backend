@@ -19,7 +19,7 @@ const mockSend = jest.fn();
 
 const MESSAGE: RenderedTemplate = {
   subject: 'Bestätige deine E-Mail-Adresse',
-  body: 'Hallo <Kunde>,\n\nbitte bestätige: https://carsalepro.com/verify?t=abc',
+  body: 'Hallo <Kunde>,\n\nbitte bestätige: https://carsalepro.de/verify?t=abc',
   short: 'Bitte bestätigen',
 };
 
@@ -31,7 +31,7 @@ function makeProvider(opts: { key?: string; replyTo?: string } = {}): EmailProvi
       if (section !== 'email') throw new Error(`unexpected config section ${section}`);
       return {
         resendApiKey: opts.key ?? '',
-        from: 'no-reply@carsalepro.com',
+        from: 'no-reply@carsalepro.de',
         replyTo: opts.replyTo,
       };
     }),
@@ -73,23 +73,23 @@ describe('EmailProviderImpl (Resend)', () => {
   it('sends through Resend with both text and escaped html when a key is configured', async () => {
     process.env.NODE_ENV = 'development';
     mockSend.mockResolvedValue({ data: { id: 're_123' }, error: null });
-    const provider = makeProvider({ key: 're_live_key', replyTo: 'support@carsalepro.com' });
+    const provider = makeProvider({ key: 're_live_key', replyTo: 'support@carsalepro.de' });
 
     expect(provider.enabled).toBe(true);
     await expect(provider.send(TARGET, MESSAGE)).resolves.toBe(true);
 
     expect(mockSend).toHaveBeenCalledTimes(1);
     const payload = mockSend.mock.calls[0][0] as Record<string, unknown>;
-    expect(payload.from).toBe('no-reply@carsalepro.com');
+    expect(payload.from).toBe('no-reply@carsalepro.de');
     expect(payload.to).toEqual([TARGET.address]);
     expect(payload.subject).toBe(MESSAGE.subject);
     expect(payload.text).toBe(MESSAGE.body);
-    expect(payload.replyTo).toBe('support@carsalepro.com');
+    expect(payload.replyTo).toBe('support@carsalepro.de');
     // The html part must exist and must escape the payload, not inject it raw.
     const html = payload.html as string;
     expect(html).toContain('&lt;Kunde&gt;');
     expect(html).not.toContain('<Kunde>');
-    expect(html).toContain('href="https://carsalepro.com/verify?t=abc"');
+    expect(html).toContain('href="https://carsalepro.de/verify?t=abc"');
   });
 
   it('omits replyTo when EMAIL_REPLY_TO is unset', async () => {
