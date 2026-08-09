@@ -1,5 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import PDFDocument from 'pdfkit';
 import {
   InlineSpan,
@@ -7,6 +5,7 @@ import {
   parseMarkdownBlocks,
   spansToText,
 } from './markdown-blocks';
+import { pdfFontsAvailable, registerPdfFonts } from './pdf-fonts';
 
 /**
  * Render a contract to PDF with pdfkit.
@@ -19,12 +18,9 @@ import {
  * Noto Sans is embedded rather than using pdfkit's built-in Helvetica, which is
  * WinAnsi-encoded. The contract interpolates customer and inspector names, and
  * the platform serves a Russian locale — a Cyrillic name must not silently turn
- * into mojibake in a legal document.
+ * into mojibake in a legal document. The fonts are shared with the VIN history
+ * renderer through `pdf-fonts.ts`.
  */
-
-const FONT_DIR = join(__dirname, 'assets');
-const REGULAR = join(FONT_DIR, 'NotoSans-Regular.ttf');
-const BOLD = join(FONT_DIR, 'NotoSans-Bold.ttf');
 
 const PAGE_MARGIN = 56;
 const BODY_SIZE = 10.5;
@@ -40,9 +36,14 @@ interface RenderOptions {
   renderedAt: Date;
 }
 
-/** True when the embedded Unicode fonts shipped with the build. */
+/**
+ * True when the embedded Unicode fonts shipped with the build.
+ *
+ * Kept as a named export because the contract service and its spec both assert
+ * on it; the implementation now lives with the fonts themselves.
+ */
 export function contractFontsAvailable(): boolean {
-  return existsSync(REGULAR) && existsSync(BOLD);
+  return pdfFontsAvailable();
 }
 
 export function renderContractPdf(markdown: string, opts: RenderOptions): Promise<Buffer> {
@@ -65,6 +66,11 @@ export function renderContractPdf(markdown: string, opts: RenderOptions): Promis
           CreationDate: opts.renderedAt,
         },
         autoFirstPage: true,
+        // Load-bearing, not a tuning knob. Without it pdfkit writes each page
+        // out the moment the next one starts, `bufferedPageRange()` below then
+        // reports only the page still in memory, and every multi-page contract
+        // ships with a footer on the LAST page alone, numbered "1 / 1".
+        bufferPages: true,
       });
 
       const chunks: Buffer[] = [];
@@ -72,21 +78,13 @@ export function renderContractPdf(markdown: string, opts: RenderOptions): Promis
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
 
-      // Fall back to the built-ins if the assets did not ship. Latin text still
-      // renders correctly; the caller logs the degradation.
-      const hasFonts = contractFontsAvailable();
-      const fontRegular = hasFonts ? 'NotoSans' : 'Helvetica';
-      const fontBold = hasFonts ? 'NotoSans-Bold' : 'Helvetica-Bold';
-      if (hasFonts) {
-        doc.registerFont('NotoSans', readFileSync(REGULAR));
-        doc.registerFont('NotoSans-Bold', readFileSync(BOLD));
-      }
+      const fonts = registerPdfFonts(doc);
 
-      drawHeader(doc, opts, fontRegular, fontBold);
+      drawHeader(doc, opts, fonts.regular, fonts.bold);
       for (const block of blocks) {
-        drawBlock(doc, block, fontRegular, fontBold);
+        drawBlock(doc, block, fonts.regular, fonts.bold);
       }
-      drawFooters(doc, opts, fontRegular);
+      drawFooters(doc, opts, fonts.regular);
 
       doc.end();
     } catch (err) {
@@ -182,7 +180,19 @@ function drawSpans(
   });
 }
 
-/** Page n/m plus the render timestamp, on every page. */
+/**
+ * Page n/m plus the render timestamp, on every page.
+ *
+ * `height` is not cosmetic. The footer sits BELOW the bottom margin, and any
+ * pdfkit `text` call that carries a `width` goes through the line wrapper,
+ * which opens a new page as soon as the cursor passes `page.maxY()` —
+ * `lineBreak: false` does not stop it. Every footer drawn was therefore
+ * appending a blank page to the document (and those pages got no footer of
+ * their own). Giving the wrapper an explicit height tells it this text is one
+ * line and it must not paginate.
+ */
+const FOOTER_LINE_HEIGHT = 12;
+
 function drawFooters(doc: PDFKit.PDFDocument, opts: RenderOptions, fontRegular: string): void {
   const range = doc.bufferedPageRange();
   const stamp = opts.renderedAt.toISOString().slice(0, 16).replace('T', ' ');
@@ -190,18 +200,19 @@ function drawFooters(doc: PDFKit.PDFDocument, opts: RenderOptions, fontRegular: 
   for (let i = range.start; i < range.start + range.count; i++) {
     doc.switchToPage(i);
     const y = doc.page.height - PAGE_MARGIN;
+    const width = doc.page.width - PAGE_MARGIN * 2;
     doc.font(fontRegular).fontSize(8).fillColor('#6b7380');
-    doc.text(
-      `${opts.orderNumber} · ${stamp} UTC`,
-      PAGE_MARGIN,
-      y,
-      { width: doc.page.width - PAGE_MARGIN * 2, align: 'left', lineBreak: false },
-    );
-    doc.text(
-      `${i - range.start + 1} / ${range.count}`,
-      PAGE_MARGIN,
-      y,
-      { width: doc.page.width - PAGE_MARGIN * 2, align: 'right', lineBreak: false },
-    );
+    doc.text(`${opts.orderNumber} · ${stamp} UTC`, PAGE_MARGIN, y, {
+      width,
+      height: FOOTER_LINE_HEIGHT,
+      align: 'left',
+      lineBreak: false,
+    });
+    doc.text(`${i - range.start + 1} / ${range.count}`, PAGE_MARGIN, y, {
+      width,
+      height: FOOTER_LINE_HEIGHT,
+      align: 'right',
+      lineBreak: false,
+    });
   }
 }

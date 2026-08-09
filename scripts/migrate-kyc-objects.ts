@@ -29,8 +29,6 @@
  *   --prefix=X  override the source prefix (default `kyc/`)
  *   --limit=N   stop after N source objects (useful for a first cautious pass)
  */
-import * as fs from 'fs';
-import * as path from 'path';
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
@@ -39,46 +37,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { PrismaClient } from '@prisma/client';
-
-// ------------------------------------------------------------------
-// env
-// ------------------------------------------------------------------
-
-/** Load `.env` the same way test/helpers/load-env.ts does — no extra dependency. */
-function loadEnv(): void {
-  const file = path.resolve(__dirname, '../.env');
-  if (!fs.existsSync(file)) return;
-  for (const raw of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq < 0) continue;
-    const key = line.slice(0, eq).trim();
-    const value = line
-      .slice(eq + 1)
-      .trim()
-      .replace(/^"|"$/g, '');
-    if (!(key in process.env)) process.env[key] = value;
-  }
-}
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    console.error(`FATAL: ${name} is not set. Aborting.`);
-    process.exit(1);
-  }
-  return value;
-}
-
-function flag(name: string): boolean {
-  return process.argv.includes(`--${name}`);
-}
-
-function option(name: string, fallback: string): string {
-  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
-  return hit ? hit.slice(name.length + 3) : fallback;
-}
+import { flag, loadEnv, option, requireEnv } from './lib/script-env';
 
 // ------------------------------------------------------------------
 

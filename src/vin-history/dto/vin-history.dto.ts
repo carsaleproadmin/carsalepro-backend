@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsString, Matches } from 'class-validator';
+import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
 
 /**
  * ISO 3779 VIN: 17 characters, and I/O/Q are excluded because they are
@@ -17,6 +17,21 @@ export class VinParamDto {
   vin!: string;
 }
 
+/** `pdf` is the document a buyer means by "download"; `json` is the raw payload. */
+export type VinCheckDownloadFormat = 'pdf' | 'json';
+
+export class VinCheckDownloadQueryDto {
+  @ApiPropertyOptional({
+    enum: ['pdf', 'json'],
+    default: 'pdf',
+    description: 'Defaults to the rendered PDF report. `json` returns the archived payload.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
+  @IsIn(['pdf', 'json'])
+  format?: VinCheckDownloadFormat;
+}
+
 /**
  * The FREE preview. Counts and booleans only.
  *
@@ -27,17 +42,34 @@ export class VinParamDto {
  * broadcast. `countriesCount` rather than the country list is the same rule:
  * knowing a car has lived in three countries is a teaser, knowing WHICH three
  * is the answer.
+ *
+ * **`null` is not `0`.** The five per-array counters are nullable because a
+ * provider may hold records it does not count for free. `0` says "we looked,
+ * there are none"; `null` says "we are not telling you before you pay". A
+ * client must render them differently — "0 accidents" is a claim about the car,
+ * and making it out of missing data is the worst thing this page could do.
  */
 export class VinHistoryPreviewSummaryDto {
   @ApiProperty({ example: 23 }) recordCount!: number;
   @ApiProperty({ example: 2 }) ownersCount!: number;
   @ApiProperty({ example: 2, description: 'How many countries — never which ones.' })
   countriesCount!: number;
-  @ApiProperty({ example: 14 }) mileageRecordCount!: number;
-  @ApiProperty({ example: 1 }) damageRecordCount!: number;
-  @ApiProperty({ example: 2 }) registrationCount!: number;
-  @ApiProperty({ example: 1 }) recallCount!: number;
-  @ApiProperty({ example: 5 }) inspectionCount!: number;
+
+  @ApiProperty({ example: 14, nullable: true, description: 'null = not published, NOT zero.' })
+  mileageRecordCount!: number | null;
+
+  @ApiProperty({ example: 1, nullable: true, description: 'null = not published, NOT zero.' })
+  damageRecordCount!: number | null;
+
+  @ApiProperty({ example: 2, nullable: true, description: 'null = not published, NOT zero.' })
+  registrationCount!: number | null;
+
+  @ApiProperty({ example: 1, nullable: true, description: 'null = not published, NOT zero.' })
+  recallCount!: number | null;
+
+  @ApiProperty({ example: 5, nullable: true, description: 'null = not published, NOT zero.' })
+  inspectionCount!: number | null;
+
   @ApiProperty({ example: true }) hasAccidentRecords!: boolean;
   @ApiProperty({ example: false }) hasSalvageOrTotalLoss!: boolean;
   @ApiProperty({ example: false }) hasOdometerRollback!: boolean;
@@ -114,6 +146,13 @@ export class VinCheckDetailDto extends VinCheckItemDto {
     nullable: true,
   })
   payload!: unknown;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Locale of the rendered PDF, or null when none has been rendered yet.',
+    example: 'de',
+  })
+  pdfLocale!: string | null;
 }
 
 export class VinCheckDownloadDto {
@@ -121,5 +160,16 @@ export class VinCheckDownloadDto {
   url!: string;
 
   @ApiProperty() expiresAt!: string;
-  @ApiProperty({ example: 'application/json' }) contentType!: string;
+
+  @ApiProperty({ example: 'application/pdf', enum: ['application/pdf', 'application/json'] })
+  contentType!: string;
+
+  @ApiProperty({ example: 'pdf', enum: ['pdf', 'json'] })
+  format!: VinCheckDownloadFormat;
+
+  @ApiProperty({
+    example: 'carsalepro-vin-history-WAUZZZ8V8MA012345.pdf',
+    description: 'What the browser will save the file as (RFC 6266 on the signed URL).',
+  })
+  filename!: string;
 }

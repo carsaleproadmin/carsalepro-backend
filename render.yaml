@@ -41,7 +41,25 @@ services:
         sync: false
       - key: R2_BUCKET
         value: carsalepro-reports
-      - key: R2_PUBLIC_URL
+      # R2_PUBLIC_URL is RETIRED and must not be re-added. It made every object
+      # in the reports bucket — paid inspection PDFs included — resolve to an
+      # unsigned URL. The boot now refuses to start if it is set in production.
+      # Public images come from their own bucket below.
+      - key: R2_PUBLIC_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: R2_PUBLIC_ACCESS_KEY_ID
+        sync: false
+      - key: R2_PUBLIC_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_KYC_BUCKET
+        sync: false
+      - key: R2_KYC_ACCESS_KEY_ID
+        sync: false
+      - key: R2_KYC_SECRET_ACCESS_KEY
+        sync: false
+      - key: VIN_HISTORY_ALLOW_SYNTHETIC_SALE
         sync: false
       - key: SENTRY_DSN
         sync: false

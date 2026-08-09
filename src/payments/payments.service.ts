@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
-import { OrderStatus, Prisma, Report, Role } from '@prisma/client';
+import { OrderStatus, Payment, Prisma, Report, Role } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
@@ -58,7 +58,11 @@ export class PaymentsService {
     const existingPurchase = await this.prisma.reportPurchase.findUnique({
       where: { userId_reportId: { userId, reportId: report.id } },
     });
-    if (existingPurchase) {
+    // A revoked purchase is NOT ownership. `@@unique([userId, reportId])` makes
+    // the row eternal, so treating its mere existence as "owned" meant a refund
+    // permanently locked that buyer out of that report: access denied, and no
+    // way to buy it again.
+    if (existingPurchase && !existingPurchase.revokedAt) {
       return { alreadyOwned: true };
     }
 
@@ -106,37 +110,92 @@ export class PaymentsService {
   }
 
   /**
-   * Process a Stripe webhook event. Idempotent: a StripeWebhookEvent row guards
-   * against replays. On `checkout.session.completed` for a PPV payment the
-   * Payment is marked succeeded and the ReportPurchase is created.
+   * How long a claim may sit before another delivery is allowed to steal it. A
+   * process that dies mid-handler would otherwise wedge the event for ever, and
+   * Stripe would keep redelivering something nothing is allowed to run.
+   */
+  private static readonly WEBHOOK_CLAIM_STALE_MS = 5 * 60_000;
+
+  /**
+   * Process a Stripe webhook event exactly once — claim, handle, complete.
+   *
+   * The dedupe row used to be written only AFTER successful handling. That makes
+   * a *replay* a no-op but does nothing about two deliveries of the SAME event
+   * arriving at once: both found no row, and both ran the handler. For a
+   * `payment_intent.succeeded` that is a double settlement; for a
+   * `transfer.created`, a payout confirmed twice.
+   *
+   * So the row is now inserted FIRST, as a claim. The loser of the race finds it
+   * and returns. On success the claim becomes `processed`; on an exception the
+   * claim is DELETED, so Stripe's own retry can pick the event up again exactly
+   * as before. Signature verification stays in the controller, ahead of all of
+   * this.
    */
   async handleWebhook(event: StripeEvent): Promise<void> {
-    const seen = await this.prisma.stripeWebhookEvent.findUnique({ where: { id: event.id } });
-    if (seen) {
-      this.logger.log(`Stripe event ${event.id} already processed — skipping`);
+    const claimed = await this.claimWebhookEvent(event);
+    if (!claimed) {
+      this.logger.log(`Stripe event ${event.id} is already claimed or processed — skipping`);
       return;
     }
 
-    // Process FIRST, record the dedupe row only AFTER handling succeeds. If
-    // processing throws, the event is NOT marked processed, so a Stripe retry
-    // will re-run it instead of being permanently dropped. Per-entity handlers
-    // below remain idempotent (e.g. reportPurchase/payout P2002 swallow), so a
-    // successful redelivery of an already-fulfilled event is still a no-op.
-    await this.processWebhook(event);
-
-    // Mark processed. A concurrent redelivery may race us here — swallow the
-    // unique-violation so the second insert is a harmless no-op.
     try {
-      await this.prisma.stripeWebhookEvent.create({ data: { id: event.id, type: event.type } });
+      await this.processWebhook(event);
     } catch (err) {
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002'
-      ) {
-        return;
-      }
+      // Release the claim so the redelivery is not swallowed by our own lock.
+      await this.prisma.stripeWebhookEvent
+        .deleteMany({ where: { id: event.id, status: 'claimed' } })
+        .catch(() => undefined);
       throw err;
     }
+
+    // Guarded on `claimed`, so a handler that overran the stale window cannot
+    // mark the event processed after another delivery legitimately stole the
+    // claim. Unguarded, the slow original would overwrite the thief's claim,
+    // the thief's own failure-path delete would then match nothing, and the row
+    // would sit at `processed` — telling Stripe not to redeliver an event whose
+    // second run actually failed.
+    await this.prisma.stripeWebhookEvent
+      .updateMany({
+        where: { id: event.id, status: 'claimed' },
+        data: { status: 'processed', processedAt: new Date() },
+      })
+      .catch(() => undefined);
+  }
+
+  /**
+   * Take the exclusive right to handle this event. Returns false when another
+   * delivery holds it or has already finished it.
+   */
+  private async claimWebhookEvent(event: StripeEvent): Promise<boolean> {
+    try {
+      await this.prisma.stripeWebhookEvent.create({
+        data: {
+          id: event.id,
+          type: event.type,
+          status: 'claimed',
+          claimedAt: new Date(),
+          attempts: 1,
+        },
+      });
+      return true;
+    } catch (err) {
+      if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
+        throw err;
+      }
+    }
+
+    // A row exists. Steal it only if it is a claim that has gone stale — a
+    // `processed` row is final, and a fresh claim belongs to a live handler.
+    const staleBefore = new Date(Date.now() - PaymentsService.WEBHOOK_CLAIM_STALE_MS);
+    const stolen = await this.prisma.stripeWebhookEvent.updateMany({
+      where: { id: event.id, status: 'claimed', claimedAt: { lt: staleBefore } },
+      data: { claimedAt: new Date(), attempts: { increment: 1 } },
+    });
+    if (stolen.count > 0) {
+      this.logger.warn(`Stripe event ${event.id}: stole a stale claim`);
+      return true;
+    }
+    return false;
   }
 
   /** Dispatch a verified, not-yet-processed Stripe event to its handler. */
@@ -181,12 +240,67 @@ export class PaymentsService {
         }
         break;
       }
+      case 'payment_intent.amount_capturable_updated': {
+        // Manual capture's "the hold is in place" event: the customer's card was
+        // authorized and the funds are reserved, but NOTHING has been taken.
+        // This is what starts the inspector search — `payment_intent.succeeded`
+        // no longer fires at this point, and an installation that is not
+        // subscribed to this event will authorize every order and leave it in
+        // CREATED for ever.
+        const pi = event.data.object as StripePaymentIntent;
+        const meta = pi.metadata ?? {};
+        if (meta.purpose === 'order' && meta.orderId && meta.paymentId) {
+          const orders = await this.resolveOrdersService();
+          if (!orders) {
+            // Throwing leaves the event unclaimed, so Stripe redelivers once the
+            // module is up — better than a hold nobody is counting down.
+            throw new Error('OrdersService unavailable — cannot authorize order payment');
+          }
+          await orders.authorizeOrderPayment(meta.paymentId, meta.orderId);
+          this.logger.log(`Order ${meta.orderId} authorized (hold placed) — searching`);
+        }
+        break;
+      }
       case 'payment_intent.succeeded': {
+        // Under manual capture this now means "the capture we asked for went
+        // through", and the work below is already done by
+        // `OrdersService.captureOrderPayment`. The CREATED → PAID → dispatch
+        // branch inside `settleOrderPayment` is KEPT deliberately: orders
+        // created before manual capture shipped still carry automatic-capture
+        // intents, and this is the only event that ever settles them.
         const pi = event.data.object as StripePaymentIntent;
         const meta = pi.metadata ?? {};
         if (meta.purpose === 'order' && meta.orderId && meta.paymentId) {
           await this.settleOrderPayment(meta.paymentId, meta.orderId, meta.userId);
-          this.logger.log(`Order ${meta.orderId} paid via payment ${meta.paymentId}`);
+          this.logger.log(`Order ${meta.orderId} captured via payment ${meta.paymentId}`);
+        }
+        break;
+      }
+      case 'payment_intent.canceled': {
+        // The hold is gone: released by us, cancelled in the dashboard, or
+        // expired at Stripe (an uncaptured authorization dies after 7 days).
+        // Either way the customer's money is free and the order cannot proceed.
+        const pi = event.data.object as StripePaymentIntent;
+        const meta = pi.metadata ?? {};
+        if (meta.purpose === 'order' && meta.paymentId) {
+          await this.cancelOrderPayment(meta.paymentId, meta.orderId);
+        }
+        break;
+      }
+      case 'payment_intent.payment_failed': {
+        // The card was refused. The order stays CREATED on purpose — the same
+        // PaymentIntent is still payable with another card, and cancelling here
+        // would destroy an order the customer is one retry away from placing.
+        const pi = event.data.object as StripePaymentIntent;
+        const meta = pi.metadata ?? {};
+        if (meta.purpose === 'order' && meta.paymentId) {
+          await this.prisma.payment
+            .updateMany({
+              where: { id: meta.paymentId, status: { in: ['pending', 'failed'] } },
+              data: { status: 'failed' },
+            })
+            .catch(() => undefined);
+          this.logger.warn(`Order payment ${meta.paymentId} failed — order left CREATED`);
         }
         break;
       }
@@ -243,14 +357,30 @@ export class PaymentsService {
   }
 
   /**
-   * Idempotently settle an order payment: mark the Payment succeeded, transition
-   * the order CREATED → PAID and run dispatch. Safe to call multiple times — the
-   * transition is a no-op once the order has left CREATED. OrdersService is
-   * resolved lazily (ModuleRef) to avoid a circular module dependency.
+   * The money has been TAKEN. Mark the Payment succeeded and, if the order has
+   * not moved yet, take it CREATED → PAID and dispatch. Safe to call repeatedly
+   * — the transition is a no-op once the order has left CREATED. OrdersService
+   * is resolved lazily (ModuleRef) to avoid a circular module dependency.
+   *
+   * Under manual capture the normal caller of the CREATED → PAID branch is
+   * `OrdersService.authorizeOrderPayment`, not this method: capture happens at
+   * ACCEPTANCE, by which time the order is long past CREATED. The branch stays
+   * because pre-deploy orders hold automatic-capture intents whose only
+   * settlement signal is `payment_intent.succeeded`, and dropping it would
+   * strand every one of them in CREATED.
+   *
+   * It deliberately does NOT open a search window. Money that is already
+   * captured has no hold to release, and `expireUnfilledSearches` skips a null
+   * `searchExpiresAt` precisely so those orders are left alone.
    */
   async settleOrderPayment(paymentId: string, orderId: string, _userId?: string): Promise<void> {
     await this.prisma.payment
       .update({ where: { id: paymentId }, data: { status: 'succeeded' } })
+      .catch(() => undefined);
+    // Written once and never moved: `capturedAt` is the only thing that tells an
+    // old charge apart from a fresh capture, and the reconciler reads it.
+    await this.prisma.payment
+      .updateMany({ where: { id: paymentId, capturedAt: null }, data: { capturedAt: new Date() } })
       .catch(() => undefined);
 
     const orders = await this.resolveOrdersService();
@@ -259,6 +389,42 @@ export class PaymentsService {
     if (!order || order.status !== OrderStatus.CREATED) return;
     await orders.transition(orderId, OrderStatus.PAID, 'system');
     await orders.dispatch(orderId);
+  }
+
+  /**
+   * A hold on an order payment is gone. Record it and, if the order is still
+   * waiting, cancel it — there is no money behind it any more.
+   *
+   * Guarded on the uncaptured statuses: a `payment_intent.canceled` that
+   * arrives for a payment we have already CAPTURED would otherwise rewrite a
+   * live charge as released, and the order would be cancelled out from under an
+   * inspector who is on site.
+   */
+  async cancelOrderPayment(paymentId: string, orderId?: string): Promise<void> {
+    const updated = await this.prisma.payment.updateMany({
+      where: { id: paymentId, status: { in: ['pending', 'authorized', 'failed'] } },
+      data: { status: 'cancelled', canceledAt: new Date() },
+    });
+    if (updated.count === 0) return;
+
+    if (!orderId) return;
+    const orders = await this.resolveOrdersService();
+    if (!orders) return;
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) return;
+    if (
+      order.status !== OrderStatus.CREATED &&
+      order.status !== OrderStatus.PAID &&
+      order.status !== OrderStatus.UNASSIGNED
+    ) {
+      // Past assignment the money question is an operator's, not a webhook's.
+      this.logger.error(
+        `payment_intent.canceled on order ${orderId} in status ${order.status} — needs an operator`,
+      );
+      return;
+    }
+    await orders.transition(orderId, OrderStatus.CANCELLED, 'system');
+    this.logger.warn(`Order ${orderId} cancelled — its authorization hold is gone`);
   }
 
   /**
@@ -285,11 +451,58 @@ export class PaymentsService {
     });
   }
 
-  /** Mark a Payment as refunded. Idempotent. */
+  /**
+   * Mark a Payment as refunded AND withdraw whatever it bought. Idempotent.
+   *
+   * The two halves are one operation: money back, access gone. Marking only the
+   * payment left a refunded buyer holding a permanent entitlement to the report
+   * or VIN history they no longer paid for.
+   */
   async markPaymentRefunded(paymentId: string): Promise<void> {
-    await this.prisma.payment
+    const payment = await this.prisma.payment
       .update({ where: { id: paymentId }, data: { status: 'refunded' } })
-      .catch(() => undefined);
+      .catch(() => null);
+    if (!payment) return;
+    await this.revokeEntitlementsFor(payment);
+  }
+
+  /**
+   * Withdraw the access a payment granted. Idempotent, and a no-op for payments
+   * that grant none (an order payment buys an inspection, not a document).
+   *
+   * A `ReportPurchase` is revoked in place rather than deleted:
+   * `@@unique([userId, reportId])` means the row is the buyer's entire history
+   * with that report, and deleting it would erase the record of a sale that did
+   * happen. `revokedAt` is therefore read by BOTH access paths —
+   * `assertReportAccess` denies it, and `createPpvCheckout` lets the same buyer
+   * purchase again.
+   */
+  async revokeEntitlementsFor(payment: Pick<Payment, 'id'>): Promise<void> {
+    const [vinChecks, reportPurchases] = await Promise.all([
+      // `status: 'ready'` ONLY. Revocation withdraws access, and a purchase that
+      // never reached `ready` never granted any — so there is nothing to take
+      // away, and moving it to `refunded` does two kinds of damage. It destroys
+      // `failureReason`, which is the only record of WHY the provider failed;
+      // and it asserts "this buyer's money went back" on a row whose refund may
+      // itself have failed, which is precisely the case the ledger must not lie
+      // about. A failed purchase stays `failed`; the money is tracked on the
+      // Payment and the Refund, where it belongs.
+      this.prisma.vinHistoryPurchase.updateMany({
+        where: { paymentId: payment.id, status: 'ready' },
+        data: { status: 'refunded', failureReason: 'payment_refunded' },
+      }),
+      this.prisma.reportPurchase.updateMany({
+        where: { paymentId: payment.id, revokedAt: null },
+        data: { revokedAt: new Date(), revokedReason: 'payment_refunded' },
+      }),
+    ]);
+
+    if (vinChecks.count > 0 || reportPurchases.count > 0) {
+      this.logger.log(
+        `Payment ${payment.id} refunded — revoked ${reportPurchases.count} report purchase(s) ` +
+          `and ${vinChecks.count} VIN check(s)`,
+      );
+    }
   }
 
   /**
@@ -346,29 +559,41 @@ export class PaymentsService {
     });
     if (!payout) return;
 
+    const reason = 'stripe reported the transfer failed or was reversed';
+    this.logger.warn(`Payout ${payout.id} failed (transfer failed/reversed)`);
+
+    // Delegate: the attempt counter, the backoff schedule, the cap and the
+    // operator alert all live in OrdersService.parkPayout. The bare
+    // `attempts: { increment: 1 }` this replaced could push a payout PAST the
+    // cap, and the retry cron filters on `attempts < cap` — so the row then sat
+    // there claiming a nextRetryAt that nothing would ever act on.
+    const orders = await this.resolveOrdersService();
+    if (orders) {
+      await orders.parkPayoutForFailedTransfer(payout.orderId, reason);
+      return;
+    }
+
+    // OrdersService unavailable (a narrow test graph): make the payout terminal
+    // and visible rather than leaving it looking healthy.
     await this.prisma.payout
       .update({
         where: { id: payout.id },
         data: {
           status: 'failed',
           stripeTransferId: null, // freed so a retry can record its own transfer
-          lastError: 'stripe reported the transfer failed or was reversed',
+          lastError: reason,
           lastAttemptAt: new Date(),
-          // Short backoff: this is a live money problem, not a cold queue item.
-          nextRetryAt: new Date(Date.now() + 15 * 60_000),
-          attempts: { increment: 1 },
+          nextRetryAt: null,
         },
       })
       .catch(() => undefined);
-
-    this.logger.warn(`Payout ${payout.id} marked failed (transfer failed/reversed)`);
     await this.alertAdmins('payout.failed', {
       orderId: payout.orderId,
       orderNumber: payout.order.number,
       amountCents: payout.amountCents,
-      reason: 'Stripe reported the transfer failed or was reversed',
-      attempts: payout.attempts + 1,
-      terminal: false,
+      reason,
+      attempts: payout.attempts,
+      terminal: true,
     });
   }
 
@@ -417,6 +642,8 @@ export class PaymentsService {
   private async resolveOrdersService(): Promise<{
     transition: (orderId: string, to: OrderStatus, actor: string) => Promise<unknown>;
     dispatch: (orderId: string) => Promise<unknown>;
+    parkPayoutForFailedTransfer: (orderId: string, reason: string) => Promise<void>;
+    authorizeOrderPayment: (paymentId: string, orderId: string) => Promise<void>;
   } | null> {
     try {
       const { OrdersService } = await import('../orders/orders.service');
@@ -483,7 +710,8 @@ export class PaymentsService {
   /** List the reports a user has purchased (pay-per-view), newest first. */
   async listPurchases(userId: string): Promise<ReportPurchaseListDto> {
     const purchases = await this.prisma.reportPurchase.findMany({
-      where: { userId },
+      // A revoked purchase was refunded: it is history, not a holding.
+      where: { userId, revokedAt: null },
       orderBy: { createdAt: 'desc' },
     });
     const reportIds = purchases.map((p) => p.reportId);
@@ -533,7 +761,7 @@ export class PaymentsService {
     const purchase = await this.prisma.reportPurchase.findUnique({
       where: { userId_reportId: { userId, reportId } },
     });
-    if (purchase) return report;
+    if (purchase && !purchase.revokedAt) return report;
 
     throw new ForbiddenException({
       error: { code: 'payment_required', message: 'Purchase required to access this report' },
@@ -559,14 +787,18 @@ export class PaymentsService {
         data: { userId, reportId, paymentId },
       });
     } catch (err) {
-      // P2002 = unique violation (already purchased). Idempotent no-op.
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002'
-      ) {
-        return;
+      // P2002 = unique violation: this buyer already has a row for this report.
+      if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
+        throw err;
       }
-      throw err;
+      // If that row was REVOKED, this is a re-purchase after a refund and the
+      // entitlement has to come back — the unique constraint means there will
+      // never be a second row to carry it. Anything else is a plain replay.
+      const revived = await this.prisma.reportPurchase.updateMany({
+        where: { userId, reportId, revokedAt: { not: null } },
+        data: { revokedAt: null, revokedReason: null, paymentId },
+      });
+      if (revived.count === 0) return;
     }
 
     // E11: notify the buyer their PPV report is unlocked (only on a fresh

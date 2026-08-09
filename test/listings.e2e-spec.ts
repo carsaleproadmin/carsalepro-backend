@@ -6,6 +6,7 @@ import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { ListingsService } from '../src/listings/listings.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { R2Service } from '../src/r2/r2.service';
+import { mirroredPhotoKey } from '../src/listings/listing-photo-urls';
 
 const FIXTURE_PHOTO = join(__dirname, 'fixtures', 'small-800x600.png');
 
@@ -198,6 +199,67 @@ describe('Listings (e2e)', () => {
       await request(app.getHttpServer())
         .get(`/api/v1/listings/${listingId}`)
         .expect(401);
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
+  it('3a-2. a blank contactEmail is accepted and clears the field, rather than failing the PATCH', async () => {
+    // `@IsOptional()` skips null and undefined but NOT '', so a bare @IsEmail()
+    // rejected every seller who left the optional contact e-mail blank — the
+    // whole PATCH failed with `contactEmail must be an email`, and the seller
+    // form shows that as a generic "something went wrong". Step 2 of the Report
+    // ID claim flow and the listing edit page were both dead ends because of it.
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id;
+
+      // A blank one is accepted...
+      const blank = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ city: 'Berlin', contactEmail: '' })
+        .expect(200);
+      expect(blank.body.contactEmail).toBeNull();
+
+      // ...a real one is stored...
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ contactEmail: 'seller@example.com' })
+        .expect(200);
+
+      // ...omitting the key leaves it alone (that is what "optional" means)...
+      const untouched = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ city: 'Hamburg' })
+        .expect(200);
+      expect(untouched.body.contactEmail).toBe('seller@example.com');
+
+      // ...and blanking it again CLEARS it. Omitting the key could never do
+      // this, which is why the fix belongs in the DTO and not in the client.
+      const cleared = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ contactEmail: '   ' })
+        .expect(200);
+      expect(cleared.body.contactEmail).toBeNull();
+
+      // A genuinely malformed address is still rejected.
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ contactEmail: 'not-an-email' })
+        .expect(400);
     } finally {
       await cleanup({ listingId, reportId: report.id });
     }
@@ -804,9 +866,14 @@ describe('Listings (e2e)', () => {
       expect(first.body.width).toBeGreaterThan(0);
       expect(first.body.caption).toBe('Front');
 
-      // Stored under the seller-scoped prefix GDPR erasure sweeps.
+      // Keyed by LISTING, and deliberately not by seller. Once the public
+      // bucket is configured this key is a permanent unsigned URL, and a stable
+      // seller id in it would make every advert by one pseudonymous seller
+      // correlatable from an image URL alone. Erasure finds the objects through
+      // the rows, which is why the key does not have to carry the owner.
       const row = await prisma.listingPhoto.findUniqueOrThrow({ where: { id: first.body.id } });
-      expect(row.r2Key.startsWith(`listings/${seller.userId}/${listing.id}/`)).toBe(true);
+      expect(row.r2Key.startsWith(`listings/${listing.id}/`)).toBe(true);
+      expect(row.r2Key).not.toContain(seller.userId);
       expect(row.format).toBe('jpeg');
 
       // Identical bytes are a retry, not a second photo.
@@ -971,6 +1038,333 @@ describe('Listings (e2e)', () => {
       expect(item.source).toBe('manual');
       expect(item.reportCode).toBeNull();
       expect(item.photoCount).toBe(1);
+    });
+  });
+
+  // ============================================================
+  // Permanent showroom image URLs (the public bucket)
+  //
+  // Two worlds are asserted here, and the FIRST one matters most: with
+  // `R2_PUBLIC_*` unset — which is CI, every developer machine, and production
+  // until the bucket is created — nothing about photo handling may change. The
+  // second world is simulated by stubbing the four `R2Service` public-bucket
+  // methods, because a real second bucket cannot be part of an offline suite.
+  // ============================================================
+  describe('permanent showroom URLs', () => {
+    const sellerIds: string[] = [];
+    const listingIds: string[] = [];
+    const reportIds: string[] = [];
+
+    async function seller() {
+      const s = await registerUser(app);
+      sellerIds.push(s.userId);
+      return s;
+    }
+
+    async function manualListing(token: string, body: Record<string, unknown> = {}) {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/listings/manual')
+        .set('Authorization', `Bearer ${token}`)
+        .send(body)
+        .expect(201);
+      listingIds.push(res.body.id);
+      return res.body;
+    }
+
+    afterAll(async () => {
+      const r2 = app.get(R2Service);
+      if (r2.isConfigured()) {
+        for (const id of sellerIds) {
+          await r2.deletePrefix(`listings/${id}/`).catch(() => undefined);
+        }
+      }
+      await prisma.listing.deleteMany({ where: { id: { in: listingIds } } });
+      await prisma.report.deleteMany({ where: { id: { in: reportIds } } });
+    });
+
+    it('22. ships dark: no public bucket => signed URL, ListingPhoto.bucket stays NULL', async () => {
+      const owner = await seller();
+      const listing = await manualListing(owner.token, { city: 'Bremen' });
+
+      // The premise of the whole wave: this suite runs with R2_PUBLIC_* unset.
+      expect(app.get(R2Service).isPublicBucketConfigured()).toBe(false);
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/photos`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .attach('file', FIXTURE_PHOTO)
+        .expect(201);
+
+      const row = await prisma.listingPhoto.findUniqueOrThrow({ where: { id: res.body.id } });
+      expect(row.bucket).toBeNull();
+      // Byte-for-byte the old behaviour: a presigned URL, query string and all.
+      expect(res.body.url).toContain('X-Amz-Signature');
+      expect(res.body.url).toContain(row.r2Key);
+    });
+
+    it('23. ships dark: an unmirrored report listing keeps signed showroom URLs', async () => {
+      const owner = await seller();
+      const code = uniqueCode();
+      const report = await seedReport({ code, userId: owner.userId });
+      reportIds.push(report.id);
+      const listing = await prisma.listing.create({
+        data: {
+          sellerId: owner.userId,
+          reportId: report.id,
+          source: 'report',
+          status: 'ACTIVE',
+          package: 'standard',
+          priceCents: 1290000,
+          city: 'Bochum',
+          make: 'BMW',
+          model: '320d',
+          year: 2018,
+          publishedAt: new Date(),
+          expiresAt: new Date(Date.now() + 30 * 86400000),
+        },
+      });
+      listingIds.push(listing.id);
+
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/listings/${listing.id}`)
+        .expect(200);
+      expect(listing.publicPhotosMirroredAt).toBeNull();
+      expect(res.body.photos[0].url).toContain('X-Amz-Signature');
+    });
+
+    describe('with a public bucket configured', () => {
+      const PUBLIC_BUCKET = 'carsalepro-public-test';
+      const BASE = 'https://img.test.invalid';
+      /** Stand-in for the bucket: key -> bytes. */
+      const objects = new Map<string, Buffer>();
+
+      beforeAll(() => {
+        const r2 = app.get(R2Service);
+        jest.spyOn(r2, 'isPublicBucketConfigured').mockReturnValue(true);
+        jest.spyOn(r2, 'publicObjectUrl').mockImplementation((key: string) => `${BASE}/${key}`);
+        jest
+          .spyOn(r2, 'publicPutObject')
+          .mockImplementation(async (key: string, body: Uint8Array | Buffer) => {
+            objects.set(key, Buffer.from(body));
+            return PUBLIC_BUCKET;
+          });
+        jest.spyOn(r2, 'publicDeleteObject').mockImplementation(async (key: string) => {
+          objects.delete(key);
+        });
+        // The mirror reads the private original back out of the reports bucket.
+        // Stubbed so the test does not depend on objects existing in R2.
+        jest
+          .spyOn(r2, 'getObjectBytes')
+          .mockImplementation(async (key: string) => Buffer.from(`bytes:${key}`));
+      });
+
+      afterAll(() => {
+        jest.restoreAllMocks();
+        objects.clear();
+      });
+
+      it('24. a new upload lands in the public bucket and gets a permanent URL', async () => {
+        const owner = await seller();
+        const listing = await manualListing(owner.token, { city: 'Aachen' });
+
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listing.id}/photos`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .attach('file', FIXTURE_PHOTO)
+          .expect(201);
+
+        const row = await prisma.listingPhoto.findUniqueOrThrow({ where: { id: res.body.id } });
+        expect(row.bucket).toBe(PUBLIC_BUCKET);
+        expect(objects.has(row.r2Key)).toBe(true);
+        expect(res.body.url).toBe(`${BASE}/${row.r2Key}`);
+        // Permanent means no signature and no expiry: nothing to go stale, and
+        // a CDN can cache it because the URL never changes.
+        expect(res.body.url).not.toContain('?');
+
+        const gallery = await request(app.getHttpServer())
+          .get(`/api/v1/listings/${listing.id}/photos`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+        expect(gallery.body.items[0].url).toBe(`${BASE}/${row.r2Key}`);
+
+        // Deleting the photo must clear the PUBLIC object, not a private one
+        // that was never written — otherwise a removed photo stays readable.
+        await request(app.getHttpServer())
+          .delete(`/api/v1/listings/${listing.id}/photos/${res.body.id}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+        expect(objects.has(row.r2Key)).toBe(false);
+      });
+
+      it('25. publishing a manual listing serves the showroom card a permanent URL', async () => {
+        const owner = await seller();
+        const listing = await manualListing(owner.token, {
+          city: 'Aachen',
+          priceCents: 890000,
+          vehicleData: { vehicle: { make: 'Skoda', model: 'Octavia', year: 2017 } },
+        });
+        const photo = await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listing.id}/photos`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .attach('file', FIXTURE_PHOTO)
+          .expect(201);
+
+        await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listing.id}/publish`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ package: 'standard' })
+          .expect(201);
+
+        const detail = await request(app.getHttpServer())
+          .get(`/api/v1/public/listings/${listing.id}`)
+          .expect(200);
+        expect(detail.body.photos[0].url).toBe(photo.body.url);
+        expect(detail.body.photos[0].url.startsWith(BASE)).toBe(true);
+      });
+
+      it('26. publishing promotes a photo that was uploaded before the bucket existed', async () => {
+        const owner = await seller();
+        const listing = await manualListing(owner.token, {
+          city: 'Aachen',
+          priceCents: 750000,
+          vehicleData: { vehicle: { make: 'Ford', model: 'Focus', year: 2015 } },
+        });
+        // A row from the old world: object in the reports bucket, bucket NULL.
+        const legacy = await prisma.listingPhoto.create({
+          data: {
+            listingId: listing.id,
+            r2Key: `listings/${owner.userId}/${listing.id}/legacy-${randomUUID()}.jpg`,
+            sizeBytes: 1234,
+            width: 800,
+            height: 600,
+            order: 0,
+          },
+        });
+
+        await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listing.id}/publish`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ package: 'standard' })
+          .expect(201);
+
+        const after = await prisma.listingPhoto.findUniqueOrThrow({ where: { id: legacy.id } });
+        expect(after.bucket).toBe(PUBLIC_BUCKET);
+        // Same key, different bucket — nothing downstream has to translate keys.
+        expect(objects.has(legacy.r2Key)).toBe(true);
+      });
+
+      it('27. a report-backed listing mirrors its photos, and re-running is idempotent', async () => {
+        const owner = await seller();
+        const code = uniqueCode();
+        const deviceId = uniqueDeviceId();
+        const report = await prisma.report.create({
+          data: {
+            deviceId,
+            code,
+            s3Key: `free/${deviceId}/${code}.pdf`,
+            tier: 'free',
+            uploaded: true,
+            userId: owner.userId,
+            make: 'Audi',
+            model: 'A4',
+            year: 2019,
+            qualityScore: 90,
+            photosManifest: [
+              { s3Key: `report-photos/${deviceId}/front.jpg`, kind: 'front' },
+              { s3Key: `report-photos/${deviceId}/rear.jpg`, kind: 'rear' },
+            ],
+          },
+        });
+        reportIds.push(report.id);
+
+        const created = await request(app.getHttpServer())
+          .post('/api/v1/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ reportCode: code })
+          .expect(201);
+        const listingId = created.body.id as string;
+        listingIds.push(listingId);
+
+        await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listingId}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ priceCents: 2190000, city: 'Ulm' })
+          .expect(200);
+        await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listingId}/publish`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ package: 'standard' })
+          .expect(201);
+
+        // A report-backed listing has NO ListingPhoto rows: its images are
+        // manifest entries, copied under a deterministic key.
+        expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(0);
+        const stamped = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
+        expect(stamped.publicPhotosMirroredAt).not.toBeNull();
+
+        const expectedKeys = [
+          mirroredPhotoKey(listingId, `report-photos/${deviceId}/front.jpg`),
+          mirroredPhotoKey(listingId, `report-photos/${deviceId}/rear.jpg`),
+        ];
+        for (const key of expectedKeys) expect(objects.has(key)).toBe(true);
+        // The source key never appears in the public one — a permanent public
+        // URL must not publish the device that ran the inspection.
+        for (const key of expectedKeys) expect(key).not.toContain(deviceId);
+
+        const detail = await request(app.getHttpServer())
+          .get(`/api/v1/public/listings/${listingId}`)
+          .expect(200);
+        expect(detail.body.photos.map((p: { url: string }) => p.url)).toEqual(
+          expectedKeys.map((k) => `${BASE}/${k}`),
+        );
+        expect(detail.body.photos[0].url).not.toContain('?');
+
+        // --- idempotency: a second pass changes nothing observable ---------
+        const keysBefore = [...objects.keys()].sort();
+        const result = await app.get(ListingsService).mirrorShowroomPhotos(listingId);
+        expect(result.failed).toBe(0);
+        expect([...objects.keys()].sort()).toEqual(keysBefore);
+        expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(0);
+
+        const again = await request(app.getHttpServer())
+          .get(`/api/v1/public/listings/${listingId}`)
+          .expect(200);
+        expect(again.body.photos.map((p: { url: string }) => p.url)).toEqual(
+          detail.body.photos.map((p: { url: string }) => p.url),
+        );
+      });
+
+      it('28. the nightly backlog pass mirrors listings published before the cutover', async () => {
+        const owner = await seller();
+        const code = uniqueCode();
+        const report = await seedReport({ code, userId: owner.userId });
+        reportIds.push(report.id);
+        const listing = await prisma.listing.create({
+          data: {
+            sellerId: owner.userId,
+            reportId: report.id,
+            source: 'report',
+            status: 'ACTIVE',
+            package: 'standard',
+            priceCents: 1490000,
+            city: 'Fulda',
+            make: 'BMW',
+            model: '320d',
+            year: 2018,
+            publishedAt: new Date(Date.now() - 10 * 86400000),
+            expiresAt: new Date(Date.now() + 20 * 86400000),
+          },
+        });
+        listingIds.push(listing.id);
+
+        const totals = await app.get(ListingsService).mirrorPendingShowroomPhotos(200);
+        expect(totals.scanned).toBeGreaterThanOrEqual(1);
+
+        const after = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+        expect(after.publicPhotosMirroredAt).not.toBeNull();
+        const manifest = report.photosManifest as { s3Key: string }[];
+        expect(objects.has(mirroredPhotoKey(listing.id, manifest[0].s3Key))).toBe(true);
+      });
     });
   });
 });

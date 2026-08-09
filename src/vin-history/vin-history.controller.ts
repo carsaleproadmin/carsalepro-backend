@@ -1,10 +1,11 @@
-import { Controller, Get, Param, Post } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
   ApiBearerAuth,
   ApiOkResponse,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -13,6 +14,7 @@ import { ErrorResponseDto } from '../common/dto/error-response.dto';
 import {
   VinCheckDetailDto,
   VinCheckDownloadDto,
+  VinCheckDownloadQueryDto,
   VinCheckListDto,
   VinHistoryPreviewDto,
   VinHistoryUnlockDto,
@@ -96,14 +98,22 @@ export class MeVinChecksController {
   }
 
   @Get('vin-checks/:id/download')
-  @ApiOperation({ summary: 'Short-lived PRIVATE signed URL for the archived report JSON' })
+  @ApiOperation({
+    summary: 'Short-lived PRIVATE signed URL for the purchased report',
+    description:
+      'Defaults to the rendered PDF; `?format=json` returns the archived payload. The PDF is ' +
+      'rendered on first request when a purchase does not have one yet, in the locale on the ' +
+      "caller's profile. The URL carries a Content-Disposition filename.",
+  })
   @ApiParam({ name: 'id' })
+  @ApiQuery({ name: 'format', required: false, enum: ['pdf', 'json'] })
   @ApiOkResponse({ type: VinCheckDownloadDto })
   @ApiResponse({ status: 404, type: ErrorResponseDto, description: 'download_unavailable' })
   download(
     @CurrentUser('id') userId: string,
     @Param('id') id: string,
+    @Query() query: VinCheckDownloadQueryDto,
   ): Promise<VinCheckDownloadDto> {
-    return this.vinHistory.downloadMine(userId, id);
+    return this.vinHistory.downloadMine(userId, id, query.format ?? 'pdf');
   }
 }

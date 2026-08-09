@@ -224,6 +224,38 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Заказ ${str(p, 'orderNumber')} отменён.`,
     }),
   },
+  /**
+   * The copy has one job beyond informing: stop the support ticket. An
+   * authorization that has been released still sits in a card statement for a
+   * few working days, and a customer who reads "cancelled" and then sees the
+   * amount on their statement concludes they were charged for nothing.
+   */
+  'order.search_expired': {
+    de: (p) => ({
+      subject: `Kein Prüfer verfügbar`,
+      body:
+        `Für Bestellung ${str(p, 'orderNumber')} haben wir in Ihrer Region keinen Prüfer gefunden. ` +
+        `Es wurde nichts abgebucht — die Reservierung auf Ihrer Karte ist freigegeben. ` +
+        `Sie kann noch einige Werktage in Ihrem Kontoauszug erscheinen.`,
+      short: `Kein Prüfer für ${str(p, 'orderNumber')} — Reservierung freigegeben.`,
+    }),
+    en: (p) => ({
+      subject: `No inspector available`,
+      body:
+        `We could not find an inspector for order ${str(p, 'orderNumber')} in your area. ` +
+        `Nothing has been charged — the hold on your card has been released. ` +
+        `It may still appear on your statement for a few working days.`,
+      short: `No inspector for ${str(p, 'orderNumber')} — hold released.`,
+    }),
+    ru: (p) => ({
+      subject: `Инспектор не найден`,
+      body:
+        `Для заказа ${str(p, 'orderNumber')} мы не нашли инспектора в вашем регионе. ` +
+        `Деньги не списаны — резерв на карте снят. ` +
+        `Он может ещё несколько рабочих дней отображаться в выписке.`,
+      short: `Инспектор для ${str(p, 'orderNumber')} не найден — резерв снят.`,
+    }),
+  },
   'order.disputed': {
     de: (p) => ({
       subject: `Bestellung in Reklamation`,
@@ -290,6 +322,23 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       subject: `${p.terminal ? 'Выплата окончательно не прошла' : 'Выплата не прошла'} — ${str(p, 'orderNumber')}`,
       body: `Выплата ${formatEur(p.amountCents)} по заказу ${str(p, 'orderNumber')} не прошла (попытка ${str(p, 'attempts')}): ${str(p, 'reason')}.${p.terminal ? ' Автоматических повторов больше не будет — требуется ручная проверка.' : ''}`,
       short: `Выплата ${str(p, 'orderNumber')} не прошла.`,
+    }),
+  },
+  'refund.failed': {
+    de: (p) => ({
+      subject: `${p.terminal ? 'Erstattung endgültig fehlgeschlagen' : 'Erstattung fehlgeschlagen'} — ${str(p, 'orderNumber')}`,
+      body: `Die Erstattung von ${formatEur(p.amountCents)} für Bestellung ${str(p, 'orderNumber')} (${str(p, 'reason')}) ist fehlgeschlagen (Versuch ${str(p, 'attempts')}): ${str(p, 'error')}.${p.terminal ? ' Es werden keine automatischen Wiederholungen mehr ausgeführt — bitte manuell erstatten.' : ''}`,
+      short: `Erstattung ${str(p, 'orderNumber')} fehlgeschlagen.`,
+    }),
+    en: (p) => ({
+      subject: `${p.terminal ? 'Refund permanently failed' : 'Refund failed'} — ${str(p, 'orderNumber')}`,
+      body: `The refund of ${formatEur(p.amountCents)} for order ${str(p, 'orderNumber')} (${str(p, 'reason')}) failed (attempt ${str(p, 'attempts')}): ${str(p, 'error')}.${p.terminal ? ' No further automatic retries will run — refund this manually.' : ''}`,
+      short: `Refund ${str(p, 'orderNumber')} failed.`,
+    }),
+    ru: (p) => ({
+      subject: `${p.terminal ? 'Возврат окончательно не прошёл' : 'Возврат не прошёл'} — ${str(p, 'orderNumber')}`,
+      body: `Возврат ${formatEur(p.amountCents)} по заказу ${str(p, 'orderNumber')} (${str(p, 'reason')}) не прошёл (попытка ${str(p, 'attempts')}): ${str(p, 'error')}.${p.terminal ? ' Автоматических повторов больше не будет — верните средства вручную.' : ''}`,
+      short: `Возврат ${str(p, 'orderNumber')} не прошёл.`,
     }),
   },
   'kyc.approved': {

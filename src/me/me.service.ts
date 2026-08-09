@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
+import { ListingsService } from '../listings/listings.service';
 
 export interface EraseResult {
   deviceId: string;
@@ -13,7 +14,11 @@ export interface EraseResult {
 export class MeService {
   private readonly logger = new Logger(MeService.name);
 
-  constructor(private readonly prisma: PrismaService, private readonly r2: R2Service) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly r2: R2Service,
+    private readonly listings: ListingsService,
+  ) {}
 
   /**
    * GDPR right-to-erasure: deletes all reports + quota and removes every R2
@@ -127,6 +132,10 @@ export class MeService {
     if (!link) return 0;
 
     const deleted = await this.r2.deletePrefix(`listings/${link.userId}/`);
+    // Delegated to ListingsService: the website erasure path needs the same
+    // sweep, and two copies of "which keys are public" would drift the day the
+    // mirror key changes shape.
+    await this.listings.erasePublicPhotoObjects(link.userId);
     const { count } = await this.prisma.listingPhoto.deleteMany({
       where: { listing: { sellerId: link.userId } },
     });
@@ -138,6 +147,7 @@ export class MeService {
     }
     return deleted;
   }
+
 
   private mask(deviceId: string): string {
     if (deviceId.length <= 8) return '****';
