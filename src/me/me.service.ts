@@ -1,6 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
+import {
+  MAX_LISTING_PHOTOS,
+  manifestPhotoRefs,
+  mirroredPhotoKey,
+} from '../listings/listing-photo-urls';
 
 export interface EraseResult {
   deviceId: string;
@@ -127,6 +132,7 @@ export class MeService {
     if (!link) return 0;
 
     const deleted = await this.r2.deletePrefix(`listings/${link.userId}/`);
+    await this.erasePublicListingObjects(link.userId);
     const { count } = await this.prisma.listingPhoto.deleteMany({
       where: { listing: { sellerId: link.userId } },
     });
@@ -134,6 +140,75 @@ export class MeService {
       this.logger.log(
         `GDPR erasure removed ${deleted} listing photo object(s) and ${count} row(s) ` +
           `for user=${this.mask(link.userId)}`,
+      );
+    }
+    return deleted;
+  }
+
+  /**
+   * Remove the PUBLIC copies of this seller's showroom images.
+   *
+   * `deletePrefix` above only sweeps the private reports bucket. Since showroom
+   * photos may live in a second, deliberately public bucket, an erasure that
+   * skipped it would leave the seller's driveway, house number and number plate
+   * readable at a permanent URL forever — the exact failure the private sweep
+   * exists to prevent, with the aggravating detail that the URL needs no
+   * signature.
+   *
+   * Two shapes, matching the two ways an image gets there:
+   *   - seller uploads: rows whose `bucket` is set, at their own key;
+   *   - mirrored report photos: no row at all, so the keys are recomputed from
+   *     the report manifest exactly as the mirror derived them.
+   *
+   * Best-effort and non-throwing: a failed delete must not abort a GDPR erasure
+   * that has already removed the rows. The mirror stamp is cleared either way,
+   * so the read path stops pointing at objects that are supposed to be gone.
+   *
+   * The count is deliberately NOT added to `objectsDeleted` — the mobile
+   * response shape is frozen and its number has always meant "objects removed
+   * from the reports bucket".
+   */
+  private async erasePublicListingObjects(userId: string): Promise<number> {
+    if (!this.r2.isPublicBucketConfigured()) return 0;
+
+    let deleted = 0;
+    const rows = await this.prisma.listingPhoto.findMany({
+      where: { bucket: { not: null }, listing: { sellerId: userId } },
+      select: { r2Key: true },
+    });
+    const listings = await this.prisma.listing.findMany({
+      where: { sellerId: userId, publicPhotosMirroredAt: { not: null } },
+      select: { id: true, report: { select: { photosManifest: true } } },
+    });
+
+    const keys = [
+      ...rows.map((r) => r.r2Key),
+      ...listings.flatMap((l) =>
+        manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).map((ref) =>
+          mirroredPhotoKey(l.id, ref.s3Key),
+        ),
+      ),
+    ];
+
+    for (const key of keys) {
+      try {
+        await this.r2.publicDeleteObject(key);
+        deleted += 1;
+      } catch (err) {
+        this.logger.error(
+          `GDPR erasure could not delete public object ${key}: ${(err as Error).message}`,
+        );
+      }
+    }
+    if (listings.length > 0) {
+      await this.prisma.listing.updateMany({
+        where: { id: { in: listings.map((l) => l.id) } },
+        data: { publicPhotosMirroredAt: null },
+      });
+    }
+    if (deleted > 0) {
+      this.logger.log(
+        `GDPR erasure removed ${deleted} public listing object(s) for user=${this.mask(userId)}`,
       );
     }
     return deleted;
