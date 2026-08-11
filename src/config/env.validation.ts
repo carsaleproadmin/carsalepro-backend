@@ -108,8 +108,13 @@ export const envValidationSchema = Joi.object({
 
   NHTSA_BASE_URL: Joi.string().uri().default('https://vpic.nhtsa.dot.gov/api'),
 
-  // Paid VIN history (BE-S3). Only 'mock' is implemented; an unknown value
-  // falls back to the mock, which refuses PAID unlocks in production.
+  // Paid VIN history (BE-S3). 'mock' and 'carsxe' are implemented; an unknown
+  // value falls back to the mock, which refuses PAID unlocks in production.
+  //
+  // Deliberately NOT a Joi `.valid('mock','carsxe')`. A typo here should cost a
+  // 503 and a loud startup error, not a service that will not boot: the
+  // fall-through in vin-history.module.ts already makes the wrong value safe,
+  // and refusing to start would take the whole API down over one feature.
   VIN_HISTORY_PROVIDER: Joi.string().allow('').default('mock'),
   VIN_HISTORY_API_KEY: Joi.string().allow('').default(''),
   // Lets the mock provider sell in production. Payloads stay flagged synthetic.

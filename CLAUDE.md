@@ -84,6 +84,25 @@ The manifest is a root route alongside `/catalog` and `/legal`; the frozen mobil
 - **`R2_PUBLIC_URL` is RETIRED and fails the production boot.** It reads like a per-feature setting and is a global short-circuit inside `createPresignedDownloadUrl`: set it and every private object in the reports bucket — paid inspection PDFs included — resolves to a permanent unsigned URL, with nothing logged and nothing broken-looking. Public images come from a **separate bucket** (`R2_PUBLIC_*`), because publicity in R2 is a property of the bucket and a "public prefix" cannot exist. `ListingPhoto.bucket` records where each object lives, so the feature ships dark: unset the vars and everything returns to signed URLs.
 - **A boot-time self-check (`src/health/startup-check.service.ts`) fails the start on a silently-wrong environment** — a BOM or stray quoting in a secret, a KYC bucket equal to the reports bucket, a CORS list with no https origin. Four of the nine blocking production defects were env values, and not one failed a build, a test or `/health`. It never prints a value, only `MISSING` / `set (len 64)` / `has BOM`. A third party being unreachable is deliberately NOT fatal (Render would loop the deploy); `STARTUP_CHECK_STRICT=false` and `ALLOW_SHARED_KYC_BUCKET=true` are the documented escapes. **This reverses the earlier "R2_KYC_* must not fail the boot" decision** — set those vars on Render *before* deploying. `GET /health` is untouched (it is `healthCheckPath`); details live on `GET /health/startup`.
 - **VIN preview counters are `number | null`, and `null` is not `0`.** `0` is a claim the provider made; `null` means it publishes no such number. They were hardcoded zeros because `preview()` returned a type the counters were not part of — fixed in the provider contract, not at the call site.
+  - **`preview()` may now return `null` for the WHOLE summary**, meaning "this provider has no free probe". The response then carries `probed: false` and `summary: null`, and a client must render **no counters and no findings block at all** — not zeros, not dashes in a findings grid. Printing zeros tells a visitor the car is clean on the strength of never having looked, on the card that decides whether they pay.
+
+## Paid VIN history: the provider seam (`src/vin-history/`)
+
+`VIN_HISTORY_PROVIDER` selects one provider per process — `mock` or `carsxe`. Anything else logs loudly and **falls back to the mock**, which refuses paid unlocks in production, so a typo costs a 503 and never a charge. Keep that fall-through whatever else changes; it is why the env var is not a Joi `.valid()` list, which would take the whole API down over one feature.
+
+- **`provider.name` is a FROZEN LITERAL.** It is half of the `vin_provider` unique key on `VinHistoryReport`, it is stamped on every `VinHistoryPurchase`, and it is baked into the R2 keys of both the archived JSON and the rendered PDF (`vin-history/<provider>/<vin>/…`). Renaming it orphans every cached report, every purchase's provenance and every stored document **silently** — nothing errors, the cache simply never hits again.
+- **Payload v1 and v2 both exist and both must render.** `VinHistoryPurchase.payload` is the immutable artefact a buyer paid for; every already-sold row says `schemaVersion: 1` and always will. v1 is frozen, v2 is a separate type, `VinHistoryPayload` is the union, and every reader branches through `isVinHistoryPayloadV2`. Never widen v1 in place — it would retroactively invalidate every payload already sold.
+- **Three facts are distinct and the types keep them apart**: "we asked and there is nothing" (`covered` + empty), "we asked and the source broke" (`unavailable`), "this source never holds this" (`not_covered`). That is `payload.coverage`, and it is the `null`-is-not-`0` rule applied one level up. Service history is permanently `not_covered` with CarsXE; a buyer must read that, not a blank table that looks like "this car was never serviced".
+
+### CarsXE specifics — three traps
+
+1. **`brandsInformation` is the whole ~80-entry NMVTIS brand DICTIONARY**, returned byte-identical for every VIN, including *Flood, Fire, Salvage, Crushed, Prior Taxi* alongside a "Clear: no brand exists" line. It is a legend, not findings. `carsxe.mapper.ts` admits an entry only with evidence, and carries a second shape-based backstop (`MAX_PLAUSIBLE_APPLIED_BRANDS`) precisely because the schema is unverified. **Never relax either defence** — the failure mode is every car reported as flood-damaged and crushed on a document someone paid for.
+2. **`/v1/recalls` and `/v1/lien-theft` are US-only and do not say so.** Asked about a European VIN they answer `success: true` with zero events, from a database that was never searched. Rendered through, that is "no theft record found" — a false clean bill of health. The provider **skips** them for a non-US-market VIN and marks both sections `not_covered`.
+3. **There is no free probe, and every endpoint is billable.** `preview()` therefore makes no CarsXE call at all. The free pre-check is the VIN check digit plus the NHTSA decode (`VinModule`, consumed **as a service** — `GET /vin/:vin` is a frozen mobile route the website may not call). One unlock costs roughly $8 against €19.99 retail.
+
+- **Coverage is decided for free, and it is the check digit — not the region character.** `vinHistoryCoverage` in `src/vin/vin.util.ts` carries the reasoning: a German-built BMW sold in California has a `W` VIN and a full US title ladder, so a region gate refuses exactly the imports this product exists to check. 49 CFR 565 makes position 9 mandatory for US-market vehicles and optional elsewhere. It is a heuristic in both directions and says so.
+- **A record-less answer is REMEMBERED** (`vinHistoryEmptyCacheDays`, 7 days, against 30 for a real report). It used to be discarded so a VIN gaining its first record would not stay unsellable, which meant every attempt paid the per-lookup fee again to reach the same refund. The short window keeps both properties. `0` disables it.
+- **`unlock` refuses uncovered VINs BEFORE any purchase or payment row exists**, so the refusal is free — nothing charged, nothing to refund, the provider never asked. The preview hiding the button is not the gate; the route is reachable directly and from any stale tab.
 
 ## Migrations
 
@@ -94,8 +113,8 @@ Use `npx prisma migrate deploy` (non-interactive) to apply, and `prisma migrate 
 ```bash
 npx tsc --noEmit -p tsconfig.build.json
 npm run lint                               # ESLint 9 flat config (eslint.config.mjs)
-npm test                                   # 285 unit / 22 suites
-npm run test:e2e -- --forceExit            # 448 e2e / 25 suites must stay green; ONE jest at a time
+npm test                                   # 428 unit / 27 suites
+npm run test:e2e -- --forceExit            # 460 e2e / 25 suites must stay green; ONE jest at a time
 ```
 
 **`StripeService` is forced into mock mode by `NODE_ENV=test`, so a suite that wants a real Stripe branch must inject `test/helpers/fake-stripe.ts`** (`createTestApp([{ token: StripeService, useValue: fake }])`). Until `test/refunds` and `test/orders-stripe` did that, not one Stripe code path had ever executed in this repo's tests — capture, cancellation, refund rejection and the webhook lock were all unexercised.
