@@ -207,6 +207,17 @@ model InspectorProfile {
   companyName     String?                                @map("company_name")
   taxId           String?                                @map("tax_id")
   vatId           String?                                @map("vat_id")
+  // Work contacts, disclosed to the customer only once an order is COMPLETED
+  // (never to the inspector in reverse; an admin sees both in any status). Kept
+  // here and not on `User` for the same reason a Listing carries its own
+  // contactPhone/contactEmail: the channel customers use is a business fact,
+  // not account data. Both fall back to the User row when null.
+  contactPhone    String?                                @map("contact_phone")
+  contactEmail    String?                                @map("contact_email")
+  /// True when contactPhone (or the User fallback) is reachable on WhatsApp.
+  contactWhatsapp Boolean                                @default(false) @map("contact_whatsapp")
+  /// Bare Telegram username, stored without the leading "@".
+  contactTelegram String?                                @map("contact_telegram")
   baseAddress     String                                 @map("base_address")
   location        Unsupported("geography(Point, 4326)")?
   searchRadiusKm  Int                                    @default(50) @map("search_radius_km")
@@ -346,9 +357,9 @@ model Order {
   inspectorShareCents Int     @map("inspector_share_cents")
   currency            String  @default("EUR")
 
-  contractId    String?   @unique @map("contract_id")
-  autoApproveAt DateTime? @map("auto_approve_at")
-  submittedAt   DateTime? @map("submitted_at")
+  contractId      String?   @unique @map("contract_id")
+  autoApproveAt   DateTime? @map("auto_approve_at")
+  submittedAt     DateTime? @map("submitted_at")
   /// Deadline for finding an inspector, set when the payment is AUTHORIZED.
   /// Past it with nobody assigned, the cron releases the hold and cancels.
   ///
@@ -357,7 +368,7 @@ model Order {
   /// attempt would target a hold that does not exist. Null means "pre-manual-
   /// capture order — leave it alone".
   searchExpiresAt DateTime? @map("search_expires_at")
-  createdAt     DateTime  @default(now())
+  createdAt       DateTime  @default(now())
 
   customer  User              @relation("CustomerOrders", fields: [customerId], references: [id])
   inspector InspectorProfile? @relation("InspectorOrders", fields: [inspectorId], references: [userId])
@@ -580,48 +591,48 @@ enum ListingStatus {
 /// Nothing derived from an inspection may be inferred for a manual listing —
 /// `verified` is false and `qualityScore` is null for them, always.
 model Listing {
-  id                String        @id @default(cuid())
-  sellerId          String        @map("seller_id")
-  reportId          String?       @unique @map("report_id")
+  id                     String        @id @default(cuid())
+  sellerId               String        @map("seller_id")
+  reportId               String?       @unique @map("report_id")
   /// "report" | "manual" — how this listing's vehicle data was obtained.
-  source            String        @default("report")
-  status            ListingStatus @default(DRAFT)
-  package           String        @default("standard") // standard | gold
-  priceCents        Int           @map("price_cents")
-  city              String
-  plz               String?
-  description       String?
-  contactPhone      String?       @map("contact_phone")
-  contactEmail      String?       @map("contact_email")
+  source                 String        @default("report")
+  status                 ListingStatus @default(DRAFT)
+  package                String        @default("standard") // standard | gold
+  priceCents             Int           @map("price_cents")
+  city                   String
+  plz                    String?
+  description            String?
+  contactPhone           String?       @map("contact_phone")
+  contactEmail           String?       @map("contact_email")
   // Denormalized vehicle facts. Copied from the report for source="report",
   // seller-declared for source="manual". Search reads THESE columns, never the
   // report relation, so both provenances are filterable the same way.
-  vin               String?       @db.VarChar(17)
-  make              String?
-  model             String?
-  year              Int?
-  mileageKm         Int?          @map("mileage_km")
-  fuelType          String?       @map("fuel_type")
-  transmission      String?
-  powerKw           Int?          @map("power_kw")
-  firstRegistration DateTime?     @map("first_registration")
+  vin                    String?       @db.VarChar(17)
+  make                   String?
+  model                  String?
+  year                   Int?
+  mileageKm              Int?          @map("mileage_km")
+  fuelType               String?       @map("fuel_type")
+  transmission           String?
+  powerKw                Int?          @map("power_kw")
+  firstRegistration      DateTime?     @map("first_registration")
   /// HU/TÜV validity as the seller writes it ("2027-06") — free text, not a date.
-  huValidUntil      String?       @map("hu_valid_until")
-  color             String?
-  bodyType          String?       @map("body_type")
-  driveType         String?       @map("drive_type")
+  huValidUntil           String?       @map("hu_valid_until")
+  color                  String?
+  bodyType               String?       @map("body_type")
+  driveType              String?       @map("drive_type")
   /// Structured seller-declared payload (ListingVehicleV1Dto). Manual only.
-  vehicleData       Json?         @map("vehicle_data")
-  viewsCount        Int           @default(0) @map("views_count")
+  vehicleData            Json?         @map("vehicle_data")
+  viewsCount             Int           @default(0) @map("views_count")
   /// When the showroom subset of a REPORT-backed listing's photos was copied
   /// into the public bucket. Report photos live in the private reports bucket
   /// beside paid PDFs, so they cannot be served directly — they are mirrored
   /// under a deterministic key instead. Null = not mirrored yet, fall back to
   /// signed URLs.
-  publicPhotosMirroredAt DateTime? @map("public_photos_mirrored_at")
-  publishedAt       DateTime?     @map("published_at")
-  expiresAt         DateTime?     @map("expires_at")
-  createdAt         DateTime      @default(now())
+  publicPhotosMirroredAt DateTime?     @map("public_photos_mirrored_at")
+  publishedAt            DateTime?     @map("published_at")
+  expiresAt              DateTime?     @map("expires_at")
+  createdAt              DateTime      @default(now())
 
   seller User           @relation(fields: [sellerId], references: [id])
   report Report?        @relation(fields: [reportId], references: [id])

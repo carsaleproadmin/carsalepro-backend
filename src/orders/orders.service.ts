@@ -11,6 +11,7 @@ import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { GeoService, NearestInspector } from '../geo/geo.service';
 import { RouteEstimate, RoutingService } from '../geo/routing.service';
+import { resolveContact, type PartyContact } from '../inspector/inspector-contact';
 import { LegalContractService } from '../legal/legal-contract.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
@@ -1319,36 +1320,82 @@ export class OrdersService {
       orderBy: { createdAt: 'asc' },
     });
 
-    const assignedStatuses: OrderStatus[] = [
-      OrderStatus.ASSIGNED,
-      OrderStatus.EN_ROUTE,
-      OrderStatus.IN_PROGRESS,
-      OrderStatus.SUBMITTED,
-      OrderStatus.APPROVED,
-      OrderStatus.COMPLETED,
-      OrderStatus.DISPUTED,
-    ];
+    /*
+     * ⚠ DISCLOSURE IS ONE-WAY AND STARTS AT THE FINISH LINE.
+     *
+     * Both halves of this changed on 2026-08-11, by the owner's decision, and
+     * neither is an implementation detail that may drift back:
+     *
+     *  1. The inspector's channels reach the customer only at COMPLETED. While
+     *     the job is running the platform carries the conversation; the point of
+     *     the card is the period AFTER the report, when the customer wants to
+     *     ask the person who looked at the car. Disclosing at assignment let the
+     *     two parties step out of the platform before it had delivered anything.
+     *  2. The customer's channels are never disclosed to the inspector at all.
+     *
+     * COMPLETED is reached by a successful PAYOUT, not by the inspection — an
+     * order whose payout parks (an inspector without Stripe onboarding) stays
+     * APPROVED, and its customer sees no contacts. That is the accepted cost of
+     * "only when it is finished"; `releasePayout` parks rather than fails, and
+     * the admin finance queue is where such an order gets unstuck.
+     */
+    /*
+     * COMPLETED and nothing else.
+     *
+     * DISPUTED is deliberately NOT here (owner's decision, reverted 2026-08-11
+     * after being tried): a dispute is handled by the platform, and handing the
+     * two sides each other's channels mid-conflict moves the argument somewhere
+     * nobody can see or arbitrate. The admin holds both sides for exactly that
+     * reason — see the admin branch below.
+     */
+    const disclosedToCustomer = order.status === OrderStatus.COMPLETED;
 
-    // Inspector contact is only exposed once the order is at least ASSIGNED.
-    let inspectorContact: { userId: string; name: string | null; phone: string | null; companyName: string | null } | null =
-      null;
-    if (order.inspectorId && assignedStatuses.includes(order.status)) {
-      const insp = await this.prisma.user.findUnique({
-        where: { id: order.inspectorId },
-        select: { id: true, name: true, phone: true },
+    /*
+     * The status gate binds the CUSTOMER, never the admin: an admin who could
+     * only see the parties of a finished order would be blind on the cases they
+     * exist for. Both directions are admin-readable in every status, and neither
+     * is customer- or inspector-readable outside the rule above.
+     */
+    let inspectorContact: PartyContact | null = null;
+    if (order.inspectorId && ((isCustomer && disclosedToCustomer) || isAdmin)) {
+      const [insp, profile] = await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: order.inspectorId },
+          select: { id: true, name: true, email: true, phone: true, deletedAt: true },
+        }),
+        this.prisma.inspectorProfile.findUnique({
+          where: { userId: order.inspectorId },
+          select: {
+            companyName: true,
+            contactPhone: true,
+            contactEmail: true,
+            contactWhatsapp: true,
+            contactTelegram: true,
+          },
+        }),
+      ]);
+      inspectorContact = resolveContact(insp, profile);
+    }
+
+    /*
+     * The customer's channels go to an ADMIN and to nobody else.
+     *
+     * Not even to the assigned inspector, and not at any status: an inspector
+     * who has the customer's phone number can arrange the next job — and every
+     * one after it — directly, which takes the platform out of the transaction
+     * it is responsible for. The address and the scheduled time are already on
+     * the order, so the work itself needs no personal channel.
+     *
+     * The admin keeps it because a dispute cannot be resolved without reaching
+     * both sides.
+     */
+    let customerContact: PartyContact | null = null;
+    if (isAdmin) {
+      const customer = await this.prisma.user.findUnique({
+        where: { id: order.customerId },
+        select: { id: true, name: true, email: true, phone: true, deletedAt: true },
       });
-      const profile = await this.prisma.inspectorProfile.findUnique({
-        where: { userId: order.inspectorId },
-        select: { companyName: true },
-      });
-      if (insp) {
-        inspectorContact = {
-          userId: insp.id,
-          name: insp.name,
-          phone: insp.phone,
-          companyName: profile?.companyName ?? null,
-        };
-      }
+      customerContact = resolveContact(customer);
     }
 
     // The report row is read in EVERY status, because `reportRequirement` below
@@ -1396,6 +1443,7 @@ export class OrdersService {
         currency: order.currency,
       },
       inspectorContact,
+      customerContact,
       report,
       // Where the money is. Under manual capture the order status alone no
       // longer answers that: PAID means "committed", and held-versus-taken is a
@@ -3142,12 +3190,13 @@ export interface OrderDetail {
     inspectorShareCents: number;
     currency: string;
   };
-  inspectorContact: {
-    userId: string;
-    name: string | null;
-    phone: string | null;
-    companyName: string | null;
-  } | null;
+  /** The inspector's channels. Non-null only for the customer (or an admin), from ASSIGNED on. */
+  inspectorContact: PartyContact | null;
+  /**
+   * The customer's channels. Non-null only for the ASSIGNED inspector (or an
+   * admin) — optional in the type so the website can deploy in either order.
+   */
+  customerContact?: PartyContact | null;
   report: { id: string; code: string; qualityScore: number | null } | null;
   /**
    * Where the customer's money is. Optional in the type (never absent in

@@ -83,6 +83,19 @@ export class UsersService {
         where: { sellerId: userId },
         data: { status: 'DELETED' },
       });
+      // The inspector's work contacts. `updateMany` rather than `update` because
+      // most users have no profile, and this must not throw on them. The profile
+      // row itself stays: orders reference it, and taxId/vatId are retained for
+      // DAC7 reporting — a separate decision from the contact channels.
+      await tx.inspectorProfile.updateMany({
+        where: { userId },
+        data: {
+          contactPhone: null,
+          contactEmail: null,
+          contactWhatsapp: false,
+          contactTelegram: null,
+        },
+      });
       await tx.user.update({
         where: { id: userId },
         data: {

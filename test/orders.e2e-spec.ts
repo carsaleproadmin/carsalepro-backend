@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { Role } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -104,6 +105,19 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     createdUserIds.add(u.userId);
     createdWaitlistEmails.add(u.email);
     return u;
+  }
+
+  async function makeAdmin(): Promise<Registered> {
+    const u = await registerUser(app, 'admin');
+    createdUserIds.add(u.userId);
+    createdWaitlistEmails.add(u.email);
+    await prisma.user.update({ where: { id: u.userId }, data: { role: Role.ADMIN } });
+    // Re-login: the registration token was minted before the role change.
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email: u.email, password: 'Sup3rSecret!' })
+      .expect(200);
+    return { token: res.body.token as string, userId: u.userId, email: u.email };
   }
 
   /**
@@ -411,9 +425,9 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   // ============================================================
-  // 4. Offer accept → ASSIGNED + inspector contact exposed
+  // 4. Offer accept → ASSIGNED (and still no contacts either way)
   // ============================================================
-  it('4. offer accept → ASSIGNED with inspectorId; detail exposes inspector contact', async () => {
+  it('4. offer accept → ASSIGNED with inspectorId; contacts stay closed', async () => {
     const customer = await makeCustomer();
     const inspector = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Hans Müller' });
     const { orderId } = await createPaidOrder(customer);
@@ -439,9 +453,8 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .get(`/api/v1/orders/${orderId}`)
       .set('Authorization', `Bearer ${customer.token}`)
       .expect(200);
-    expect(detail.body.inspectorContact).toBeTruthy();
-    expect(detail.body.inspectorContact.name).toBe('Hans Müller');
-    expect(detail.body.inspectorContact.userId).toBe(inspector.userId);
+    // Assignment does NOT disclose the inspector — that waits for COMPLETED.
+    expect(detail.body.inspectorContact).toBeNull();
 
     // The three optional blocks the website is written against.
     expect(detail.body.payment).toMatchObject({
@@ -458,6 +471,460 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       minQualityScore: PLATFORM_SETTING_DEFAULTS.minReportQualityScore,
       currentQualityScore: null,
     });
+  });
+
+  // ============================================================
+  // 4b. Contact channels — one direction, and only once the job is finished
+  // ============================================================
+  it('4b. discloses every channel the inspector set — to the customer, once the job ends, and to nobody else', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Hans Müller' });
+    await prisma.user.update({
+      where: { id: customer.userId },
+      data: { name: 'Klara Kunde', phone: '+49301111111' },
+    });
+
+    // The inspector fills in the work channels through the real endpoint, so the
+    // normalisation on save is exercised rather than bypassed by a direct write.
+    await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({
+        contactPhone: '+49 176 1234567',
+        contactEmail: 'kontakt@kfz-mueller.de',
+        contactWhatsapp: true,
+        contactTelegram: 'https://t.me/kfz_mueller?start=1',
+      })
+      .expect(200);
+
+    const { orderId } = await createPaidOrder(customer);
+
+    // An inspector who only HOLDS an offer is not a party to the order yet.
+    const pending = await prisma.orderOffer.findFirst({
+      where: { orderId, status: 'PENDING' },
+      select: { inspectorId: true },
+    });
+    const offerHolderToken = inspectorTokens.get(pending!.inspectorId)!;
+    const offerHolderView = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${offerHolderToken}`)
+      .expect(200);
+    expect(offerHolderView.body.customerContact ?? null).toBeNull();
+
+    await acceptPendingOffer(orderId);
+
+    /*
+     * ⚠ THE WHOLE JOB HAPPENS WITH THE CONTACTS CLOSED.
+     *
+     * Assignment, the drive, the inspection and the filed report all pass
+     * without either side seeing the other's channels. Asserting only the
+     * COMPLETED case would pass just as happily against a gate that opened at
+     * assignment, which is exactly what this used to do.
+     */
+    for (const stage of ['ASSIGNED', 'EN_ROUTE', 'IN_PROGRESS'] as const) {
+      if (stage !== 'ASSIGNED') {
+        await request(app.getHttpServer())
+          .post(`/api/v1/orders/${orderId}/status`)
+          .set('Authorization', `Bearer ${inspector.token}`)
+          .send({ status: stage })
+          .expect(200);
+      }
+      const mid = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      expect(mid.body.status).toBe(stage);
+      expect(mid.body.inspectorContact).toBeNull();
+    }
+
+    /*
+     * The status gate binds the CUSTOMER only. A dispute is opened precisely
+     * when an order did NOT finish, so an admin restricted to COMPLETED would be
+     * blind on exactly the orders they are needed for.
+     */
+    const dutyAdmin = await makeAdmin();
+    const midAdmin = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${dutyAdmin.token}`)
+      .expect(200);
+    expect(midAdmin.body.status).toBe('IN_PROGRESS');
+    expect(midAdmin.body.inspectorContact?.email).toBe('kontakt@kfz-mueller.de');
+    expect(midAdmin.body.customerContact?.email).toBe(customer.email);
+
+    await orders.submitReportForOrder(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/approve`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+
+    // APPROVED is the customer accepting the report — still not disclosure.
+    const approved = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(approved.body.status).toBe('APPROVED');
+    expect(approved.body.inspectorContact).toBeNull();
+
+    // COMPLETED is reached by a real payout, never by writing the status.
+    await prisma.inspectorProfile.update({
+      where: { userId: inspector.userId },
+      data: { stripeAccountId: `acct_test_${inspector.userId}` },
+    });
+    await orders.releasePayout(orderId);
+
+    const forCustomer = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(forCustomer.body.status).toBe('COMPLETED');
+    expect(forCustomer.body.inspectorContact).toMatchObject({
+      name: 'Hans Müller',
+      companyName: 'KFZ Test GmbH',
+      // The work address wins over the registration one.
+      email: 'kontakt@kfz-mueller.de',
+      phone: '+491761234567',
+      // Bare digits for wa.me, bare username for t.me — normalised on save.
+      whatsapp: '491761234567',
+      telegram: 'kfz_mueller',
+    });
+    // The customer never sees their own block on their own order.
+    expect(forCustomer.body.customerContact ?? null).toBeNull();
+
+    /*
+     * ⚠ AND THE INSPECTOR NEVER SEES THE CUSTOMER — not even here, with the job
+     * finished and paid. An inspector holding the customer's number can arrange
+     * the next job directly, which takes the platform out of its own market.
+     * The address and the appointment ride on the order; the work needs no
+     * personal channel.
+     */
+    const forInspector = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .expect(200);
+    expect(forInspector.body.customerContact ?? null).toBeNull();
+    // Nor their own block, which once rendered as "the customer's contacts".
+    expect(forInspector.body.inspectorContact ?? null).toBeNull();
+
+    // An admin sees both — a dispute cannot be settled without reaching either.
+    const admin = await makeAdmin();
+    const forAdmin = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(forAdmin.body.inspectorContact?.email).toBe('kontakt@kfz-mueller.de');
+    expect(forAdmin.body.customerContact).toMatchObject({
+      name: 'Klara Kunde',
+      phone: '+49301111111',
+      email: customer.email,
+      // A customer has no inspector profile, so these cannot be set.
+      companyName: null,
+      whatsapp: null,
+      telegram: null,
+    });
+  });
+
+  it('4b1. a parked payout keeps the order APPROVED — and the contacts closed', async () => {
+    /*
+     * The accepted cost of "disclose only when it is finished", pinned so it is
+     * a known consequence rather than a surprise in support.
+     *
+     * COMPLETED is reached by a successful PAYOUT, not by the inspection. An
+     * inspector without a Stripe account id is not payout-eligible, so
+     * `releasePayout` parks the money and the order correctly stays APPROVED —
+     * and the customer, whose car has been inspected and whose report has been
+     * accepted, still cannot see who looked at it. Unsticking that is the admin
+     * finance queue's job.
+     */
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Hans Müller' });
+    await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({
+        contactPhone: '+49 176 1234567',
+        contactWhatsapp: true,
+        contactTelegram: '@kfz_mueller',
+      })
+      .expect(200);
+
+    const { orderId } = await createPaidOrder(customer);
+    await acceptPendingOffer(orderId);
+    await orders.submitReportForOrder(orderId);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/approve`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+
+    // No stripeAccountId is set, so the payout cannot settle.
+    const outcome = await orders.releasePayout(orderId);
+    expect(outcome.status).toBe('parked');
+
+    const stuck = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(stuck.body.status).toBe('APPROVED');
+    expect(stuck.body.inspectorContact).toBeNull();
+
+    // Once the payout goes through, the same order discloses.
+    await prisma.inspectorProfile.update({
+      where: { userId: inspector.userId },
+      data: { stripeAccountId: `acct_test_${inspector.userId}` },
+    });
+    await orders.releasePayout(orderId);
+    const completed = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(completed.body.status).toBe('COMPLETED');
+    expect(completed.body.inspectorContact).toMatchObject({
+      phone: '+491761234567',
+      whatsapp: '491761234567',
+      telegram: 'kfz_mueller',
+    });
+  });
+
+  it('4b2. an erased inspector discloses nothing — not even the tombstone address', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Hans Müller' });
+    await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ contactTelegram: 'kfz_mueller', contactEmail: 'kontakt@kfz-mueller.de' })
+      .expect(200);
+
+    const { orderId } = await createPaidOrder(customer);
+    await acceptPendingOffer(orderId);
+
+    /*
+     * ⚠ THE ORDER MUST REACH COMPLETED FIRST.
+     *
+     * Contacts are closed until then, so erasing at ASSIGNED and asserting
+     * `null` would prove nothing about erasure — the status gate alone would
+     * satisfy it. The disclosure has to be genuinely OPEN before it can be
+     * shown to close.
+     */
+    await orders.submitReportForOrder(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/approve`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    await prisma.inspectorProfile.update({
+      where: { userId: inspector.userId },
+      data: { stripeAccountId: `acct_test_${inspector.userId}` },
+    });
+    await orders.releasePayout(orderId);
+
+    const disclosed = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(disclosed.body.status).toBe('COMPLETED');
+    expect(disclosed.body.inspectorContact?.email).toBe('kontakt@kfz-mueller.de');
+
+    await request(app.getHttpServer())
+      .delete('/api/v1/users/me')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .expect(204);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+
+    // Erasure ANONYMISES: the row survives with deleted+<id>@carsalepro.invalid.
+    // Without the deletedAt check in resolveContact the email fallback would
+    // publish that tombstone to the customer as a live mailto: link.
+    expect(detail.body.inspectorContact).toBeNull();
+
+    const profile = await prisma.inspectorProfile.findUnique({
+      where: { userId: inspector.userId },
+    });
+    expect(profile).toMatchObject({
+      contactPhone: null,
+      contactEmail: null,
+      contactWhatsapp: false,
+      contactTelegram: null,
+    });
+  });
+
+  it('4b2b. a dispute discloses nothing to either side — only the admin holds both', async () => {
+    /*
+     * DISPUTED is NOT a disclosure point, and this test exists because it very
+     * nearly became one. A dispute is arbitrated by the platform: giving the two
+     * sides each other's channels mid-conflict moves the argument off the
+     * platform, where nobody can see it and no admin can settle it.
+     *
+     * The admin holds both sides in every status, which is what makes that
+     * workable — asserted below, since a rule that silences both parties is only
+     * defensible if somebody can still reach them.
+     */
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Hans Müller' });
+    await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ contactEmail: 'kontakt@kfz-mueller.de', contactPhone: '+49 176 1234567' })
+      .expect(200);
+
+    const { orderId } = await createPaidOrder(customer);
+    await acceptPendingOffer(orderId);
+    for (const status of ['EN_ROUTE', 'IN_PROGRESS'] as const) {
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${inspector.token}`)
+        .send({ status })
+        .expect(200);
+    }
+
+    // Still closed while the job merely runs.
+    const running = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(running.body.inspectorContact).toBeNull();
+
+    // Only the CUSTOMER may open a dispute; the inspector is refused.
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/dispute`)
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ reason: 'not mine to open' })
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/dispute`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ reason: 'Der Innenraum wurde nicht begutachtet.' })
+      .expect(200);
+
+    const disputed = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(disputed.body.status).toBe('DISPUTED');
+    expect(disputed.body.inspectorContact).toBeNull();
+
+    // The reverse direction is not a status question: it never opens.
+    const forInspector = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .expect(200);
+    expect(forInspector.body.customerContact ?? null).toBeNull();
+
+    // The admin still reaches both — otherwise a disputed order would be a
+    // conflict nobody on the platform can act on.
+    const arbiter = await makeAdmin();
+    const forAdmin = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${arbiter.token}`)
+      .expect(200);
+    expect(forAdmin.body.inspectorContact?.email).toBe('kontakt@kfz-mueller.de');
+    expect(forAdmin.body.customerContact?.email).toBe(customer.email);
+  });
+
+  it('4b3. refuses a malformed Telegram username instead of silently dropping it', async () => {
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const res = await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ contactTelegram: 'kfz mueller' })
+      .expect(400);
+    expect(res.body.error.code).toBe('invalid_telegram_username');
+  });
+
+  it('4b4. the profile round-trips through an edit form without losing its channels', async () => {
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const saved = {
+      contactPhone: '+49 176 1234567',
+      contactEmail: 'kontakt@kfz-mueller.de',
+      contactWhatsapp: true,
+      contactTelegram: '@kfz_mueller',
+    };
+    await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send(saved)
+      .expect(200);
+
+    /*
+     * ⚠ THE READ MUST CARRY THE RAW COLUMNS, NOT ONLY THE RESOLVED `contact`.
+     *
+     * The website's profile form is controlled and seeds its state from these
+     * four keys. While the response held only `contact`, every field rendered
+     * empty beside a preview showing the saved values, and the form then sent
+     * all four back blank on the next save — which this service reads as
+     * "clear". Asserting `contact` alone would pass against exactly that bug.
+     */
+    const read = await request(app.getHttpServer())
+      .get('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .expect(200);
+    expect(read.body).toMatchObject({
+      contactPhone: '+491761234567',
+      contactEmail: 'kontakt@kfz-mueller.de',
+      contactWhatsapp: true,
+      // Stored bare, so the form shows what the customer will be linked to.
+      contactTelegram: 'kfz_mueller',
+    });
+
+    // Now save again with exactly what a form built from that response submits,
+    // changing something unrelated — the radius. This is the ordinary edit that
+    // used to answer 400 and, once that was fixed, would have wiped the lot.
+    const resave = await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({
+        searchRadiusKm: 42,
+        contactPhone: read.body.contactPhone,
+        contactEmail: read.body.contactEmail,
+        contactWhatsapp: read.body.contactWhatsapp,
+        contactTelegram: read.body.contactTelegram,
+      })
+      .expect(200);
+    // The stored forms, not what was typed: re-saving what the read returned is
+    // a FIXED POINT — normalisation runs on write, so a form that echoes the
+    // response back must not drift the number or the username on every save.
+    expect(resave.body).toMatchObject({
+      searchRadiusKm: 42,
+      contactPhone: '+491761234567',
+      contactEmail: 'kontakt@kfz-mueller.de',
+      contactWhatsapp: true,
+      contactTelegram: 'kfz_mueller',
+    });
+    expect(resave.body.contact).toMatchObject({
+      email: 'kontakt@kfz-mueller.de',
+      whatsapp: '491761234567',
+      telegram: 'kfz_mueller',
+    });
+  });
+
+  it('4b5. an empty contact email CLEARS the channel rather than failing validation', async () => {
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ contactEmail: 'kontakt@kfz-mueller.de', contactPhone: '+49 176 1234567' })
+      .expect(200);
+
+    // Blank is the clear instruction — the same one the other three channels
+    // have always accepted. `@IsEmail` made this field alone answer 400.
+    const cleared = await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ contactEmail: '', contactPhone: '' })
+      .expect(200);
+    expect(cleared.body.contactEmail).toBeNull();
+    expect(cleared.body.contactPhone).toBeNull();
+    // Cleared, not orphaned: the disclosure falls back to the account address.
+    expect(cleared.body.contact.email).toBe(inspector.email);
+
+    // A genuinely malformed address is still refused.
+    await request(app.getHttpServer())
+      .patch('/api/v1/inspector/profile')
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ contactEmail: 'not-an-email' })
+      .expect(400);
   });
 
   // ============================================================
