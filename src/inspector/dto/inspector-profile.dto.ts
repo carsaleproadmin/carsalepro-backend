@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsEmail,
   IsInt,
   IsLatitude,
   IsLongitude,
@@ -9,6 +10,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 /** Upsert the caller's inspector profile (all fields optional / additive). */
@@ -36,6 +38,55 @@ export class UpdateInspectorProfileDto {
   @IsString()
   @MaxLength(64)
   vatId?: string;
+
+  @ApiPropertyOptional({
+    example: '+491761234567',
+    description:
+      'Work phone shown to the customer once an order is completed. Include the country code: ' +
+      'a number without a leading "+" stays usable for tel: but earns no WhatsApp link, ' +
+      'because there is no country to assume for an international platform.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  contactPhone?: string;
+
+  @ApiPropertyOptional({
+    example: 'kontakt@kfz-mueller.de',
+    description: 'Work email shown to the customer. Falls back to the account address when unset.',
+  })
+  @IsOptional()
+  /*
+   * An empty string is the CLEAR instruction, and must not be validated as an
+   * address. The other three channels accept it for free (`@IsString`), and the
+   * service already reads blank as "store null" — `@IsEmail` alone made this one
+   * field disagree, so a form that sends all four back on every save (which the
+   * website's profile form does) was answered 400 and could not be saved at all.
+   */
+  @ValidateIf((dto: UpdateInspectorProfileDto) => dto.contactEmail !== '')
+  @IsEmail()
+  @MaxLength(160)
+  contactEmail?: string;
+
+  @ApiPropertyOptional({
+    example: true,
+    description: 'True when the work phone is reachable on WhatsApp.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  contactWhatsapp?: boolean;
+
+  @ApiPropertyOptional({
+    example: '@kfz_mueller',
+    description:
+      'Telegram username. "@name", "name", "t.me/name" and a full URL are all accepted; ' +
+      'the bare username is stored. Telegram has no reliable public link to a chat by phone ' +
+      'number, which is why this is its own field and not a flag on the phone.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  contactTelegram?: string;
 
   @ApiPropertyOptional({ example: 52.52, description: 'Base latitude (WGS84).' })
   @IsOptional()
