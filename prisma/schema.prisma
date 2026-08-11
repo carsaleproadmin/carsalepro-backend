@@ -865,6 +865,13 @@ model VinHistoryPurchase {
   createdAt     DateTime  @default(now()) @map("created_at")
   readyAt       DateTime? @map("ready_at")
 
+  /// Opaque, unguessable token for the public report link, or null when the
+  /// buyer has not shared it. Minting is explicit and revoking sets it back to
+  /// null, so the link is off by default and its whole lifetime is the owner's
+  /// decision. Unique because it is the sole lookup key on a public route.
+  shareToken          String?   @unique @map("share_token")
+  shareTokenCreatedAt DateTime? @map("share_token_created_at")
+
   user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   report  VinHistoryReport? @relation(fields: [reportId], references: [id])
   payment Payment?          @relation(fields: [paymentId], references: [id])

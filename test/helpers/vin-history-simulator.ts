@@ -41,71 +41,30 @@ import {
   VinHistoryPreviewSummary,
   VinHistoryProvider,
 } from '../../src/vin-history/vin-history.provider';
-import { RawAmount, RawProviderResponse } from './vin-history-raw';
+import { RawProviderResponse } from './vin-history-raw';
 
-const KM_PER_MILE = 1.609344;
 
 // ============================================================
 // Field-level normalisation
 // ============================================================
 
-/**
- * ISO 'YYYY-MM-DD', German 'DD.MM.YYYY', or nothing.
- *
- * Returns null rather than guessing on anything else: a wrong date on a damage
- * record is worse than a missing one, because the buyer will act on it.
+/*
+ * These five were prototyped here and are production code now, in
+ * `src/vin-history/vin-history-normalize.ts` — the real CarsXE mapper needs
+ * them and a mapper in `src/` must not import from `test/`. They are
+ * re-exported rather than copied, so the assertions in
+ * `test/vin-history-provider-simulation.e2e-spec.ts` keep pinning the code
+ * that actually ships.
  */
-export function normalizeDate(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
-  const german = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(trimmed);
-  if (german) return `${german[3]}-${german[2]}-${german[1]}`;
-  return null;
-}
+export { maskPlate, normalizeDate, toCents, toKilometres } from '../../src/vin-history/vin-history-normalize';
 
-/**
- * A decimal amount in euros as an integer number of cents.
- *
- * Accepts a JS number, an English string ('4317.37') and a German one
- * ('12.480,90'). The platform rule is integer cents everywhere; a provider
- * sending floats is not an excuse to start carrying them.
- */
-export function toCents(raw: RawAmount | null | undefined): number | null {
-  if (!raw || raw.amount === null || raw.amount === undefined) return null;
-  let amount: number;
-  if (typeof raw.amount === 'number') {
-    amount = raw.amount;
-  } else {
-    const text = raw.amount.trim();
-    // German grouping: '12.480,90' → thousands '.', decimal ','.
-    const normalized = /,\d{1,2}$/.test(text)
-      ? text.replace(/\./g, '').replace(',', '.')
-      : text.replace(/,/g, '');
-    amount = Number.parseFloat(normalized);
-  }
-  if (!Number.isFinite(amount)) return null;
-  // Round at the boundary, once. Float cents propagating into the DB is how a
-  // money column starts disagreeing with itself.
-  return Math.round(amount * 100);
-}
-
-/** A mileage reading in kilometres, whatever unit it arrived in. */
-export function toKilometres(value: unknown, unit: unknown): number | null {
-  const numeric = typeof value === 'string' ? Number.parseFloat(value) : value;
-  if (typeof numeric !== 'number' || !Number.isFinite(numeric)) return null;
-  const isMiles = typeof unit === 'string' && /^mi(les)?$/i.test(unit.trim());
-  return Math.round(isMiles ? numeric * KM_PER_MILE : numeric);
-}
-
-/** A full plate is personal data — only ever store the masked form. */
-export function maskPlate(plate: unknown): string | null {
-  if (typeof plate !== 'string' || plate.trim() === '') return null;
-  const cleaned = plate.trim().toUpperCase();
-  const head = cleaned.slice(0, 2);
-  const tail = cleaned.slice(-2);
-  return `${head}****${tail}`;
-}
+import {
+  asArray,
+  maskPlate,
+  normalizeDate,
+  toCents,
+  toKilometres,
+} from '../../src/vin-history/vin-history-normalize';
 
 function mapOwnerType(value: unknown): VinHistoryOwnerType {
   const text = String(value ?? '').toLowerCase();
@@ -160,12 +119,6 @@ function mapRecallOpen(value: unknown): boolean {
   const text = String(value ?? '').toLowerCase();
   if (text === 'open' || text === 'offen') return true;
   return false;
-}
-
-function asArray<T>(value: T[] | T | null | undefined): T[] {
-  if (Array.isArray(value)) return value;
-  if (value === null || value === undefined) return [];
-  return [value];
 }
 
 // ============================================================
