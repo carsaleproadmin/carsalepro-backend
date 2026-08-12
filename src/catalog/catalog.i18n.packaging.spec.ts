@@ -26,7 +26,7 @@ describe('catalog i18n packaging', () => {
     // Required, not optional: `require` would resolve the file from the build
     // output in some configurations, and this must read the source of truth.
     const config = JSON.parse(
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('node:fs').readFileSync(join(root, 'nest-cli.json'), 'utf8'),
     ) as { compilerOptions?: { assets?: { include?: string }[] } };
 

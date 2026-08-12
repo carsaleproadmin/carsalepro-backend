@@ -232,6 +232,22 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const platformFee = Math.round((res.body.totalCents * 20) / 100);
     expect(platformFee).toBe(FARE.platformFeeCents);
     expect(res.body.totalCents - platformFee).toBe(FARE.inspectorShareCents);
+
+    /*
+     * The split is QUOTED, not only persisted. Both sides are shown the
+     * commission by name (decided 2026-08-11), and the customer sees it before
+     * paying — which it cannot be if the numbers never leave the server. This
+     * used to be derivable only by re-doing the percentage on the client, which
+     * is the same arithmetic in a second place and a float one at that.
+     */
+    expect(res.body.breakdown.platformFeeCents).toBe(FARE.platformFeeCents);
+    expect(res.body.breakdown.inspectorShareCents).toBe(
+      FARE.inspectorShareCents,
+    );
+    expect(
+      res.body.breakdown.platformFeeCents +
+        res.body.breakdown.inspectorShareCents,
+    ).toBe(res.body.totalCents);
   });
 
   // ============================================================
@@ -1385,5 +1401,15 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const found = res.body.items.find((o: { id: string }) => o.id === orderId);
     expect(found).toBeTruthy();
     expect(found.status).toBe('PAID');
+
+    /*
+     * The row carries the split. The inspector's offer LIST is the first place
+     * a job is priced for them, and it printed `totalCents` — the customer's
+     * number, which overstates the earning by the whole commission. Without
+     * these two fields on the row there is nothing else for it to print.
+     */
+    expect(found.platformFeeCents + found.inspectorShareCents).toBe(
+      found.totalCents,
+    );
   });
 });
