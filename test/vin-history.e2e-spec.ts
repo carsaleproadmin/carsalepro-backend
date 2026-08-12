@@ -117,7 +117,12 @@ describe('VIN history — paid provenance (e2e)', () => {
       .expect(200);
 
     expect(res.body.vin).toBe(vin);
-    expect(res.body.provider).toBe('mock');
+    // The wire NEVER names a data source. Which companies stand behind a
+    // report is commercial information; what a reader is owed is whether each
+    // one was asked and what it answered. `synthetic` is the opposite case and
+    // stays — hiding who supplied data is a choice, hiding that data was
+    // GENERATED is not.
+    expect(res.body.provider).toBeUndefined();
     // Never pass generated data off as real.
     expect(res.body.synthetic).toBe(true);
     expect(typeof res.body.summary.recordCount).toBe('number');

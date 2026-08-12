@@ -342,6 +342,43 @@ function payloadV2(overrides: Partial<VinHistoryPayloadV2> = {}): VinHistoryPayl
   };
 }
 
+/**
+ * A payload from two sources: several valuations, the two chapters the second
+ * one brought, and a theft check that says which registers it searched.
+ */
+function payloadTwoSources(overrides: Partial<VinHistoryPayloadV2> = {}): VinHistoryPayloadV2 {
+  const one = payloadV2();
+  return payloadV2({
+    marketValues: [
+      one.marketValue!,
+      {
+        currency: 'EUR',
+        retail: null,
+        tradeIn: null,
+        msrpCents: 1_499_000,
+        mileageKm: 180_000,
+        asOf: '2026-01-20',
+      },
+    ],
+    timeToSell: { countryCode: 'DE', medianDays: 42, p25Days: 21, p75Days: 77 },
+    inspectionValidity: {
+      countryCode: 'DE',
+      technicalValidTo: '2028-03-31',
+      emissionsValidTo: '2024-03-31',
+    },
+    theftCoverage: { countryCodes: ['US'] },
+    vehicle: { ...one.vehicle!, transmission: 'automatic', drivetrain: 'ALL_WHEEL_DRIVE', enginePowerKw: 225 },
+    equipment: {
+      ...one.equipment!,
+      groups: [
+        { category: 'SAFETY_SYSTEM', items: ['ABS', 'ELECTRONIC_STABILITY_PROGRAM'] },
+        { category: 'INTERIOR_FEATURE', items: ['ELECTRIC_TRUNK'] },
+      ],
+    },
+    ...overrides,
+  });
+}
+
 describe('renderVinHistoryPdf — contract v2', () => {
   it('produces a PDF from a v2 payload', async () => {
     const pdf = await renderVinHistoryPdf(payloadV2(), OPTS);
@@ -421,6 +458,32 @@ describe('renderVinHistoryPdf — contract v2', () => {
     } finally {
       tracker.restore();
     }
+  });
+
+  it('draws the two chapters and the extra valuation the second source brought', async () => {
+    // Same cheap proxy as above: the additions reach the page rather than being
+    // built and dropped.
+    const one = await renderVinHistoryPdf(payloadV2(), OPTS);
+    const two = await renderVinHistoryPdf(payloadTwoSources(), OPTS);
+    expect(two.length).toBeGreaterThan(one.length);
+    expect(pdfPageCount(two)).toBeGreaterThanOrEqual(pdfPageCount(one));
+  });
+
+  it('renders a two-source payload in every locale', async () => {
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const pdf = await renderVinHistoryPdf(payloadTwoSources(), { ...OPTS, locale });
+      expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    }
+  });
+
+  it('draws a theft chapter whose registers searched nothing', async () => {
+    // The chapter prints no row at all in this case, so the section falls back
+    // to its note box — a different drawing path from every other empty one.
+    const pdf = await renderVinHistoryPdf(
+      payloadTwoSources({ theftCoverage: { countryCodes: [] } }),
+      OPTS,
+    );
+    expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
   });
 
   it('never throws on a v2 payload the renderer has not seen before', async () => {

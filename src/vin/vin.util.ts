@@ -37,11 +37,23 @@ export function normalizeVin(vin: string): string {
 }
 
 /**
- * Whether a paid history lookup for this VIN is worth attempting.
+ * Whether a VIN looks like a car a US TITLE SOURCE can answer for.
  *
  * - `supported`   — the VIN is well-formed and its check digit computes.
  * - `not_covered` — well-formed, check digit does not compute.
  * - `invalid_vin` — not a VIN at all.
+ *
+ * ⚠️ THIS IS NO LONGER THE SELLING GATE. It was, while one US source was the
+ * only source. A second source now describes European cars — identity,
+ * equipment, and for some countries an odometer ladder — so refusing a European
+ * VIN would refuse a report we can actually produce. The composite provider
+ * gates selling on FORMAT alone, and this function keeps the narrower job it was
+ * always really doing: deciding whether to spend a call on the two US-only
+ * endpoints (recalls, lien and theft), which answer "success, zero events" for a
+ * European VIN from a database that was never searched.
+ *
+ * Selling and region-routing are two questions. Answering both with one function
+ * is what tied the product's reach to a US titling rule.
  *
  * WHY THE CHECK DIGIT, AND NOT THE REGION.
  *
@@ -62,14 +74,15 @@ export function normalizeVin(vin: string): string {
  *
  * IT IS A HEURISTIC AND NOT A GUARANTEE, in both directions:
  *
- * - False negative: a European car later imported and titled in the US is
- *   refused here, and the visitor is told to order a real inspection instead.
+ * - False negative: a European car later imported and titled in the US has its
+ *   US endpoints skipped, so a real title trail is missed. It costs coverage,
+ *   never money, and no longer costs the sale.
  * - False positive: a valid check digit is not a promise that any records exist.
  *   That case survives to the billable lookup and is caught by
  *   `MIN_SELLABLE_RECORD_COUNT`, which refunds the buyer in full.
  *
- * What it buys is the thing that has to hold: no visitor is ever offered a paid
- * report the source plainly cannot produce, and finding that out costs nothing.
+ * What it buys is worth keeping: a section that says "not covered" instead of a
+ * section that says "nothing found" when nothing was ever searched.
  */
 export type VinHistoryCoverage = 'supported' | 'not_covered' | 'invalid_vin';
 

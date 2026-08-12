@@ -59,20 +59,28 @@ const COLUMN_WEIGHTS: Record<VinHistoryReportSectionId, number[]> = {
   mileage: [1.3, 1.6, 1.6, 1],
   damages: [1.3, 1.4, 2.4, 1.8, 1],
   registrations: [0.9, 1.2, 1.5, 1.5, 1.4, 1.3],
-  recalls: [1.4, 1.2, 1.1, 2.8, 1],
-  theft: [1.8, 1.2, 0.9, 1.8, 1.4],
+  recalls: [1.4, 1.2, 2.8, 1],
+  theft: [1.8, 1.2, 0.9, 1.8],
   inspections: [1.2, 1.4, 1.7, 1.4, 0.9, 1.2],
+  inspectionValidity: [2.0, 0.8, 1.4],
   insurance: [1.2, 1.7, 0.8, 1.1, 2.2],
   // The brand's own wording gets the widest column: it is printed verbatim and
   // must not be the thing that wraps into an unreadable stack.
   brands: [1.2, 2.3, 1.5, 1.4, 0.8],
   service: [1.2, 1.2, 1.8, 0.8, 2.0],
   equipment: [1.1, 3.3],
-  marketValue: [1.5, 1.2, 1.2, 1.2, 1.2],
+  // The basis column carries a valuation number in front of the label when a
+  // payload holds more than one ladder, so it is the widest of the five.
+  marketValue: [1.8, 1.15, 1.15, 1.15, 1.15],
+  timeToSell: [1.1, 1.1, 1.4, 1.4],
 };
 
-/** Relative widths of the sources table, which is not a section. */
-const SOURCE_COLUMN_WEIGHTS = [2.4, 1.8, 1] as const;
+/**
+ * Relative widths of the sources table, which is not a section.
+ *
+ * Two columns since the block stopped naming datasets: a position and a status.
+ */
+const SOURCE_COLUMN_WEIGHTS = [2.4, 1] as const;
 
 export interface VinHistoryPdfOptions {
   /** `User.locale`; anything unsupported falls back to the platform default. */
@@ -142,9 +150,11 @@ export function renderVinHistoryPdf(
       for (const section of model.sections) {
         drawSection(doc, section, fonts);
       }
-      // Last, like a bibliography: it explains where everything above came from
-      // and is what makes an "unavailable" note checkable rather than an excuse.
+      // Last, like a bibliography: it explains how many queries stand behind
+      // everything above and is what makes an "unavailable" note checkable
+      // rather than an excuse. It names nobody — see the report model.
       if (model.sources) drawSources(doc, model.sources, fonts);
+      if (model.closingNote) drawClosingNote(doc, model.closingNote, fonts);
       drawFooters(doc, model, fonts);
 
       doc.end();
@@ -312,20 +322,14 @@ function drawVehicle(
     doc.y = y + 13;
   }
 
-  if (vehicle.sourceNote) {
-    doc
-      .font(fonts.regular)
-      .fontSize(7.5)
-      .fillColor(COLOR.muted)
-      .text(vehicle.sourceNote, PAGE_MARGIN, doc.y + 2, { width: contentWidth(doc) });
-  }
-
   doc.moveDown(0.8);
   doc.x = PAGE_MARGIN;
 }
 
 /**
- * The provenance block: which datasets were consulted, and how each answered.
+ * The provenance block: how many queries stand behind the document, and how
+ * each one answered. Positions and statuses only; the model drops every name
+ * before it gets here.
  *
  * Only a FAILED source is toned as an alert — see the model. Everything else is
  * ordinary bookkeeping and colouring it would spend the reader's attention on
@@ -357,12 +361,30 @@ function drawSources(
     drawTableRow(
       doc,
       sources.columns,
-      { cells: [line.label, line.dataset, line.statusLabel], flagged: line.tone === 'alert', notes: [] },
+      { cells: [line.label, line.statusLabel], flagged: line.tone === 'alert', notes: [] },
       widths,
       fonts,
     );
   }
   doc.moveDown(0.9);
+  doc.x = PAGE_MARGIN;
+}
+
+/**
+ * The closing line.
+ *
+ * One muted sentence saying the report was compiled from several independent
+ * vehicle-data sources — no count, no ranking, no names. It sits under the
+ * provenance block because that is where a reader who has just counted the
+ * positions is looking, and it is the last thing on the page for the same
+ * reason a colophon is.
+ */
+function drawClosingNote(doc: PDFKit.PDFDocument, note: string, fonts: PdfFonts): void {
+  doc.font(fonts.regular).fontSize(8);
+  const height = doc.heightOfString(note, { width: contentWidth(doc) }) + 6;
+  ensureSpace(doc, height);
+  doc.fillColor(COLOR.muted).text(note, PAGE_MARGIN, doc.y, { width: contentWidth(doc) });
+  doc.moveDown(0.6);
   doc.x = PAGE_MARGIN;
 }
 
