@@ -17,13 +17,6 @@ import { CONTRACT_TEMPLATES, ContractKey } from './legal-contracts.content';
  */
 const MAX_PDF_ATTEMPTS = 5;
 
-/** ISO codes of the EU member states (used to resolve the EU contract template). */
-const EU_MEMBER_STATES = new Set([
-  'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR',
-  'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK',
-  'SI', 'ES', 'SE',
-]);
-
 /** Public projection of an order's contract, returned to either party or an admin. */
 export interface ContractView {
   orderId: string;
@@ -45,14 +38,22 @@ export class LegalContractService {
   ) {}
 
   /**
-   * Map an order's country code to the contract template key.
-   * DE → contract_de; any other EU member state → contract_eu; otherwise →
-   * contract_en. DE is checked first so it never falls through to the EU template.
+   * Give the contract template key for an order.
+   *
+   * Every order gets `contract_en`. The country code is not used.
+   *
+   * Before 2026-08-12 this mapped DE to `contract_de` and other EU member
+   * states to `contract_eu`. The owner decided that all orders use one
+   * agreement, in English, because English is the language both parties can
+   * read when the customer, the inspector and the vehicle are in different
+   * countries. The `contract_de` and `contract_eu` rows stay in the database:
+   * contracts rendered before this date point to them, and an admin can still
+   * see them.
+   *
+   * The parameter stays in the signature. The callers give the country code,
+   * and a later decision can make this a mapping again.
    */
-  resolveTemplateKey(countryCode: string): ContractKey {
-    const code = (countryCode ?? '').toUpperCase();
-    if (code === 'DE') return 'contract_de';
-    if (EU_MEMBER_STATES.has(code)) return 'contract_eu';
+  resolveTemplateKey(_countryCode: string): ContractKey {
     return 'contract_en';
   }
 
