@@ -68,6 +68,15 @@ export interface QuoteResult {
     minimumFareCents: number;
     minimumFareTopUpCents: number;
     minimumFareApplied: boolean;
+    /**
+     * The split of `totalCents`. Both sides are quoted the same two numbers:
+     * the customer is shown what the platform keeps, the inspector what they
+     * earn, and `platformFeeCents + inspectorShareCents === totalCents` holds.
+     * Quoted before an inspector exists because the split is a function of the
+     * tariff, not of who takes the job.
+     */
+    platformFeeCents: number;
+    inspectorShareCents: number;
   };
   nearestKm?: number;
   candidates?: Array<{ displayName: string | null; company: string | null; distanceKm: number }>;
@@ -380,6 +389,8 @@ export class OrdersService {
         minimumFareCents: p.minimumFareCents,
         minimumFareTopUpCents: p.minimumFareTopUpCents,
         minimumFareApplied: p.minimumFareApplied,
+        platformFeeCents: p.platformFeeCents,
+        inspectorShareCents: p.inspectorShareCents,
       },
       // Straight-line distance to each candidate — this is a "who is near you"
       // list, not a priced figure, so it stays on the cheap measure.
@@ -3140,6 +3151,12 @@ export class OrdersService {
       address: o.address,
       scheduledAt: o.scheduledAt.toISOString(),
       totalCents: o.totalCents,
+      // The split rides on the row because the inspector's list is the FIRST
+      // place a job is priced for them, and `totalCents` there is the
+      // customer's number — it overstates what they earn by the whole
+      // commission. Sent to both sides; each renders the figure that is theirs.
+      platformFeeCents: o.platformFeeCents,
+      inspectorShareCents: o.inspectorShareCents,
       currency: o.currency,
       createdAt: o.createdAt.toISOString(),
     };
