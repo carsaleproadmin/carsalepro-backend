@@ -88,11 +88,37 @@ The manifest is a root route alongside `/catalog` and `/legal`; the frozen mobil
 
 ## Paid VIN history: the provider seam (`src/vin-history/`)
 
-`VIN_HISTORY_PROVIDER` selects one provider per process — `mock` or `carsxe`. Anything else logs loudly and **falls back to the mock**, which refuses paid unlocks in production, so a typo costs a 503 and never a charge. Keep that fall-through whatever else changes; it is why the env var is not a Joi `.valid()` list, which would take the whole API down over one feature.
+`VIN_HISTORY_PROVIDER` selects one provider per process — `mock`, `carsxe`, or **`aggregate`**, which is the real one. Anything else logs loudly and **falls back to the mock**, which refuses paid unlocks in production, so a typo costs a 503 and never a charge. Keep that fall-through whatever else changes; it is why the env var is not a Joi `.valid()` list, which would take the whole API down over one feature.
+
+### `aggregate` — several sources, one report
+
+`CompositeVinHistoryProvider` implements the same one-provider interface, so the schema, the R2 layout and the whole money path are untouched. It holds the members that are CONFIGURED, so turning a source on is a key and not a release, and merges their answers in `merge-vin-history.ts`.
+
+- **The mock is never a member.** `synthetic` is one flag for a whole report and the merge marks a report synthetic only if EVERY member was, so a mock beside a real source would be sold as fully sourced. No member configured ⇒ `configured: false` ⇒ 503.
+- **Each member is cached under its OWN name** (`ProviderResponseCache`, same `(vin, provider)` table). A warm row for one source does not re-pay the other — which matters when one lookup costs about $5.
+- **Member order is meaningful**: it drives `sources[]` order and which member wins a single-valued section. Most complete first.
+- **Merge rules that are not obvious**: mileage becomes ONE chronological ladder with `suspicious` recomputed across the merged series (a cross-source rollback is only visible after merging); recalls are NOT merged (every source relays the same US authority); valuations are never blended into one number; `theftCoverage.countryCodes` is the union and must never be lost; `summary` is recomputed from the merged arrays, never copied.
 
 - **`provider.name` is a FROZEN LITERAL.** It is half of the `vin_provider` unique key on `VinHistoryReport`, it is stamped on every `VinHistoryPurchase`, and it is baked into the R2 keys of both the archived JSON and the rendered PDF (`vin-history/<provider>/<vin>/…`). Renaming it orphans every cached report, every purchase's provenance and every stored document **silently** — nothing errors, the cache simply never hits again.
 - **Payload v1 and v2 both exist and both must render.** `VinHistoryPurchase.payload` is the immutable artefact a buyer paid for; every already-sold row says `schemaVersion: 1` and always will. v1 is frozen, v2 is a separate type, `VinHistoryPayload` is the union, and every reader branches through `isVinHistoryPayloadV2`. Never widen v1 in place — it would retroactively invalidate every payload already sold.
 - **Three facts are distinct and the types keep them apart**: "we asked and there is nothing" (`covered` + empty), "we asked and the source broke" (`unavailable`), "this source never holds this" (`not_covered`). That is `payload.coverage`, and it is the `null`-is-not-`0` rule applied one level up. Service history is permanently `not_covered` with CarsXE; a buyer must read that, not a blank table that looks like "this car was never serviced".
+
+### CarAPI specifics
+
+Real captured responses live in `test/fixtures/carapi/` with a README explaining what they are evidence FOR. Unlike the CarsXE fixtures, these were observed, not written from documentation.
+
+1. **⚠️ Mileage is KILOMETRES and carries no unit field.** `odometerUnit()` in `carsxe.mapper.ts` reads a blank unit as MILES, so putting CarAPI values through that path turns 239 556 km into 385 527 km. `carapi.mapper.ts` hard-codes km (`CARAPI_MILEAGE_UNIT`) and a test pins that 239 556 stays 239 556. Never share an odometer helper between the two mappers.
+2. **No free probe, and a `400 Invalid VIN` may mean "not in our database".** The API does not distinguish malformed from unknown, and **every call costs a credit including a 400, a 404 and a 503**. `/v1/account` is the only free endpoint. So `preview()` makes no call, and an `empty` decode stops the bundle before five more credits are spent.
+3. **`manufacturer.country` is the BUILD country, never registration.** Nothing in this API says where a vehicle is registered. Rendering it as "registered in Germany" is wrong for every import.
+4. **`stolen-check` covers SK, CZ, SI, HU, RO and nothing else.** `theftCoverage.countryCodes` carries which registers were actually searched, and the report must never let `stolen: false` alone read as clean for a car registered elsewhere.
+5. **`GET /photos/{vin}` is not implemented and must not be.** Its response embeds our API key in every URL it returns. A test asserts no such method exists on the client.
+6. **Calls are sequenced, not parallel** — the limit is 10/minute and a six-call fan-out rate-limits itself.
+
+### The report NEVER names a data source
+
+Which companies stand behind a report is commercial information; what a reader is owed is whether each source answered. `sources[]` keeps the STATUS and the renderers resolve each entry to a neutral position. `provider` is gone from all four rendered DTOs while the DB and R2 columns keep it. `vin-history-report-model.spec.ts` walks the whole built model against a deliberately poisoned payload and asserts no source name survives, in every locale — **that guard is the requirement, not a spot check.**
+
+**`synthetic` is the opposite case and stays fully visible.** Hiding who supplied data is a commercial choice; hiding that data was GENERATED is not.
 
 ### CarsXE specifics — three traps
 
@@ -100,7 +126,7 @@ The manifest is a root route alongside `/catalog` and `/legal`; the frozen mobil
 2. **`/v1/recalls` and `/v1/lien-theft` are US-only and do not say so.** Asked about a European VIN they answer `success: true` with zero events, from a database that was never searched. Rendered through, that is "no theft record found" — a false clean bill of health. The provider **skips** them for a non-US-market VIN and marks both sections `not_covered`.
 3. **There is no free probe, and every endpoint is billable.** `preview()` therefore makes no CarsXE call at all. The free pre-check is the VIN check digit plus the NHTSA decode (`VinModule`, consumed **as a service** — `GET /vin/:vin` is a frozen mobile route the website may not call). One unlock costs roughly $8 against €19.99 retail.
 
-- **Coverage is decided for free, and it is the check digit — not the region character.** `vinHistoryCoverage` in `src/vin/vin.util.ts` carries the reasoning: a German-built BMW sold in California has a `W` VIN and a full US title ladder, so a region gate refuses exactly the imports this product exists to check. 49 CFR 565 makes position 9 mandatory for US-market vehicles and optional elsewhere. It is a heuristic in both directions and says so.
+- **The selling gate is VIN FORMAT, and nothing else.** It used to be the check digit, which refused European domestic VINs — precisely the cars the second source can describe. `vinHistoryCoverage` in `src/vin/vin.util.ts` still computes the check digit and still carries its long rationale, but its job is now narrower: it decides whether to spend a call on the two US-only endpoints, which answer "success, zero events" for a European VIN from a database that was never searched. **Selling and region-routing are two questions**; answering both with one function is what tied the product's reach to a US titling rule.
 - **A record-less answer is REMEMBERED** (`vinHistoryEmptyCacheDays`, 7 days, against 30 for a real report). It used to be discarded so a VIN gaining its first record would not stay unsellable, which meant every attempt paid the per-lookup fee again to reach the same refund. The short window keeps both properties. `0` disables it.
 - **`unlock` refuses uncovered VINs BEFORE any purchase or payment row exists**, so the refusal is free — nothing charged, nothing to refund, the provider never asked. The preview hiding the button is not the gate; the route is reachable directly and from any stale tab.
 

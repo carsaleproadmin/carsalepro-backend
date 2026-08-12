@@ -30,6 +30,7 @@ import {
   buildVinHistoryReportModel,
   formatCents,
   formatIsoDate,
+  formatToken,
   monthsBetween,
   normalizeOwnerPeriods,
 } from './vin-history-report-model';
@@ -839,12 +840,20 @@ describe('VIN history report model — v2 sections', () => {
     }
   });
 
-  it('counts records, and does not count equipment or valuation rows as records', () => {
-    // A colour list is not something that happened to the car. Counting it would
-    // inflate the one number a buyer reads as "how much is known about this car".
+  it('counts records, and does not count the descriptive chapters as records', () => {
+    // A colour list is not something that happened to the car, and neither is a
+    // valuation, a certificate expiry or how long the market takes to sell one.
+    // Counting them would inflate the one number a buyer reads as "how much is
+    // known about this car".
     const model = build(payloadV2());
+    const describes: VinHistoryReportSectionId[] = [
+      'equipment',
+      'marketValue',
+      'inspectionValidity',
+      'timeToSell',
+    ];
     const recordRows = model.sections
-      .filter((s) => s.id !== 'equipment' && s.id !== 'marketValue')
+      .filter((s) => !describes.includes(s.id))
       .reduce((n, s) => n + s.rows.length, 0);
     expect(model.counts.records).toBe(recordRows);
     expect(sectionOf(model, 'equipment').rows.length).toBeGreaterThan(0);
@@ -1049,12 +1058,15 @@ describe('VIN history report model — equipment and market value', () => {
 });
 
 describe('VIN history report model — the vehicle block', () => {
-  it('opens the document with the decoded car and names the decoder', () => {
+  it('opens the document with the decoded car and does NOT name the decoder', () => {
+    // It used to print "Decoded by: carsxe-specs" under the block, in grey. A
+    // decoder is a data source, and this document names none.
     const vehicle = build(payloadV2()).vehicle!;
     const byId = Object.fromEntries(vehicle.entries.map((e) => [e.id, e.value]));
     expect(byId.make).toBe('BMW');
     expect(byId.model).toBe('320d');
-    expect(vehicle.sourceNote).toContain('carsxe-specs');
+    expect(Object.keys(vehicle)).toEqual(['title', 'entries']);
+    expect(JSON.stringify(vehicle)).not.toContain('carsxe');
   });
 
   it('omits a field the decoder did not know rather than printing an empty row', () => {
@@ -1101,11 +1113,39 @@ describe('VIN history report model — the vehicle block', () => {
 });
 
 describe('VIN history report model — the sources block', () => {
-  it('names every dataset that was consulted, with its status', () => {
+  it('keeps one line per query, with its status and without its identity', () => {
+    // The status is the product; the identity is not. A buyer must be able to
+    // tell "checked and empty" from "could not be reached", and must not be
+    // able to tell which company was asked.
+    const s = vinHistoryPdfStrings('de');
     const sources = build(payloadV2()).sources!;
     expect(sources.lines).toHaveLength(4);
-    expect(sources.lines[0].dataset).toBe('NMVTIS');
-    expect(sources.lines[0].statusLabel).toBe(vinHistoryPdfStrings('de').sources.status.ok);
+    expect(sources.lines[0].statusLabel).toBe(s.sources.status.ok);
+    expect(sources.lines.map((l) => l.label)).toEqual([
+      `${s.sources.position} 1`,
+      `${s.sources.position} 2`,
+      `${s.sources.position} 3`,
+      `${s.sources.position} 4`,
+    ]);
+    // Dropped at the model, not at the renderer: no drawing code can reach what
+    // does not exist on the line.
+    expect(Object.keys(sources.lines[0]).sort()).toEqual([
+      'label',
+      'status',
+      'statusLabel',
+      'tone',
+    ]);
+    expect(JSON.stringify(sources)).not.toMatch(/carsxe|nmvtis|nhtsa/i);
+  });
+
+  it('gives the three statuses three different words, in every locale', () => {
+    // The whole value of the block. "Answered but empty" and "never reached"
+    // are the two things a numbered position still has to tell apart.
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const labels = build(payloadV2(), locale).sources!.lines.map((l) => l.statusLabel);
+      expect(new Set(labels.slice(0, 3)).size).toBe(3);
+      for (const label of labels) expect(label.trim().length).toBeGreaterThan(0);
+    }
   });
 
   it('tones a FAILED source as an alert and a skipped one as ordinary', () => {
@@ -1117,14 +1157,16 @@ describe('VIN history report model — the sources block', () => {
     expect(lines.find((l) => l.status === 'ok')!.tone).toBe('neutral');
   });
 
-  it('resolves the wording per locale and passes an unknown id through', () => {
+  it('numbers the positions in the reader\'s language, whatever the id was', () => {
     for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const s = vinHistoryPdfStrings(locale);
       const lines = build(payloadV2(), locale).sources!.lines;
-      expect(lines[0].label).toBe(vinHistoryPdfStrings(locale).enums.sourceId['carsxe.history']);
-      // A source we have no wording for is named by its id — a missing line
-      // would be worse than an untranslated one.
-      expect(lines[3].label).toBe('some.registry.we.have.no.wording.for');
-      expect(lines[3].dataset).toBe(NO_VALUE);
+      expect(lines.map((l) => l.label)).toEqual(
+        lines.map((_, i) => `${s.sources.position} ${i + 1}`),
+      );
+      // The id we had no wording for used to print as itself, which named a
+      // registry in the one place a reader looks for provenance.
+      expect(lines.some((l) => l.label.includes('registry'))).toBe(false);
     }
   });
 
@@ -1154,6 +1196,8 @@ describe('VIN history report model — v2 localization', () => {
       'service',
       'equipment',
       'marketValue',
+      'inspectionValidity',
+      'timeToSell',
     ];
     for (const id of newIds) {
       const titles = VIN_HISTORY_PDF_LOCALES.map((l) => vinHistoryPdfStrings(l).sections[id].title);
@@ -1179,6 +1223,31 @@ describe('VIN history report model — v2 localization', () => {
     );
     expect(new Set(unavailable).size).toBe(VIN_HISTORY_PDF_LOCALES.length);
     expect(new Set(notCovered).size).toBe(VIN_HISTORY_PDF_LOCALES.length);
+
+    // The strings the second source brought, and the ones that replaced a name.
+    const perLocale = [
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).closingNote,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).sources.position,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).sources.note,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).units.days,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).values.notChecked,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).marketValue.valuation,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).inspectionValidity.technical,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).inspectionValidity.emissions,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).notes.timeToSellCohort,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).notes.inspectionValidity,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).notes.inspectionExpired,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).notes.theftRegistersSearched,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).notes.theftNoRegisterSearched,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).notes.theftRegistersIncomplete,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).notes.theftCountryUnknown,
+      (l: VinHistoryPdfLocale) => vinHistoryPdfStrings(l).notes.theftNotProof,
+    ];
+    for (const pick of perLocale) {
+      const values = VIN_HISTORY_PDF_LOCALES.map(pick);
+      expect(values.every((v) => v.trim().length > 0)).toBe(true);
+      expect(new Set(values).size).toBe(VIN_HISTORY_PDF_LOCALES.length);
+    }
   });
 
   it('writes the new blocks in Cyrillic for ru', () => {
@@ -1187,6 +1256,535 @@ describe('VIN history report model — v2 localization', () => {
     expect(model.sources!.title).toMatch(/[А-Яа-я]/);
     expect(sectionOf(model, 'brands').title).toMatch(/[А-Яа-я]/);
     expect(sectionOf(model, 'service').emptyNote).toMatch(/[А-Яа-я]/);
+  });
+});
+
+// ============================================================
+// The second source
+// ============================================================
+//
+// Two new chapters, several valuations instead of one, and the rule that a
+// theft answer is worth exactly as much as the registers behind it.
+
+/** A payload from two sources: everything the first one had, plus the rest. */
+function payloadTwoSources(overrides: Partial<VinHistoryPayloadV2> = {}): VinHistoryPayloadV2 {
+  return payloadV2({
+    coverage: {
+      ...FULL_COVERAGE,
+      timeToSell: 'covered',
+      inspectionValidity: 'covered',
+    },
+    marketValues: [
+      {
+        currency: 'USD',
+        retail: {
+          excellentCents: 1_850_000,
+          cleanCents: 1_620_000,
+          averageCents: 1_410_000,
+          roughCents: 1_120_000,
+        },
+        tradeIn: null,
+        msrpCents: 4_512_300,
+        mileageKm: 184_000,
+        asOf: '2026-01-15',
+      },
+      // A second source, pricing in another currency and with no ladder at all.
+      {
+        currency: 'EUR',
+        retail: null,
+        tradeIn: null,
+        msrpCents: 1_499_000,
+        mileageKm: 180_000,
+        asOf: '2026-01-20',
+      },
+    ],
+    timeToSell: { countryCode: 'DE', medianDays: 42, p25Days: 21, p75Days: 77 },
+    inspectionValidity: {
+      countryCode: 'DE',
+      technicalValidTo: '2028-03-31',
+      emissionsValidTo: '2024-03-31',
+    },
+    theftCoverage: { countryCodes: ['DE', 'US'] },
+    vehicle: {
+      make: 'BMW',
+      model: '320d',
+      modelYear: 2015,
+      bodyClass: 'Sedan/Saloon',
+      fuelType: 'Diesel',
+      plantCountry: null,
+      source: 'carsxe-specs',
+      transmission: 'automatic',
+      drivetrain: 'ALL_WHEEL_DRIVE',
+      enginePowerKw: 225,
+    },
+    equipment: {
+      standard: ['ELECTRIC_TRUNK', 'ABS'],
+      groups: [
+        { category: 'SAFETY_SYSTEM', items: ['ABS', 'ELECTRONIC_STABILITY_PROGRAM'] },
+        { category: 'INTERIOR_FEATURE', items: ['ELECTRIC_TRUNK'] },
+        // A category the source sent with nothing under it.
+        { category: 'VEHICLE_SECURITY', items: [] },
+      ],
+      exteriorColors: ['Alpine White'],
+      interiorColors: [],
+      warranties: [],
+      msrpCents: null,
+      invoiceCents: null,
+      currency: 'USD',
+    },
+    ...overrides,
+  });
+}
+
+describe('VIN history report model — machine tokens', () => {
+  it('formats SCREAMING_SNAKE without translating it', () => {
+    // Presentation is ours; vocabulary is the source's. "Electric boot" would be
+    // a translation, and a translated option list asserts something nobody said.
+    expect(formatToken('ALL_WHEEL_DRIVE')).toBe('All wheel drive');
+    expect(formatToken('ELECTRIC_TRUNK')).toBe('Electric trunk');
+    expect(formatToken('automatic')).toBe('Automatic');
+  });
+
+  it('leaves a spelling the source chose deliberately', () => {
+    expect(formatToken('ABS')).toBe('ABS');
+    expect(formatToken('Anti-lock braking system')).toBe('Anti-lock braking system');
+    expect(formatToken('Alpine White')).toBe('Alpine White');
+  });
+
+  it('never throws on nothing', () => {
+    expect(formatToken(null)).toBe('');
+    expect(formatToken('   ')).toBe('');
+    expect(formatToken(undefined)).toBe('');
+  });
+});
+
+describe('VIN history report model — drivetrain facts in the vehicle block', () => {
+  const s = vinHistoryPdfStrings('de');
+
+  it('prints the gearbox, the driven wheels and the power', () => {
+    // Paid content that used to be dropped on the floor.
+    const byId = Object.fromEntries(
+      build(payloadTwoSources()).vehicle!.entries.map((e) => [e.id, e.value]),
+    );
+    expect(byId.transmission).toBe('Automatic');
+    expect(byId.drivetrain).toBe('All wheel drive');
+    expect(byId.enginePower).toBe(`225 ${s.units.kw}`);
+  });
+
+  it('states power in the unit the source published and converts nothing', () => {
+    // PS and hp are different units, 1.4 % apart. A converted figure has to pick
+    // one and is wrong for readers of the other.
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const byId = Object.fromEntries(
+        build(payloadTwoSources(), locale).vehicle!.entries.map((e) => [e.id, e.value]),
+      );
+      expect(byId.enginePower).not.toMatch(/PS|hp|л\.с\./i);
+      expect(byId.enginePower).toContain('225');
+    }
+  });
+
+  it('omits them for a source that publishes none', () => {
+    const ids = build(payloadV2()).vehicle!.entries.map((e) => e.id);
+    expect(ids).not.toContain('transmission');
+    expect(ids).not.toContain('drivetrain');
+    expect(ids).not.toContain('enginePower');
+  });
+
+  it('omits a power figure that is not a number', () => {
+    const p = payloadTwoSources();
+    p.vehicle!.enginePowerKw = 'lots' as never;
+    expect(build(p).vehicle!.entries.map((e) => e.id)).not.toContain('enginePower');
+  });
+});
+
+describe('VIN history report model — equipment groups', () => {
+  const s = vinHistoryPdfStrings('de');
+
+  it('prints one row per group, under the source\'s own category', () => {
+    // Fifty-one options in one cell is a wall of text; the grouping is what
+    // makes the longest section in the document readable.
+    const rows = sectionOf(build(payloadTwoSources()), 'equipment').rows;
+    const labels = rows.map((r) => r.cells[0]);
+    expect(labels).toContain('Safety system');
+    expect(labels).toContain('Interior feature');
+    expect(rows.find((r) => r.cells[0] === 'Safety system')!.cells[1]).toBe(
+      'ABS, Electronic stability program',
+    );
+  });
+
+  it('does not re-word a category, in any locale', () => {
+    // A wrong grouping is worse than an unfamiliar one, so the label is the
+    // source's — formatted, never mapped onto a vocabulary of ours.
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const labels = sectionOf(build(payloadTwoSources(), locale), 'equipment').rows.map(
+        (r) => r.cells[0],
+      );
+      expect(labels).toContain('Safety system');
+    }
+  });
+
+  it('omits a category the source sent empty', () => {
+    const labels = sectionOf(build(payloadTwoSources()), 'equipment').rows.map((r) => r.cells[0]);
+    expect(labels).not.toContain('Vehicle security');
+  });
+
+  it('never prints the grouped items and the flat list together', () => {
+    // They are the same items. Both would double the section.
+    const rows = sectionOf(build(payloadTwoSources()), 'equipment').rows;
+    expect(rows.map((r) => r.cells[0])).not.toContain(s.equipment.standard);
+    expect(rows.filter((r) => r.cells[1].includes('Electric trunk'))).toHaveLength(1);
+  });
+
+  it('falls back to the flat list when the source grouped nothing', () => {
+    const rows = sectionOf(build(payloadV2()), 'equipment').rows;
+    const standard = rows.find((r) => r.cells[0] === s.equipment.standard)!;
+    expect(standard.cells[1]).toBe('Air conditioning, Anti-lock braking system');
+  });
+
+  it('falls back rather than losing the list when every group is empty', () => {
+    const p = payloadTwoSources();
+    p.equipment!.groups = [{ category: 'SAFETY_SYSTEM', items: [] }];
+    const rows = sectionOf(build(p), 'equipment').rows;
+    expect(rows.find((r) => r.cells[0] === s.equipment.standard)!.cells[1]).toBe(
+      'Electric trunk, ABS',
+    );
+  });
+
+  it('does not throw on a groups array holding nonsense', () => {
+    const p = payloadTwoSources();
+    p.equipment!.groups = [null as never, { category: null as never, items: ['ABS'] }];
+    const rows = sectionOf(build(p), 'equipment').rows;
+    // An unlabelled group still prints its items rather than losing them.
+    expect(rows[0].cells[1]).toBe('ABS');
+  });
+});
+
+describe('VIN history report model — time to sell', () => {
+  it('prints the median with the quartiles beside it', () => {
+    const s = vinHistoryPdfStrings('de');
+    const rows = sectionOf(build(payloadTwoSources()), 'timeToSell').rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].cells).toEqual(['DE', `42 ${s.units.days}`, `21 ${s.units.days}`, `77 ${s.units.days}`]);
+  });
+
+  it('says on the row that it describes the cohort and not this car', () => {
+    // It sits next to a valuation chapter. A reader must not be able to take it
+    // for a statement about this vehicle, let alone for a price.
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const rows = sectionOf(build(payloadTwoSources(), locale), 'timeToSell').rows;
+      expect(rows[0].notes).toContain(vinHistoryPdfStrings(locale).notes.timeToSellCohort);
+    }
+    expect(sectionOf(build(payloadTwoSources(), 'en'), 'timeToSell').title).toMatch(/comparable/i);
+  });
+
+  it('prints a placeholder for a quartile a thin cohort did not yield', () => {
+    const p = payloadTwoSources({
+      timeToSell: { countryCode: 'DE', medianDays: 42, p25Days: null, p75Days: null },
+    });
+    const cells = sectionOf(build(p), 'timeToSell').rows[0].cells;
+    expect(cells[2]).toBe(NO_VALUE);
+    expect(cells[3]).toBe(NO_VALUE);
+  });
+
+  it('prints the chapter with its note when nothing was supplied', () => {
+    const section = sectionOf(build(payloadV2()), 'timeToSell');
+    expect(section.rows).toHaveLength(0);
+    expect(section.emptyNote).toBeTruthy();
+  });
+
+  it('does not count the row as a record about the car', () => {
+    const model = build(payloadTwoSources());
+    expect(model.counts.records).toBe(build(payloadV2()).counts.records);
+  });
+});
+
+describe('VIN history report model — inspection validity', () => {
+  const s = vinHistoryPdfStrings('de');
+
+  it('is its own chapter, separate from the inspection EVENTS', () => {
+    // "Valid until 2028" inside the events table would read as "passed in 2028".
+    const model = build(payloadTwoSources());
+    const ids = model.sections.map((x) => x.id);
+    expect(ids.indexOf('inspectionValidity')).toBe(ids.indexOf('inspections') + 1);
+    expect(sectionOf(model, 'inspections').rows).toHaveLength(1);
+    expect(sectionOf(model, 'inspectionValidity').rows).toHaveLength(2);
+    expect(sectionOf(model, 'inspectionValidity').title).not.toBe(
+      sectionOf(model, 'inspections').title,
+    );
+  });
+
+  it('says on the row that the date is an expiry and not a passed test', () => {
+    const rows = sectionOf(build(payloadTwoSources()), 'inspectionValidity').rows;
+    expect(rows[0].notes[0]).toBe(s.notes.inspectionValidity);
+    expect(rows[0].cells).toEqual([s.inspectionValidity.technical, 'DE', '31.03.2028']);
+  });
+
+  it('flags a certificate that has already run out', () => {
+    // Arithmetic on a date the source published, against the day the document
+    // was made — not a judgement about the car.
+    const rows = sectionOf(build(payloadTwoSources()), 'inspectionValidity').rows;
+    expect(rows[0].flagged).toBe(false);
+    expect(rows[1].flagged).toBe(true);
+    expect(rows[1].notes).toContain(s.notes.inspectionExpired);
+  });
+
+  it('omits a certificate the source did not publish, and prints an unusable date as itself', () => {
+    const p = payloadTwoSources({
+      inspectionValidity: {
+        countryCode: 'DE',
+        technicalValidTo: 'end of March 2028',
+        emissionsValidTo: null,
+      },
+    });
+    const rows = sectionOf(build(p), 'inspectionValidity').rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].cells[2]).toBe('end of March 2028');
+    expect(rows[0].flagged).toBe(false);
+  });
+
+  it('names no national testing body', () => {
+    // TÜV, STK and MOT each identify a territory and a body.
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const section = sectionOf(build(payloadTwoSources(), locale), 'inspectionValidity');
+      expect(JSON.stringify(section)).not.toMatch(/T(Ü|U)V|MOT\b|STK/);
+    }
+  });
+});
+
+describe('VIN history report model — several valuations', () => {
+  const s = vinHistoryPdfStrings('de');
+
+  it('prints one row per valuation and never merges them into one number', () => {
+    // An average of two ladders is a figure no source stands behind and no
+    // buyer can check.
+    const rows = sectionOf(build(payloadTwoSources()), 'marketValue').rows;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].cells[0]).toBe(`${s.marketValue.valuation} 1: ${s.marketValue.retail}`);
+    expect(rows[1].cells[0]).toBe(`${s.marketValue.valuation} 2: ${s.marketValue.msrp}`);
+  });
+
+  it('formats each row in ITS OWN currency', () => {
+    const rows = sectionOf(build(payloadTwoSources()), 'marketValue').rows;
+    expect(rows[0].cells[1]).toContain('$');
+    expect(rows[1].cells[1]).toContain('€');
+    expect(rows[1].cells[1]).toContain('14.990,00');
+  });
+
+  it('attaches each valuation date and mileage to its own rows', () => {
+    // Under the wrong ladder, a mileage binds to a price that was not computed
+    // at it — which is a fact nobody stated.
+    const rows = sectionOf(build(payloadTwoSources()), 'marketValue').rows;
+    expect(rows[0].notes.join(' ')).toContain('15.01.2026');
+    expect(rows[0].notes.join(' ')).toContain('184.000');
+    expect(rows[1].notes.join(' ')).toContain('20.01.2026');
+    expect(rows[1].notes.join(' ')).toContain('180.000');
+  });
+
+  it('leaves a single valuation reading exactly as it always did', () => {
+    // The common report. Numbering one ladder would be noise.
+    const rows = sectionOf(build(payloadV2()), 'marketValue').rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].cells[0]).toBe(s.marketValue.retail);
+  });
+
+  it('prints the list from the newer field and never both', () => {
+    // `marketValue` is the first-source view that predates the list; printing
+    // both would show one valuation twice.
+    const p = payloadTwoSources();
+    expect(p.marketValue).not.toBeNull();
+    expect(sectionOf(build(p), 'marketValue').rows).toHaveLength(2);
+  });
+
+  it('does not throw on a list holding something that is not a valuation', () => {
+    const p = payloadTwoSources({ marketValues: [null as never, 'nonsense' as never] });
+    // Falls back to the single first-source valuation rather than to nothing.
+    expect(sectionOf(build(p), 'marketValue').rows).toHaveLength(1);
+  });
+});
+
+describe('VIN history report model — which theft registers were searched', () => {
+  const s = vinHistoryPdfStrings('de');
+
+  it('states which registers were searched', () => {
+    const row = sectionOf(build(payloadTwoSources()), 'theft').rows[0];
+    expect(row.cells[0]).toBe(s.values.notStolen);
+    expect(row.notes[0]).toBe(`${s.notes.theftRegistersSearched}: DE, US`);
+    // Every country this document puts the car in was covered, so no caveat.
+    expect(row.notes).toHaveLength(1);
+  });
+
+  it('never lets a clean answer from an incomplete search read as clean', () => {
+    // THE one. A source covering five registers answers "not stolen" for a car
+    // registered in a sixth having searched nothing that would know.
+    const p = payloadTwoSources({ theftCoverage: { countryCodes: ['US'] } });
+    const model = build(p);
+    const row = sectionOf(model, 'theft').rows[0];
+    expect(model.countryCodes).toContain('DE');
+    expect(row.cells[0]).toBe(s.values.notStolen);
+    expect(row.notes.join(' · ')).toContain(`${s.notes.theftRegistersIncomplete}: DE`);
+    expect(row.notes).toContain(s.notes.theftNotProof);
+    // …and the headline stops being a green all-clear.
+    expect(model.highlights.find((h) => h.id === 'stolen')!.tone).toBe('neutral');
+  });
+
+  it('says so when the document never establishes the vehicle\'s country', () => {
+    const p = v2WithNoRecords({
+      theftCoverage: { countryCodes: ['US'] },
+      coverage: { ...FULL_COVERAGE },
+    });
+    const model = build(p);
+    expect(model.countryCodes).toHaveLength(0);
+    const row = sectionOf(model, 'theft').rows[0];
+    expect(row.notes).toContain(s.notes.theftCountryUnknown);
+    expect(row.notes).toContain(s.notes.theftNotProof);
+  });
+
+  it('prints NO clean row at all when no register was searched', () => {
+    // An empty list is not "searched and clean". "No theft record" would be a
+    // finding made out of the absence of any query.
+    const p = payloadTwoSources({ theftCoverage: { countryCodes: [] } });
+    const model = build(p);
+    const section = sectionOf(model, 'theft');
+    expect(section.rows).toHaveLength(0);
+    expect(section.emptyNote).toBe(s.notes.theftNoRegisterSearched);
+    // …not the "we checked and this car is clean" wording the coverage map
+    // would otherwise have written.
+    expect(section.coverage).toBe('covered');
+    expect(section.emptyNote).not.toBe(s.sections.theft.emptyCovered);
+    // The headline agrees, and the record count matches what is printed.
+    const stolen = model.highlights.find((h) => h.id === 'stolen')!;
+    expect(stolen.value).toBe(s.values.notChecked);
+    expect(stolen.tone).toBe('neutral');
+    expect(model.counts.records).toBe(build(payloadTwoSources()).counts.records - 1);
+  });
+
+  it('still prints a theft HIT when no register list came with it', () => {
+    const p = payloadTwoSources({
+      theft: {
+        stolen: true,
+        reportedAt: '2022-07-01',
+        countryCode: 'PL',
+        recoveredAt: null,
+        source: null,
+      },
+      theftCoverage: { countryCodes: [] },
+    });
+    const row = sectionOf(build(p), 'theft').rows[0];
+    expect(row.flagged).toBe(true);
+    expect(row.cells[0]).toBe(s.values.stolen);
+    // A confirmed record needs no explanation of what a miss would have meant.
+    expect(row.notes.join(' ')).not.toContain(s.notes.theftNotProof);
+  });
+
+  it('keeps the plain wording when the payload says nothing about registers', () => {
+    // Every v1 payload, and a v2 payload from a source without the field. No
+    // new claim in either direction.
+    const model = build(payloadV2());
+    const row = sectionOf(model, 'theft').rows[0];
+    expect(row.notes).toHaveLength(0);
+    expect(model.highlights.find((h) => h.id === 'stolen')!.tone).toBe('ok');
+    expect(sectionOf(build(payload()), 'theft').rows[0].notes).toHaveLength(0);
+  });
+
+  it('no longer prints the register name in the row', () => {
+    const model = build(payloadV2());
+    const section = sectionOf(model, 'theft');
+    expect(section.columns).toHaveLength(4);
+    expect(section.rows[0].cells).toHaveLength(4);
+    expect(section.rows[0].cells.join(' ')).not.toContain('police_registry');
+  });
+
+  it('reads an unusable register list the cautious way, not the confident one', () => {
+    // A list we cannot read is indistinguishable from one that searched
+    // nothing, and of the two possible mistakes — an over-cautious disclaimer
+    // and an over-confident clean bill — only one sells a stolen car.
+    const p = payloadTwoSources({ theftCoverage: { countryCodes: null as never } });
+    expect(() => build(p)).not.toThrow();
+    const section = sectionOf(build(p), 'theft');
+    expect(section.rows).toHaveLength(0);
+    expect(section.emptyNote).toBe(s.notes.theftNoRegisterSearched);
+  });
+});
+
+describe('VIN history report model — the document names no data source', () => {
+  /** Every string the document carries, whatever it is nested inside. */
+  function documentStrings(model: ReturnType<typeof build>): string[] {
+    const out: string[] = [];
+    const walk = (value: unknown): void => {
+      if (typeof value === 'string') out.push(value);
+      else if (Array.isArray(value)) value.forEach(walk);
+      else if (value !== null && typeof value === 'object') Object.values(value).forEach(walk);
+    };
+    walk(model);
+    return out;
+  }
+
+  /*
+   * Everything the fixture puts into a source-shaped field: the provider, the
+   * decoder, the datasets, the per-record sources, the recall registry. Not the
+   * insurer, the title-brand authority or the inspection body — those are
+   * parties to the events the rows describe, not suppliers of the rows.
+   */
+  const FORBIDDEN = ['carsxe', 'nmvtis', 'nhtsa', 'police_registry', 'kba', 'some.registry'];
+
+  it('leaks none of them, in any locale, from a fully populated payload', () => {
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const strings = documentStrings(build(payloadTwoSources(), locale)).join(' ').toLowerCase();
+      for (const name of FORBIDDEN) expect(strings).not.toContain(name);
+    }
+  });
+
+  it('has no provider row in the header block', () => {
+    // It used to read "Data source: carsxe" beside the VIN.
+    const model = build(payloadTwoSources());
+    expect(model.meta.map((m) => m.id)).toEqual([
+      'vin',
+      'retrievedAt',
+      'purchasedAt',
+      'renderedAt',
+      'purchaseId',
+    ]);
+    expect('provider' in model).toBe(false);
+  });
+
+  it('prints the recall without the registry that published it', () => {
+    const section = sectionOf(build(payloadTwoSources()), 'recalls');
+    expect(section.columns).toHaveLength(4);
+    expect(section.rows[0].cells).toEqual(['RC-2019-4711', '01.04.2019', 'Airbag inflator replacement', 'offen']);
+  });
+
+  it('keeps the parties to an event, which are not data sources', () => {
+    const model = build(payloadTwoSources());
+    // The insurer that wrote the car off, the state that branded the title, the
+    // body that carried out the test.
+    expect(sectionOf(model, 'insurance').rows[0].cells).toContain('Allianz');
+    expect(sectionOf(model, 'brands').rows[0].cells).toContain('NY DMV');
+    expect(sectionOf(model, 'inspections').rows[0].cells).toContain('TÜV');
+  });
+
+  it('keeps the GENERATED-data warning fully visible', () => {
+    // Hiding who supplied data is a commercial choice. Hiding that data was
+    // generated is a lie, so none of the above applies to it.
+    const model = build(payloadTwoSources({ synthetic: true }));
+    expect(model.synthetic).toBe(true);
+    expect(model.syntheticWarning!.badge).toBeTruthy();
+    expect(model.syntheticWarning!.body).toBeTruthy();
+    expect(model.syntheticWarning!.footer).toBeTruthy();
+  });
+
+  it('closes the document with an unquantified, unnamed statement of provenance', () => {
+    // No count — a number invites "which ones" — and no superlative: an
+    // unprovable "one of the three largest" is actionable in the German market.
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const note = build(payloadTwoSources(), locale).closingNote!;
+      expect(note).toBe(vinHistoryPdfStrings(locale).closingNote);
+      expect(note).not.toMatch(/\d/);
+      expect(note.toLowerCase()).not.toMatch(/gr(ö|o)(ß|ss)|larg|best|lead|welt|world|крупн|лучш/);
+    }
+  });
+
+  it('adds no closing line to a v1 document, which had one source', () => {
+    expect(build(payload()).closingNote).toBeNull();
   });
 });
 
@@ -1216,15 +1814,102 @@ describe('VIN history report model — v2 robustness', () => {
       coverage: null as never,
       sources: null as never,
       brands: null as never,
+      marketValues: null as never,
+      timeToSell: null as never,
+      inspectionValidity: null as never,
+      theftCoverage: null as never,
     });
     expect(() => buildVinHistoryReportModel(broken, { locale: 'de' })).not.toThrow();
+  });
+
+  it('reads a scalar where an object belongs as "not supplied"', () => {
+    // Payloads come back out of a JSON column, and a section that says nothing
+    // beats a section that invents something.
+    const broken = payloadV2({
+      timeToSell: 42 as never,
+      inspectionValidity: 'soon' as never,
+      theftCoverage: true as never,
+    });
+    const model = buildVinHistoryReportModel(broken, { locale: 'de' });
+    expect(sectionOf(model, 'timeToSell').rows).toHaveLength(0);
+    expect(sectionOf(model, 'inspectionValidity').rows).toHaveLength(0);
+    // An unreadable coverage object is "we do not know which registers", which
+    // keeps today's wording and makes no new claim.
+    expect(sectionOf(model, 'theft').rows[0].notes).toHaveLength(0);
   });
 
   it('survives a source entry with nothing usable on it', () => {
     const p = payloadV2({ sources: [{ id: '', status: 'weird' as never, dataset: '   ' }] });
     const line = build(p).sources!.lines[0];
-    expect(line.dataset).toBe(NO_VALUE);
+    // Still a position, and an unrecognised status prints as its own text — a
+    // query missing from the block would be worse than an untranslated word.
+    expect(line.label).toBe(`${vinHistoryPdfStrings('de').sources.position} 1`);
     expect(line.statusLabel).toBe('weird');
     expect(line.tone).toBe('neutral');
+  });
+});
+
+// ===========================================================================
+// The document names no data source — the guard, not a spot check
+// ===========================================================================
+
+/**
+ * ⚠️ THE REQUIREMENT THIS FILE EXISTS TO KEEP TRUE.
+ *
+ * Which companies stand behind a report is commercial information. What a
+ * reader is owed is whether each source was asked and what it answered, and
+ * `sources[]` still carries exactly that — a position and a status.
+ *
+ * A spot check on one field would not hold: the identity travels through the
+ * payload in at least six places (`provider`, `sources[].id`,
+ * `sources[].dataset`, `vehicle.source`, a recall `authority`, a per-record
+ * `source`), and every new chapter is a new chance to print one. So this walks
+ * the WHOLE built model and asserts no known source name survives anywhere in
+ * it, whatever shape a future chapter takes.
+ *
+ * `synthetic` is deliberately untouched by any of this. Hiding who supplied
+ * data is a commercial choice; hiding that data was GENERATED is not.
+ */
+describe('VIN history report model — the document names no data source', () => {
+  /** Every name a source could reach the page under, upstream or ours. */
+  const SOURCE_NAMES = [/carsxe/i, /carapi/i, /nmvtis/i, /nhtsa/i, /vpic/i, /carfax/i];
+
+  /** Payload deliberately poisoned: every identity slot holds a real name. */
+  function poisoned(): VinHistoryPayloadV2 {
+    const base = payloadV2();
+    return {
+      ...base,
+      provider: 'carsxe',
+      vehicle: base.vehicle ? { ...base.vehicle, source: 'carsxe-specs' } : base.vehicle,
+      recalls: base.recalls.map((r) => ({ ...r, authority: 'NHTSA' })),
+      sources: [
+        { id: 'carsxe.history', status: 'ok', dataset: 'NMVTIS' },
+        { id: 'carapi.vinDecode', status: 'failed', dataset: 'CarAPI Vehicle Decode' },
+      ],
+    };
+  }
+
+  it.each(VIN_HISTORY_PDF_LOCALES)('names no source in %s', (locale) => {
+    const serialized = JSON.stringify(build(poisoned(), locale));
+    for (const name of SOURCE_NAMES) {
+      expect(serialized).not.toMatch(name);
+    }
+  });
+
+  it('still reports WHETHER each source answered', () => {
+    const model = build(poisoned(), 'en');
+    const serialized = JSON.stringify(model);
+
+    // The status is the product; the identity is not. Losing this would turn
+    // "we asked and it broke" into a silence indistinguishable from "clean".
+    expect(serialized).toMatch(/Source 1/);
+    expect(serialized).toMatch(/Source 2/);
+  });
+
+  it('keeps the synthetic warning, which is a different question entirely', () => {
+    const serialized = JSON.stringify(
+      build({ ...poisoned(), synthetic: true }, 'en'),
+    );
+    expect(serialized.toLowerCase()).toMatch(/generated/);
   });
 });

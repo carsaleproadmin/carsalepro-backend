@@ -82,6 +82,11 @@ export const VIN_HISTORY_V2_SECTION_IDS = [
   'service',
   'equipment',
   'marketValue',
+  // Added with the second source. Appended rather than inserted: the ids are
+  // stored inside every payload's coverage map, so the ORDER here is free to
+  // change but a NAME is not.
+  'timeToSell',
+  'inspectionValidity',
 ] as const;
 
 export type VinHistoryV2SectionId = (typeof VIN_HISTORY_V2_SECTION_IDS)[number];
@@ -126,8 +131,39 @@ export interface VinHistoryVehicle {
   bodyClass: string | null;
   fuelType: string | null;
   plantCountry: string | null;
-  /** Which decoder produced this — named on the report beside the value. */
+  /** Which decoder produced this. INTERNAL — never printed. */
   source: string;
+
+  /*
+   * Drivetrain facts, all optional because only some sources publish them.
+   *
+   * They arrived with the second source and they are paid content: a buyer
+   * comparing two listings of the same model wants the gearbox, the driven
+   * wheels and the power, and a report that decodes a car without stating them
+   * has thrown away something it was given.
+   */
+  transmission?: string | null;
+  drivetrain?: string | null;
+  /** Engine power in kilowatts. The EU unit; convert for display, not here. */
+  enginePowerKw?: number | null;
+}
+
+/**
+ * Equipment grouped the way the source grouped it.
+ *
+ * `standard` stays a flat list so every existing reader keeps working. This is
+ * the same items carrying the grouping a source supplied — safety systems,
+ * assistance systems, security, interior — because fifty-one options in one
+ * column is a wall of text, and the grouping is the difference between a list
+ * and something a buyer can actually read.
+ *
+ * The category names are the source's own. They are not re-worded and not
+ * mapped onto a vocabulary of ours, because a wrong grouping is worse than an
+ * unfamiliar one.
+ */
+export interface VinHistoryEquipmentGroup {
+  category: string;
+  items: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +268,8 @@ export interface VinHistoryWarranty {
 export interface VinHistoryEquipment {
   /** Standard equipment as delivered, in the provider's order. */
   standard: string[];
+  /** The same items, grouped as the source grouped them. Optional. */
+  groups?: VinHistoryEquipmentGroup[];
   exteriorColors: string[];
   interiorColors: string[];
   warranties: VinHistoryWarranty[];
@@ -263,6 +301,55 @@ export interface VinHistoryMarketValue {
   mileageKm: number | null;
   /** When the provider published this valuation. */
   asOf: string | null;
+}
+
+/**
+ * How long comparable cars take to sell in one market.
+ *
+ * Not a fact about this vehicle — it is a fact about its cohort, and it is here
+ * because it is the question a seller asks straight after "what is it worth".
+ * The quartiles are carried beside the median because a median alone hides
+ * whether the market is decisive or slow, and both are nullable: a thin cohort
+ * yields a median with no spread around it.
+ */
+export interface VinHistoryTimeToSell {
+  countryCode: string;
+  medianDays: number;
+  p25Days: number | null;
+  p75Days: number | null;
+}
+
+/**
+ * Statutory inspection validity — when the certificate runs out.
+ *
+ * Deliberately NOT `inspections[]`. That array holds inspection EVENTS: a date,
+ * a result, defects found. This holds two expiry dates and nothing else, and
+ * merging them would let "valid until 2028" be read as "passed in 2028". A
+ * buyer uses them differently too: one is the car's history, the other is a bill
+ * arriving.
+ */
+export interface VinHistoryInspectionValidity {
+  countryCode: string;
+  /** Roadworthiness certificate expiry — STK, TÜV, MOT, depending on country. */
+  technicalValidTo: string | null;
+  /** Emissions certificate expiry, where a country issues one separately. */
+  emissionsValidTo: string | null;
+}
+
+/**
+ * WHICH theft registers were actually searched.
+ *
+ * The load-bearing field, and the reason `theft.stolen === false` may not be
+ * published on its own. A source that covers five national registers answers
+ * "not stolen" for a car registered in a sixth country having searched nothing
+ * that would know. Printing that as a clean result is the single most damaging
+ * thing this report could do — someone buys a stolen car on the strength of it.
+ *
+ * An empty list means no register was searched, which is a different answer
+ * again from "searched and found nothing".
+ */
+export interface VinHistoryTheftCoverage {
+  countryCodes: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -324,9 +411,38 @@ export interface VinHistoryPayloadV2 {
   equipment: VinHistoryEquipment | null;
   marketValue: VinHistoryMarketValue | null;
 
+  /*
+   * Added when a second source joined. All OPTIONAL, which is what lets a
+   * payload written by one source stay valid beside a payload written by two —
+   * and what let this contract grow without a v3 and a third rendering branch.
+   * A reader treats absent and null alike: the section was not supplied.
+   */
+
+  /**
+   * Every valuation received, one per source, NEVER blended into one number.
+   *
+   * Two sources price a car differently because they are pricing different
+   * things — one a retail ladder by condition, one a single market scalar. An
+   * average of the two is a figure no source stands behind and no buyer can
+   * check. `marketValue` above stays as the first-source view for readers that
+   * already understand it.
+   */
+  marketValues?: VinHistoryMarketValue[];
+
+  timeToSell?: VinHistoryTimeToSell | null;
+  inspectionValidity?: VinHistoryInspectionValidity | null;
+  theftCoverage?: VinHistoryTheftCoverage | null;
+
   /** Per-section: queried and answered, queried and failed, or never held. */
   coverage: VinHistoryCoverageMap;
-  /** Which upstream datasets were consulted, so the report can name them. */
+  /**
+   * Which upstream datasets answered, and whether each one did.
+   *
+   * The STATUS is the product; the identity is not. A reader must be able to
+   * tell "checked and empty" from "could not be reached", and must not be able
+   * to tell which company was asked. The renderers resolve each entry to a
+   * neutral position — see the report model.
+   */
   sources: VinHistorySource[];
 }
 

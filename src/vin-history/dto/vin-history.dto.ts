@@ -120,7 +120,6 @@ export type VinHistoryCoverageState =
 
 export class VinHistoryPreviewDto {
   @ApiProperty({ example: 'WAUZZZ8V8MA012345' }) vin!: string;
-  @ApiProperty({ example: 'mock' }) provider!: string;
 
   @ApiProperty({
     example: true,
@@ -197,7 +196,6 @@ export class VinCheckItemDto {
   @ApiProperty({ example: 'WAUZZZ8V8MA012345' }) vin!: string;
   @ApiProperty({ example: 'ready', enum: ['pending', 'ready', 'failed', 'refunded'] })
   status!: string;
-  @ApiProperty({ example: 'mock', nullable: true }) provider!: string | null;
   @ApiProperty({ example: false }) synthetic!: boolean;
   @ApiProperty({ nullable: true }) failureReason!: string | null;
   @ApiProperty() createdAt!: string;
@@ -262,7 +260,6 @@ export class VinCheckShareDto {
  */
 export class PublicVinReportDto {
   @ApiProperty({ example: 'WAUZZZ8V8MA012345' }) vin!: string;
-  @ApiProperty({ example: 'carsxe', nullable: true }) provider!: string | null;
   @ApiProperty({ example: false }) synthetic!: boolean;
 
   @ApiProperty({ description: 'VinHistoryPayloadV1 or V2 — branch on `schemaVersion`.' })

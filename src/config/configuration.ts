@@ -66,6 +66,12 @@ export interface AppConfig {
     provider: string;
     apiKey: string;
     /**
+     * CarAPI's key. Separate from `apiKey` on purpose: they are two accounts
+     * with two balances, and a single shared field would send one provider's
+     * credential to the other the moment `provider` is switched.
+     */
+    carapiKey: string;
+    /**
      * Lets the MOCK provider sell in production. Off by default, because
      * charging for generated data without meaning to is the worst possible
      * failure here.
@@ -198,6 +204,7 @@ export default (): AppConfig => ({
   vinHistory: {
     provider: process.env.VIN_HISTORY_PROVIDER ?? 'mock',
     apiKey: process.env.VIN_HISTORY_API_KEY ?? '',
+    carapiKey: process.env.CARAPI_API_KEY ?? '',
     allowSyntheticSale: (process.env.VIN_HISTORY_ALLOW_SYNTHETIC_SALE ?? 'false') === 'true',
   },
   iap: {

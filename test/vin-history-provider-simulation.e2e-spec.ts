@@ -384,7 +384,8 @@ describe('VIN history — simulated real provider (e2e)', () => {
     it('2.4 reports a real provider as non-synthetic and purchasable', async () => {
       const vin = track(uniqueVin('p4'));
       const res = await preview(vin).expect(200);
-      expect(res.body.provider).toBe('simulated');
+      // Never on the wire — see the note in vin-history.e2e-spec.ts.
+      expect(res.body.provider).toBeUndefined();
       expect(res.body.synthetic).toBe(false);
       expect(res.body.purchasable).toBe(true);
     });

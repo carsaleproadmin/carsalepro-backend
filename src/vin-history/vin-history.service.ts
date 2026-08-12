@@ -236,7 +236,6 @@ export class VinHistoryService {
 
     return {
       vin,
-      provider: payload?.provider ?? this.provider.name,
       synthetic: payload ? payload.synthetic : this.provider.synthetic,
       // Two independent refusals, and both have to pass. `configured` is about
       // US: no data provider, nothing to sell. `coverage` is about this VIN: a
@@ -359,7 +358,7 @@ export class VinHistoryService {
         error: {
           code: 'provider_unavailable',
           message:
-            'VIN history is temporarily unavailable — no data provider is configured. ' +
+            'Vehicle history is temporarily unavailable. ' +
             'You have not been charged.',
         },
       });
@@ -449,7 +448,7 @@ export class VinHistoryService {
           error: {
             code: 'provider_failed',
             message:
-              'The VIN history provider did not answer. Your payment has been refunded in full.',
+              'The vehicle history could not be retrieved. Your payment has been refunded in full.',
             refunded: true,
           },
         });
@@ -647,7 +646,6 @@ export class VinHistoryService {
 
     return {
       vin: purchase.vin,
-      provider: purchase.provider,
       synthetic: payload.synthetic === true,
       payload,
       reportedAt: (purchase.readyAt ?? purchase.createdAt).toISOString(),
@@ -810,7 +808,7 @@ export class VinHistoryService {
         error: {
           code: 'no_records',
           message:
-            'We looked and our source holds no history for this vehicle. ' +
+            'We looked, and there is no history on file for this vehicle. ' +
             'You have not been charged.',
         },
       });
@@ -819,8 +817,7 @@ export class VinHistoryService {
       error: {
         code: 'not_covered',
         message:
-          'Our history source covers vehicles registered in the United States. ' +
-          'It holds nothing for this one, so there is no report to sell. ' +
+          'There is no report available for this vehicle. ' +
           'You have not been charged.',
       },
     });
@@ -1392,7 +1389,6 @@ export class VinHistoryService {
       id: purchase.id,
       vin: purchase.vin,
       status: purchase.status,
-      provider: purchase.provider,
       synthetic: payload ? payload.synthetic === true : this.provider.synthetic,
       failureReason: purchase.failureReason,
       createdAt: purchase.createdAt.toISOString(),
