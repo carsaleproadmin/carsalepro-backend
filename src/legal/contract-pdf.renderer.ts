@@ -122,9 +122,18 @@ function drawBlock(
   switch (block.kind) {
     case 'heading': {
       const size = block.level === 1 ? 14 : block.level === 2 ? 12 : 11;
-      doc.moveDown(block.level === 1 ? 0.7 : 0.5);
+      const gapBefore = block.level === 1 ? 0.7 : 0.5;
+      const text = spansToText(block.spans);
+
       doc.font(fontBold).fontSize(size).fillColor('#0e1116');
-      doc.text(spansToText(block.spans), { lineGap: LINE_GAP });
+      if (!headingFitsWithContent(doc, text, gapBefore)) {
+        doc.addPage();
+      } else {
+        doc.moveDown(gapBefore);
+      }
+
+      doc.font(fontBold).fontSize(size).fillColor('#0e1116');
+      doc.text(text, { lineGap: LINE_GAP });
       doc.moveDown(0.25);
       break;
     }
@@ -148,6 +157,45 @@ function drawBlock(
       break;
     }
   }
+}
+
+/**
+ * Body lines that must fit under a heading before the heading may stay on the
+ * page. Two is the smallest number that stops a section title from being the
+ * last thing on a sheet: with one line, "3. Scope of the inspection" plus the
+ * opening clause sat alone at the foot of page 1 while the terms it introduces
+ * began on page 2, which reads as though the section were empty.
+ */
+const MIN_LINES_UNDER_HEADING = 2;
+
+/**
+ * True when the heading AND the first lines of the text it introduces fit in
+ * what is left of the page.
+ *
+ * pdfkit paginates a heading only when the heading itself does not fit, so it
+ * happily leaves one at the very bottom. There is no lookahead at the next
+ * block here on purpose: reserving a fixed two body lines needs no knowledge of
+ * what follows, and every heading in a contract is followed by prose or a list
+ * whose lines are this height. The caller must have selected the heading font
+ * and size before asking, because the measurement uses them.
+ */
+function headingFitsWithContent(
+  doc: PDFKit.PDFDocument,
+  text: string,
+  gapBefore: number,
+): boolean {
+  const width = doc.page.width - PAGE_MARGIN * 2;
+  const headingHeight = doc.heightOfString(text, { width, lineGap: LINE_GAP });
+  // The body lines are reserved from the nominal size, not measured: switching
+  // the font to measure them and switching back would leave the caller's font
+  // state depending on this predicate. 1.2 is the leading of the embedded face.
+  const bodyLine = BODY_SIZE * 1.2 + LINE_GAP;
+  const needed =
+    doc.currentLineHeight(true) * gapBefore +
+    headingHeight +
+    MIN_LINES_UNDER_HEADING * bodyLine;
+
+  return doc.y + needed <= doc.page.maxY();
 }
 
 /**
