@@ -61,13 +61,30 @@ export class ReportAccessService {
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
+    // `s3Key` is reserved at create time, but the object exists only after
+    // POST /reports/:id/complete flips `uploaded`. Presigning is an offline
+    // operation that succeeds for a key that was never written, so without
+    // this gate the caller receives a valid-looking URL that answers R2
+    // `NoSuchKey` in the browser. Refuse here, where the reason is known.
+    if (!report.uploaded) {
+      throw new HttpException(
+        {
+          error: {
+            code: 'report_not_uploaded',
+            message: 'The report PDF was not uploaded yet',
+          },
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
     const { url } = await this.r2.createPresignedDownloadUrl(report.s3Key);
     return { signedUrl: url, expiresAt: await this.expiresAt() };
   }
 
   /** Sign the report PDF; null when R2 unconfigured or the PDF wasn't uploaded. */
   private async signPdf(report: Report): Promise<FullReportDto['pdf']> {
-    if (!report.s3Key || !this.r2.isConfigured()) {
+    // `uploaded` is the only proof the object exists — see getDownload().
+    if (!report.s3Key || !report.uploaded || !this.r2.isConfigured()) {
       return { downloadUrl: null, expiresAt: null };
     }
     try {

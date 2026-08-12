@@ -46,7 +46,13 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
   });
 
   /** Seed a report owned by a device (no userId) so it can be purchased. */
-  async function seedReport(opts: { code: string; deviceId?: string; userId?: string }) {
+  async function seedReport(opts: {
+    code: string;
+    deviceId?: string;
+    userId?: string;
+    /** False models a report whose PDF was never uploaded — the key is reserved, the object is absent. */
+    uploaded?: boolean;
+  }) {
     const deviceId = opts.deviceId ?? uniqueDeviceId();
     return prisma.report.create({
       data: {
@@ -54,7 +60,7 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
         code: opts.code,
         s3Key: `free/${deviceId}/${opts.code}.pdf`,
         tier: 'free',
-        uploaded: true,
+        uploaded: opts.uploaded ?? true,
         userId: opts.userId ?? null,
         make: 'BMW',
         model: '320d',
@@ -240,6 +246,53 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
       .set('Authorization', `Bearer ${stranger.token}`)
       .expect(403);
     expect(res.body.error.code).toBe('payment_required');
+  });
+
+  // Presigning is offline: it happily signs a key that was never written, and
+  // the caller only learns the truth from R2's NoSuchKey. Both readers must
+  // refuse on `uploaded` instead.
+  it('8c. GET /download for a report whose PDF was never uploaded returns 409 report_not_uploaded', async () => {
+    const { token } = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, uploaded: false });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/payments/ppv')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ reportCode: code })
+      .expect(201);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/reports/${report.id}/download`)
+      .set('Authorization', `Bearer ${token}`);
+
+    // 503 wins when R2 is off — that check runs first and is equally correct.
+    if (r2Configured) {
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('report_not_uploaded');
+    } else {
+      expect(res.status).toBe(503);
+    }
+  });
+
+  it('5b. GET /full for a report whose PDF was never uploaded returns pdf.downloadUrl null', async () => {
+    const { token } = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, uploaded: false });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/payments/ppv')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ reportCode: code })
+      .expect(201);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/reports/${report.id}/full`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(res.body.pdf.downloadUrl).toBeNull();
+    expect(res.body.pdf.expiresAt).toBeNull();
   });
 
   it('9. GET /api/v1/me/report-purchases lists the purchase', async () => {
