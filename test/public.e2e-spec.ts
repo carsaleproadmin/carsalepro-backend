@@ -291,6 +291,69 @@ describe('Public showroom + report check (e2e)', () => {
       expect(unfiltered.body.items.map((i: { id: string }) => i.id)).toContain(manualId);
     });
 
+    it('11f. ?country filters on the exact code, and never returns a listing with none', async () => {
+      // Two rows in two countries, plus the fixture above, which has no country
+      // at all: that third row is the point of the test. `country_code` is
+      // nullable and never backfilled, so a search must not answer with rows
+      // that never claimed the country.
+      const de = await prisma.listing.create({
+        data: {
+          sellerId,
+          source: 'manual',
+          status: 'ACTIVE',
+          priceCents: 1200000,
+          city: 'Leipzig',
+          countryCode: 'DE',
+          make: 'Skoda',
+          model: 'Octavia',
+          publishedAt: new Date(),
+        },
+      });
+      const at = await prisma.listing.create({
+        data: {
+          sellerId,
+          source: 'manual',
+          status: 'ACTIVE',
+          priceCents: 1300000,
+          city: 'Wien',
+          countryCode: 'AT',
+          make: 'Skoda',
+          model: 'Octavia',
+          publishedAt: new Date(),
+        },
+      });
+      try {
+        const res = await request(app.getHttpServer())
+          .get('/api/v1/public/listings?country=DE&make=Skoda')
+          .expect(200);
+        const ids: string[] = res.body.items.map((i: { id: string }) => i.id);
+        expect(ids).toContain(de.id);
+        expect(ids).not.toContain(at.id);
+        expect(ids).not.toContain(manualId);
+
+        // Lower case from a hand-written URL resolves to the same rows: the
+        // query DTO upper-cases before the query, so the column never has to
+        // be compared case-insensitively.
+        const lower = await request(app.getHttpServer())
+          .get('/api/v1/public/listings?country=de&make=Skoda')
+          .expect(200);
+        expect(lower.body.items.map((i: { id: string }) => i.id)).toContain(de.id);
+
+        // A two-character code is the whole contract; anything else is a 400
+        // rather than a silently unfiltered search.
+        await request(app.getHttpServer())
+          .get('/api/v1/public/listings?country=DEU')
+          .expect(400);
+
+        // The card carries the code, so the showroom can show the country
+        // without a second call.
+        const card = res.body.items.find((i: { id: string }) => i.id === de.id);
+        expect(card.countryCode).toBe('DE');
+      } finally {
+        await prisma.listing.deleteMany({ where: { id: { in: [de.id, at.id] } } });
+      }
+    });
+
     it('11e. the detail view is honest and surfaces the seller declaration separately', async () => {
       const res = await request(app.getHttpServer())
         .get(`/api/v1/public/listings/${manualId}`)

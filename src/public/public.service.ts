@@ -42,6 +42,17 @@ export class PublicService {
       // Exclude expired-but-not-yet-swept listings (null expiry = never expires).
       OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       ...(q.city ? { city: { contains: q.city, mode: 'insensitive' } } : {}),
+      /*
+       * The country is an EXACT code, never a `contains`. A city is free text a
+       * seller typed and a buyer half-remembers, so it stays fuzzy; a country
+       * arrives from a fixed list on both sides, and matching it loosely would
+       * make "AT" answer a search for "A".
+       *
+       * A listing with no country is deliberately NOT returned here. Null means
+       * "nobody said", and answering a country search with rows that never
+       * claimed it is the same defect as backfilling the column.
+       */
+      ...(q.country ? { countryCode: q.country } : {}),
       ...(q.bodyType ? { bodyType: q.bodyType } : {}),
       ...(q.driveType ? { driveType: q.driveType } : {}),
       ...(q.priceFrom || q.priceTo
@@ -111,6 +122,7 @@ export class PublicService {
       id: listing.id,
       priceCents: listing.priceCents,
       city: listing.city,
+      countryCode: listing.countryCode,
       plz: listing.plz,
       description: listing.description,
       contactPhone: listing.contactPhone,
@@ -247,6 +259,7 @@ export class PublicService {
       id: listing.id,
       priceCents: listing.priceCents,
       city: listing.city,
+      countryCode: listing.countryCode,
       package: listing.package,
       source: listing.source,
       qualityScore: inspected ? (listing.report?.qualityScore ?? null) : null,
