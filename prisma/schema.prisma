@@ -338,12 +338,29 @@ model Order {
 
   // money (integer cents)
   baseFeeCents        Int     @map("base_fee_cents")
-  /// Distance the fare was calculated on. ROAD kilometres when the routing
-  /// provider answered, great-circle × orderDetourFactor otherwise — see
-  /// `routingSource`. Was purely great-circle before the ride-hailing tariff.
+  /// Distance the fare was calculated on — ALREADY multiplied by
+  /// `returnTripFactor`. ROAD kilometres when the routing provider answered,
+  /// great-circle × orderDetourFactor otherwise — see `routingSource`. Was
+  /// purely great-circle before the ride-hailing tariff.
+  ///
+  /// Divide by `returnTripFactor` for the one-direction distance to the
+  /// inspector. Rows written before that column existed carry 1, so the two
+  /// readings coincide for them and no backfill is needed.
   distanceKm          Decimal @map("distance_km")
   distanceFeeCents    Int     @map("distance_fee_cents")
-  /// Driving minutes the time component was calculated on.
+  /// How many times the measured one-direction trip was charged. 1 means the
+  /// per-km rate already had the return trip folded into it.
+  returnTripFactor    Decimal @default(1) @map("return_trip_factor") @db.Decimal(4, 2)
+  /// Kilometres of the one-direction trip that carried no charge.
+  ///
+  /// Stored for the same reason as `returnTripFactor`: without it the row
+  /// cannot reproduce its own invoice. The measured distance to the inspector
+  /// is `distanceKm / returnTripFactor + freeRadiusKm`, and every term of that
+  /// has to be on the row. 0 for orders placed before a free radius existed,
+  /// which is what they were charged.
+  freeRadiusKm        Decimal @default(0) @map("free_radius_km") @db.Decimal(6, 2)
+  /// Driving minutes the time component was calculated on, on the same
+  /// return-trip basis as `distanceKm`.
   durationMin         Int?    @map("duration_min")
   timeFeeCents        Int     @default(0) @map("time_fee_cents")
   /// surge × peak, frozen at quote time. 1 when neither applied.
@@ -395,6 +412,22 @@ model OrderOffer {
   status      String   @default("PENDING") // PENDING|ACCEPTED|DECLINED|EXPIRED
   expiresAt   DateTime @map("expires_at")
   createdAt   DateTime @default(now())
+  /// Great-circle kilometres from THIS inspector to the vehicle, one direction,
+  /// recorded when the offer was made.
+  ///
+  /// The order is priced on the NEAREST candidate, but dispatch walks down the
+  /// list when that one declines, so the inspector who accepts may travel much
+  /// further than the customer paid for. Nothing recorded that gap, so there
+  /// was no data to answer whether the travel charge should follow the
+  /// inspector who actually drives.
+  ///
+  /// Great-circle and not a road route: routing every offer costs a provider
+  /// request per dispatch attempt, and the question this column exists to
+  /// answer — does the accepting inspector travel materially further than the
+  /// priced one — is a comparison between two candidates, which a straight line
+  /// ranks the same way. Null for offers made before this column existed, and
+  /// for an offer minted by an admin assignment, where no candidate search ran.
+  straightLineKm Decimal? @map("straight_line_km") @db.Decimal(7, 2)
 
   order     Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
   inspector InspectorProfile @relation(fields: [inspectorId], references: [userId])
@@ -402,6 +435,108 @@ model OrderOffer {
   @@index([orderId])
   @@index([inspectorId, status])
   @@map("order_offer")
+}
+
+/// A group of countries priced alike (DEN-108).
+///
+/// Bands rather than 48 country rows: "raise all of Eastern Europe by 10
+/// percent" must be one edit, and a hand-kept row per country goes stale
+/// silently. A country that needs its own numbers gets a `CountryTariff` row
+/// that overrides the band field by field.
+///
+/// **An empty table is a supported state and the state we ship in.** Resolution
+/// falls through to the global `PlatformSetting` tariff, which is what every
+/// order is priced on today, so adding a band changes a price only where an
+/// operator put numbers.
+model PricingZone {
+  id   String @id @default(cuid())
+  /// Stable machine key, e.g. `eastern_europe`. Referenced by CountryTariff.
+  key  String @unique
+  name String
+
+  /// Every money field is nullable, and null means "the band says nothing about
+  /// this — ask the next level". That is what makes a band able to move one
+  /// term (the per-km rate) without restating the base fee.
+  baseFeeCents    Int?
+  perKmCents      Int?
+  ratePerMinuteCents Int?
+  minimumFareCents   Int?
+  /// Kilometres inside which no travel charge applies.
+  freeRadiusKm    Decimal? @db.Decimal(6, 2)
+  /// Refuse the quote above this — a 400 km trip prices an inspection above the
+  /// value of the car, and nobody accepts it anyway.
+  capKm           Decimal? @db.Decimal(7, 2)
+  /// How many times the measured one-direction trip is charged. A rate quoted
+  /// from a national mileage allowance is defined on the return trip, so a band
+  /// that sets `perKmCents` from one must set this to 2.
+  returnTripFactor Decimal? @db.Decimal(4, 2)
+
+  countries CountryTariff[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("pricing_zone")
+}
+
+/// How a per-km rate was arrived at. It is stored, not inferred, because the
+/// two age differently: a tax rate is re-read when the state republishes it, an
+/// estimate is re-read on our own schedule — and a customer is entitled to know
+/// which one they are being charged.
+enum RateDerivation {
+  /// A national tax-free business mileage rate. Germany: 0.30 EUR/km, §9 Abs. 1
+  /// Nr. 4a EStG.
+  TAX_RATE
+  /// Calculated where no comparable national figure is published: fuel price
+  /// per litre x consumption x a wear factor. Ukraine, Japan, most of Latin
+  /// America.
+  FUEL_DERIVED
+  /// One figure standing in for a published table by vehicle (France, Italy),
+  /// named as such rather than passed off as a single national rate.
+  REPRESENTATIVE
+}
+
+/// A single country's tariff, overriding its band field by field.
+model CountryTariff {
+  /// ISO 3166-1 alpha-2, upper case. Matches `Order.countryCode`.
+  countryCode String @id @map("country_code")
+  zoneId      String? @map("zone_id")
+  zone        PricingZone? @relation(fields: [zoneId], references: [id])
+
+  baseFeeCents       Int?
+  perKmCents         Int?
+  ratePerMinuteCents Int?
+  minimumFareCents   Int?
+  freeRadiusKm       Decimal? @db.Decimal(6, 2)
+  capKm              Decimal? @db.Decimal(7, 2)
+  returnTripFactor   Decimal? @db.Decimal(4, 2)
+
+  derivation RateDerivation?
+  /// The rate as the source publishes it, in the source's own currency and its
+  /// own unit — `0.45` with `sourceCurrency` GBP and `sourcePerMile` true.
+  ///
+  /// Kept because "we charge exactly the national rate" stops being true the
+  /// moment the exchange rate moves and our EUR figure does not. Storing only
+  /// the converted cents makes it impossible to say six months later where the
+  /// number came from, and a per-mile rate converted twice is wrong by 1.6.
+  sourceRate     Decimal? @db.Decimal(10, 4)
+  sourceCurrency String?  @db.VarChar(3)
+  sourcePerMile  Boolean  @default(false)
+  /// The rate used to convert `sourceRate` into cents, and when it was taken.
+  fxRate         Decimal? @db.Decimal(12, 6)
+  fxDate         DateTime?
+  /// Where the number is published. A rate anchored to law must cite the law.
+  sourceUrl      String?
+  /// When this row's numbers started to apply. Rates are republished (Austria
+  /// moved in 2025, Belgium is indexed quarterly), and a dispute six months old
+  /// is answered by what applied then.
+  effectiveFrom  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([zoneId])
+  @@map("country_tariff")
 }
 
 model OrderEvent {

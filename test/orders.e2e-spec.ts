@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { OrdersService } from '../src/orders/orders.service';
+import { DEFAULT_COUNTRY_CODE, GeocodingService } from '../src/geo/geocoding.service';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { PinnedTariff, colocatedQuote, pinTariff } from './helpers/tariff';
 import { PLATFORM_SETTING_DEFAULTS } from '../src/settings/platform-settings.constants';
@@ -416,7 +417,9 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(order!.inspectorShareCents).toBe(FARE.inspectorShareCents);
     // The ride-hailing components are persisted, not just the total.
     expect(order!.timeFeeCents).toBe(FARE.timeFeeCents);
-    expect(order!.durationMin).toBe(1);
+    // Two, not one: the routing floor of one minute is charged in both
+    // directions, and the column stores what was billed.
+    expect(order!.durationMin).toBe(2);
     expect(order!.minimumFareApplied).toBe(true);
     expect(order!.routingSource).toBe('haversine');
 
@@ -438,6 +441,555 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const offer = await pendingOfferFor(order!.id);
     expect(offer).toBeTruthy();
     expect(offer!.inspectorId).toBe(inspector.userId);
+  });
+
+  // ============================================================
+  // 3b. The order records the country of the INSPECTION ADDRESS
+  // ============================================================
+  //
+  // `.env.test` blanks MAPBOX_TOKEN, so the real service answers null here and
+  // every other test in the suite exercises the fallback. These two stand the
+  // geocoder up and down on purpose: the column was written as a literal 'DE'
+  // until 2026-08-13, which no assertion could see, because the fallback is
+  // also 'DE'.
+  it('3b. the geocoded country of the address is stored on the order', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const geocoding = app.get(GeocodingService);
+    const spy = jest.spyOn(geocoding, 'countryCodeFor').mockResolvedValue('PL');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({
+          make: 'BMW',
+          model: '320d',
+          address: 'ul. Testowa 1, Poznań',
+          lat: ORDER_LAT,
+          lng: ORDER_LNG,
+          scheduledAt: SCHEDULED_AT,
+        })
+        .expect(201);
+      trackOrder(res.body.orderId);
+
+      const order = await prisma.order.findUnique({ where: { id: res.body.orderId } });
+      expect(order!.countryCode).toBe('PL');
+      // The point that was geocoded is the inspection address, not the
+      // customer's account country.
+      expect(spy).toHaveBeenCalledWith({ lat: ORDER_LAT, lng: ORDER_LNG });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('3b2. an unknown country falls back to DE and still completes the order', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const geocoding = app.get(GeocodingService);
+    const spy = jest.spyOn(geocoding, 'countryCodeFor').mockResolvedValue(null);
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({
+          make: 'BMW',
+          model: '320d',
+          address: 'Musterstraße 1, Berlin',
+          lat: ORDER_LAT,
+          lng: ORDER_LNG,
+          scheduledAt: SCHEDULED_AT,
+        })
+        .expect(201);
+      trackOrder(res.body.orderId);
+
+      const order = await prisma.order.findUnique({ where: { id: res.body.orderId } });
+      expect(order!.countryCode).toBe(DEFAULT_COUNTRY_CODE);
+      expect(order!.status).toBe('PAID');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // ============================================================
+  // 3c. The return trip: the tariff factor, end to end
+  // ============================================================
+  //
+  // The factor and the per-km rate are one decision: 0.30/km on the return trip
+  // bills the same kilometre charge as the old 0.60/km on a one-direction trip.
+  // These assertions exist so a later edit to one of them fails here.
+  it('3c. the shipped tariff charges the trip in both directions', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    // The literal 2 is the owner's decision of 2026-08-13, asserted against the
+    // number itself rather than the constant it is read from.
+    expect(res.body.breakdown.returnTripFactor).toBe(2);
+    expect(PLATFORM_SETTING_DEFAULTS.orderReturnTripFactor).toBe(2);
+    expect(PLATFORM_SETTING_DEFAULTS.orderRatePerKmEur).toBe(0.3);
+    expect(res.body.totalCents).toBe(FARE.totalCents);
+  });
+
+  it('3c2. a factor of 2 bills both directions and is frozen on the order', async () => {
+    const customer = await makeCustomer();
+    // 0.2 degrees of latitude is about 22 km — far enough that the distance
+    // component is a real number rather than the co-located floor.
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
+    const doubled = await pinTariff(app, { orderReturnTripFactor: 2 });
+
+    try {
+      const quote = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      const b = quote.body.breakdown;
+      expect(b.returnTripFactor).toBe(2);
+      // The factor multiplies the CHARGEABLE distance: the free radius is a
+      // statement about how far the vehicle is, so it comes off once, before
+      // the return trip is applied.
+      expect(b.billedDistanceKm).toBeCloseTo(b.chargeableDistanceKm * 2, 5);
+      expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm - b.freeRadiusKm, 1);
+      expect(b.billedDurationMin).toBe(b.durationMin * 2);
+      // The fee follows the BILLED quantity, so the arithmetic a customer can
+      // do on the page reaches the amount we charge.
+      expect(b.distanceFeeCents).toBe(
+        Math.round(b.billedDistanceKm * PLATFORM_SETTING_DEFAULTS.orderRatePerKmEur * 100),
+      );
+
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({
+          make: 'BMW',
+          model: '320d',
+          address: 'Musterstraße 1, Berlin',
+          lat: ORDER_LAT,
+          lng: ORDER_LNG,
+          scheduledAt: SCHEDULED_AT,
+        })
+        .expect(201);
+      trackOrder(res.body.orderId);
+
+      // The order stores the BILLED distance and the factor that produced it,
+      // so a row read years later still says what was charged and why.
+      const order = await prisma.order.findUnique({ where: { id: res.body.orderId } });
+      expect(Number(order!.returnTripFactor)).toBe(2);
+      expect(Number(order!.distanceKm)).toBeCloseTo(b.billedDistanceKm, 5);
+
+      const detail = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${res.body.orderId}`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      // The detail reports the measured distance too, derived back out of the
+      // stored pair — a stored order and a fresh quote describe the same thing.
+      expect(detail.body.money.billedDistanceKm).toBeCloseTo(b.billedDistanceKm, 5);
+      expect(detail.body.money.chargeableDistanceKm).toBeCloseTo(b.chargeableDistanceKm, 5);
+      // The measured trip survives the round trip through the database only
+      // because the free radius is stored beside the factor.
+      expect(detail.body.money.freeRadiusKm).toBe(b.freeRadiusKm);
+      expect(detail.body.money.distanceKm).toBeCloseTo(b.distanceKm, 1);
+    } finally {
+      await doubled.restore();
+      tariff = await pinTariff(app);
+    }
+  });
+
+  // ============================================================
+  // 3d. The free radius and the distance cap
+  // ============================================================
+  it('3d. the free radius comes off the trip before the rate applies', async () => {
+    const customer = await makeCustomer();
+    // ~22 km north, comfortably outside the 10 km free radius.
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    const b = res.body.breakdown;
+    // The literal 10 is the owner's decision of 2026-08-13, not an incidental
+    // default: asserting it against the constant it comes from would pass for
+    // any value, including 0.
+    expect(b.freeRadiusKm).toBe(10);
+    expect(PLATFORM_SETTING_DEFAULTS.orderFreeRadiusKm).toBe(10);
+    expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm - b.freeRadiusKm, 1);
+    // The rate applies to the BILLED distance — chargeable, both ways.
+    expect(b.billedDistanceKm).toBeCloseTo(b.chargeableDistanceKm * b.returnTripFactor, 5);
+    expect(b.distanceFeeCents).toBe(
+      Math.round(b.billedDistanceKm * PLATFORM_SETTING_DEFAULTS.orderRatePerKmEur * 100),
+    );
+  });
+
+  it('3d2. a trip inside the free radius carries no travel charge at all', async () => {
+    const customer = await makeCustomer();
+    // ~5.5 km north: a real distance, and inside the 10 km radius. A co-located
+    // inspector would prove nothing — zero kilometres cost nothing anyway.
+    await makeInspector(ORDER_LAT + 0.05, ORDER_LNG);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    expect(res.body.breakdown.distanceKm).toBeGreaterThan(4);
+    expect(res.body.breakdown.chargeableDistanceKm).toBe(0);
+    expect(res.body.breakdown.distanceFeeCents).toBe(0);
+  });
+
+  // The cap must refuse where the money is not yet committed. An order created
+  // beyond it authorizes the customer's card and then waits the whole search
+  // window for a cron to cancel it, because no inspector takes such a job.
+  it('3d3. beyond the cap the quote refuses and the order is rejected', async () => {
+    const customer = await makeCustomer();
+    // ~33 km north; the cap is pinned below that for this test.
+    await makeInspector(ORDER_LAT + 0.3, ORDER_LNG);
+    const tight = await pinTariff(app, { orderCapKm: 20 });
+
+    try {
+      const quote = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      expect(quote.body.available).toBe(false);
+      expect(quote.body.refusal).toBe('too_far');
+      // Still a lead: someone wants an inspection where we do not serve.
+      expect(quote.body.waitlisted).toBe(true);
+      createdWaitlistEmails.add(customer.email);
+
+      const create = await request(app.getHttpServer())
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({
+          make: 'BMW',
+          model: '320d',
+          address: 'Musterstraße 1, Berlin',
+          lat: ORDER_LAT,
+          lng: ORDER_LNG,
+          scheduledAt: SCHEDULED_AT,
+        })
+        .expect(409);
+
+      // A distinct code from no_coverage: the UI says different things.
+      expect(create.body.error.code).toBe('distance_cap_exceeded');
+      // And the shipped cap is the owner's 100 km, not whatever is in the file.
+      expect(PLATFORM_SETTING_DEFAULTS.orderCapKm).toBe(100);
+    } finally {
+      await tight.restore();
+      tariff = await pinTariff(app);
+    }
+  });
+
+  // ============================================================
+  // 3e. The band decides the base fee
+  // ============================================================
+  //
+  // The bands are named after the price level index, not after a region: the
+  // same inspection is cheaper where an expert hour is cheaper, and Chile
+  // belongs with Spain rather than with its continent. The geocoder is stood up per case:
+  // the location is the same Berlin point every time, and it is the COUNTRY the
+  // tariff resolves on, not the coordinates.
+  it('3e. a Polish address is priced on the 60-75 price-level band', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('PL');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      expect(res.body.breakdown.baseFeeCents).toBe(2700);
+      // The floor moves with the base fee. Left at 49 EUR it would bind first
+      // and the whole band would have no effect on what anybody pays.
+      expect(res.body.breakdown.minimumFareCents).toBe(3400);
+      expect(res.body.totalCents).toBe(3400);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('3e2. a Ukrainian address is priced on the lowest price-level band', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('UA');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      expect(res.body.breakdown.baseFeeCents).toBe(1900);
+      expect(res.body.breakdown.minimumFareCents).toBe(2400);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Germany is the anchor: its band sets no money at all, so the global tariff
+  // answers and an operator's admin-panel change still reaches the price.
+  it('3e5. a German address follows the global tariff, not a band copy', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('DE');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      expect(res.body.breakdown.baseFeeCents).toBe(
+        Math.round(PLATFORM_SETTING_DEFAULTS.orderBaseFeeEur * 100),
+      );
+      expect(res.body.totalCents).toBe(FARE.totalCents);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // The minute rate is banded too, and it is the term that decides a LONG job:
+  // on a co-located order the floor hides it, so this case puts the inspector
+  // ~22 km away, where the fare is mostly travel.
+  it('3e6. a Polish address pays the band rate for travel time', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('PL');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      const b = res.body.breakdown;
+      // Above the floor, so the band terms actually reach the total.
+      expect(b.subtotalCents).toBeGreaterThan(b.minimumFareCents);
+      // A literal, not the seeded column: the number is the 0.35/39 ratio
+      // applied to a 27 EUR base, and reading it back out of the row it came
+      // from would pass for any value.
+      expect(b.timeFeeCents).toBe(Math.round(b.billedDurationMin * 24));
+      expect(b.timeFeeCents).toBeLessThan(
+        Math.round(b.billedDurationMin * PLATFORM_SETTING_DEFAULTS.orderRatePerMinuteEur * 100),
+      );
+      // The kilometre rate is NOT banded — it is a per-country national
+      // mileage allowance, and Poland has its own (see 3e8).
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // The kilometre rate is a per-COUNTRY figure, not a band one: Poland and
+  // Ukraine share no band, and each carries its own national allowance.
+  it('3e8. a Polish address pays the Polish mileage allowance, not the German one', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('PL');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      const b = res.body.breakdown;
+      // PLN 1.15 at the ECB rate of 2026-08-12. A literal, because reading it
+      // back out of the row it came from would pass for any number.
+      expect(b.distanceFeeCents).toBe(Math.round(b.billedDistanceKm * 27));
+      // The country row must also state the return-trip factor, or a rate
+      // defined on the round trip would collect half of itself.
+      expect(b.returnTripFactor).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('3e9. a Ukrainian address pays the fuel-derived rate', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('UA');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      expect(res.body.breakdown.distanceFeeCents).toBe(
+        Math.round(res.body.breakdown.billedDistanceKm * 19),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // A per-MILE allowance converted as if it were per-km is wrong by 1.6 in the
+  // customer's disfavour, and nothing about the resulting number looks wrong.
+  it('3e10. a British address pays the per-mile allowance converted to kilometres', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('GB');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      // 55p/mile at the ECB rate of 2026-08-12 is 0.40 EUR per KILOMETRE. Read
+      // as per-km it would be 0.64 — the failure this literal exists to catch.
+      expect(res.body.breakdown.distanceFeeCents).toBe(
+        Math.round(res.body.breakdown.billedDistanceKm * 40),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // A data invariant, not a code path: these allowances are all defined on the
+  // round trip, so a country that sets a rate and stays silent on the factor
+  // would collect half of what it claims the moment the global factor moves.
+  it('3e11. every country rate states its own return-trip factor', async () => {
+    const rows = await prisma.countryTariff.findMany({
+      where: { perKmCents: { not: null } },
+    });
+
+    expect(rows.length).toBeGreaterThanOrEqual(20);
+    for (const row of rows) {
+      expect(Number(row.returnTripFactor)).toBe(2);
+      // And says where the number came from: a rate with no provenance is
+      // indistinguishable from a typo.
+      expect(row.derivation).toBeTruthy();
+      expect(row.sourceUrl).toBeTruthy();
+    }
+    // A converted rate must carry the rate and the day it was taken, or
+    // "we charge exactly the national rate" cannot be checked later.
+    for (const row of rows.filter((r) => r.sourceCurrency !== 'EUR')) {
+      expect(row.fxRate).toBeTruthy();
+      expect(row.fxDate).toBeTruthy();
+    }
+  });
+
+  // The anchor holds no minute rate either, so `orderRatePerMinuteEur` stays a
+  // live lever in the admin panel for the countries that follow the global
+  // tariff. A band that restated 35 would have taken it away silently.
+  it('3e7. a German address still pays the global rate for travel time', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('DE');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      const b = res.body.breakdown;
+      expect(b.timeFeeCents).toBe(
+        Math.round(b.billedDurationMin * PLATFORM_SETTING_DEFAULTS.orderRatePerMinuteEur * 100),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Coverage without rows: a country nobody has configured must still be able
+  // to order, at the global tariff. This is what lets the country map stay
+  // short instead of listing the world.
+  it('3e3. an unlisted country falls through to the global tariff', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('MN'); // Mongolia: no row, no band
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      expect(res.body.available).toBe(true);
+      expect(res.body.breakdown.baseFeeCents).toBe(
+        Math.round(PLATFORM_SETTING_DEFAULTS.orderBaseFeeEur * 100),
+      );
+      expect(res.body.totalCents).toBe(FARE.totalCents);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // The order must be charged what the quote showed, so both must resolve the
+  // same country. Asking the geocoder twice could answer differently.
+  it('3e4. the order is created with the band the quote was priced on', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const spy = jest
+      .spyOn(app.get(GeocodingService), 'countryCodeFor')
+      .mockResolvedValue('PL');
+
+    try {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({
+          make: 'BMW',
+          model: '320d',
+          address: 'ul. Testowa 1, Poznań',
+          lat: ORDER_LAT,
+          lng: ORDER_LNG,
+          scheduledAt: SCHEDULED_AT,
+        })
+        .expect(201);
+      trackOrder(res.body.orderId);
+
+      const order = await prisma.order.findUnique({ where: { id: res.body.orderId } });
+      expect(order!.countryCode).toBe('PL');
+      expect(order!.baseFeeCents).toBe(2700);
+      expect(order!.totalCents).toBe(3400);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   // ============================================================
@@ -968,6 +1520,37 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const nextOffer = await pendingOfferFor(orderId);
     expect(nextOffer).toBeTruthy();
     expect(nextOffer!.inspectorId).toBe(far.userId);
+  });
+
+  // ============================================================
+  // 5c. Each offer records how far ITS inspector is
+  // ============================================================
+  //
+  // The order is priced on the nearest candidate and the price is frozen, so
+  // once dispatch walks past that candidate the inspector who accepts travels
+  // further than the customer paid for. This asserts the gap is now recorded —
+  // it does not change any money.
+  it('5c. an offer records the distance of the inspector it went to', async () => {
+    const customer = await makeCustomer();
+    const near = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Near' });
+    await makeInspector(ORDER_LAT + 0.09, ORDER_LNG, { name: 'Far' });
+    const { orderId } = await createPaidOrder(customer);
+
+    const firstOffer = await pendingOfferFor(orderId);
+    expect(Number(firstOffer!.straightLineKm)).toBeCloseTo(0, 1);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${firstOffer!.id}/decline`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+
+    const nextOffer = await pendingOfferFor(orderId);
+    // About 10 km north. The customer paid for the co-located inspector.
+    expect(Number(nextOffer!.straightLineKm)).toBeGreaterThan(9);
+    expect(Number(nextOffer!.straightLineKm)).toBeLessThan(11);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(Number(order!.distanceKm)).toBeLessThan(1);
   });
 
   // ============================================================
