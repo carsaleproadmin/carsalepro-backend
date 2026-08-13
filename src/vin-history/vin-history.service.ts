@@ -15,15 +15,23 @@ import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import { SettingsService } from '../settings/settings.service';
 import { StripeService } from '../payments/stripe.service';
+import { randomBytes } from 'node:crypto';
+import { VinService } from '../vin/vin.service';
+import { isVinFormat } from '../vin/vin.util';
 import {
+  PublicVinReportDto,
   VinCheckDetailDto,
   VinCheckDownloadDto,
   VinCheckDownloadFormat,
   VinCheckListDto,
+  VinCheckShareDto,
+  VinHistoryCoverageState,
   VinHistoryPreviewDto,
   VinHistoryUnlockDto,
+  VinHistoryVehicleDto,
 } from './dto/vin-history.dto';
 import { VinHistoryPayloadV1 } from './vin-history-payload-v1';
+import { VinHistoryPayload } from './vin-history-payload-v2';
 import { resolveVinHistoryPdfLocale } from './vin-history-pdf.i18n';
 import { renderVinHistoryPdf, vinHistoryPdfFilename } from './vin-history-pdf.renderer';
 import {
@@ -101,6 +109,18 @@ const MAX_PDF_RENDER_ATTEMPTS = 3;
 const REFUND_REASON = 'vin_history_provider_failed';
 
 /**
+ * Bytes of randomness behind a public share link.
+ *
+ * The token is the ONLY thing standing between an anonymous request and a paid
+ * report, so it has to be unguessable rather than merely unique. 24 bytes is 192
+ * bits, base64url-encoded to 32 characters — short enough to paste into a
+ * message, and far past anything a rate-limited public route could be walked
+ * through. `randomBytes` and not a cuid: a cuid is designed to avoid collisions,
+ * which is a different problem from resisting a search.
+ */
+const SHARE_TOKEN_BYTES = 24;
+
+/**
  * A provider answer that arrived intact and holds nothing to sell.
  *
  * Carried as an Error so it travels the same path as a provider outage: caught
@@ -129,6 +149,10 @@ export class VinHistoryService {
     private readonly stripe: StripeService,
     private readonly r2: R2Service,
     private readonly notifications: NotificationsService,
+    // The FREE decode. Injected as a service, not called over HTTP: `GET /vin/:vin`
+    // is a legacy mobile root route on a frozen contract, and the website is not
+    // allowed to consume it. In process there is no route, no contract and no cost.
+    private readonly vin: VinService,
     @Inject(VIN_HISTORY_PROVIDER) private readonly provider: VinHistoryProvider,
     config: ConfigService<AppConfig, true>,
   ) {
@@ -156,15 +180,30 @@ export class VinHistoryService {
     const vin = vinRaw.toUpperCase();
     const cached = await this.findFreshReport(vin);
 
+    // Both free, both cached, neither reaches the paid provider. Run together
+    // because this route is public and a visitor is waiting on it.
+    const [vehicle, coverage] = await Promise.all([
+      this.decodeVehicle(vin),
+      this.resolveCoverage(vin, cached),
+    ]);
+
     const payload = cached ? (cached.payload as unknown as VinHistoryPayloadV1) : null;
     // A warm cache answers from the payload we already hold; otherwise the
     // provider's FREE probe. Note what does NOT happen here: the probe's answer
     // is never written to the report cache. A real provider's free probe returns
     // counts and nothing else, and caching it would leave a hollow report row
     // that the next unlock would sell as a full one.
-    const probe = payload ? null : await this.provider.preview(vin);
-    const summary = payload ? payload.summary : probe!;
-    const counts: VinHistoryPreviewCounts = payload
+    //
+    // `preview()` may answer `null`, and that is not a failure — it is a
+    // provider saying it has no free probe. The one in production bills per
+    // lookup and offers none, so before a purchase there is genuinely nothing
+    // to count. The response then carries `probed: false` and a null summary,
+    // and the caller must render neither counters nor findings: printing zeros
+    // would tell a visitor the car is clean on the strength of never having
+    // looked, on the very card that decides whether they pay.
+    const probe = payload || coverage !== 'supported' ? null : await this.provider.preview(vin);
+    const summary = payload ? payload.summary : probe;
+    const counts: VinHistoryPreviewCounts | null = payload
       ? {
           // Array lengths, so the free preview and the paid report can never
           // disagree about how much is in there.
@@ -174,19 +213,21 @@ export class VinHistoryService {
           recallCount: (payload.recalls ?? []).length,
           inspectionCount: (payload.inspections ?? []).length,
         }
-      : {
-          // Straight from the provider, null included. Null means "not published
-          // before you pay" and must NOT be flattened to 0 — "0 accident
-          // records" is a claim about the car. The old code answered 0 for four
-          // of these and substituted the COUNTRY count for registrations, which
-          // happened to match in the mock and is simply wrong for a car
-          // registered twice in one country.
-          mileageRecordCount: probe!.mileageRecordCount ?? null,
-          damageRecordCount: probe!.damageRecordCount ?? null,
-          registrationCount: probe!.registrationCount ?? null,
-          recallCount: probe!.recallCount ?? null,
-          inspectionCount: probe!.inspectionCount ?? null,
-        };
+      : probe
+        ? {
+            // Straight from the provider, null included. Null means "not
+            // published before you pay" and must NOT be flattened to 0 — "0
+            // accident records" is a claim about the car. The old code answered
+            // 0 for four of these and substituted the COUNTRY count for
+            // registrations, which happened to match in the mock and is simply
+            // wrong for a car registered twice in one country.
+            mileageRecordCount: probe.mileageRecordCount ?? null,
+            damageRecordCount: probe.damageRecordCount ?? null,
+            registrationCount: probe.registrationCount ?? null,
+            recallCount: probe.recallCount ?? null,
+            inspectionCount: probe.inspectionCount ?? null,
+          }
+        : null;
 
     const [priceCents, cacheDays] = await Promise.all([
       this.settings.getCents('vinHistoryPriceEur'),
@@ -195,26 +236,103 @@ export class VinHistoryService {
 
     return {
       vin,
-      provider: payload?.provider ?? this.provider.name,
       synthetic: payload ? payload.synthetic : this.provider.synthetic,
-      purchasable: this.provider.configured,
-      summary: {
-        recordCount: summary.recordCount,
-        ownersCount: summary.ownersCount,
-        // The COUNT, never the list — see VinHistoryPreviewSummaryDto.
-        countriesCount: (summary.countriesSeen ?? []).length,
-        ...counts,
-        hasAccidentRecords: summary.hasAccidentRecords,
-        hasSalvageOrTotalLoss: summary.hasSalvageOrTotalLoss,
-        hasOdometerRollback: summary.hasOdometerRollback,
-        hasStolenRecord: summary.hasStolenRecord,
-        hasOpenRecalls: summary.hasOpenRecalls,
-        lastRecordedMileageKm: summary.lastRecordedMileageKm,
-      },
+      // Two independent refusals, and both have to pass. `configured` is about
+      // US: no data provider, nothing to sell. `coverage` is about this VIN: a
+      // real car the source does not hold. Collapsing them into one boolean
+      // would leave the website unable to tell a visitor which of the two it is,
+      // and those need completely different copy.
+      purchasable: this.provider.configured && coverage === 'supported',
+      coverage,
+      vehicle,
+      probed: summary !== null,
+      summary:
+        summary === null || counts === null
+          ? null
+          : {
+              recordCount: summary.recordCount,
+              ownersCount: summary.ownersCount,
+              // The COUNT, never the list — see VinHistoryPreviewSummaryDto.
+              countriesCount: (summary.countriesSeen ?? []).length,
+              ...counts,
+              hasAccidentRecords: summary.hasAccidentRecords,
+              hasSalvageOrTotalLoss: summary.hasSalvageOrTotalLoss,
+              hasOdometerRollback: summary.hasOdometerRollback,
+              hasStolenRecord: summary.hasStolenRecord,
+              hasOpenRecalls: summary.hasOpenRecalls,
+              lastRecordedMileageKm: summary.lastRecordedMileageKm,
+            },
       priceCents,
       currency: 'EUR',
       cacheDays,
     };
+  }
+
+  /**
+   * Which car this VIN is, free of charge, or null.
+   *
+   * NEVER THROWS. The decode is a courtesy on a page whose job is to sell a
+   * history report: an undecodable VIN, or a decoder having a bad afternoon,
+   * must not take down the preview or the paywall with it. `VinService.decode`
+   * answers 404 for a VIN it cannot make sense of, which here means "we cannot
+   * name this car", not "this page is broken".
+   *
+   * The result is already cached in Postgres by `VinService`, so a shared link
+   * and a refresh cost one row read.
+   */
+  private async decodeVehicle(vin: string): Promise<VinHistoryVehicleDto | null> {
+    try {
+      const decoded = await this.vin.decode(vin);
+      // A row with nothing in it is worse than no row: it renders as a card of
+      // em dashes where the car's name should be.
+      if (!decoded.make && !decoded.model && !decoded.modelYear) return null;
+      // `?? null` rather than passing through: the decoder's DTO marks these
+      // optional, and an ABSENT key and a null one mean the same thing here —
+      // "the decoder does not know". The wire shape says null so a client never
+      // has to tell the two apart.
+      return {
+        make: decoded.make ?? null,
+        model: decoded.model ?? null,
+        modelYear: decoded.modelYear ?? null,
+        bodyClass: decoded.bodyClass ?? null,
+        fuelType: decoded.fuelType ?? null,
+        plantCountry: decoded.plantCountry ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Whether a paid lookup is worth offering for this VIN — decided for free.
+   *
+   * Two inputs, in order of authority:
+   *
+   * 1. A remembered empty answer wins outright. We already paid to be told there
+   *    is nothing, and selling a second look at the same nothing would charge
+   *    the buyer and the provider to arrive back at the same refund. That memory
+   *    is an ordinary cache row with `recordCount: 0` and a deliberately short
+   *    expiry — see `rememberEmptyAnswer`. Once it lapses the VIN is offered
+   *    again, because "no records" is a fact about the database on the day we
+   *    asked and stops being true the first time the car is titled.
+   * 2. The provider's own `covers()`, when it has one. A provider that answers
+   *    for every VIN omits the method, which is why the mock keeps working
+   *    against arbitrary made-up VINs.
+   *
+   * A warm NON-empty cache is deliberately not special-cased: holding a real
+   * report means the VIN is supported, and rule 2 says so anyway.
+   *
+   * Async because rule 1 reads a row, and it is worth the round trip: the
+   * alternative is charging someone €19.99 to be refunded €19.99 while we lose
+   * the lookup fee and the card fee.
+   */
+  private async resolveCoverage(
+    vin: string,
+    cached: VinHistoryReport | null,
+  ): Promise<VinHistoryCoverageState> {
+    if (cached && cached.recordCount < MIN_SELLABLE_RECORD_COUNT) return 'no_records';
+    if (this.provider.covers) return this.provider.covers(vin);
+    return isVinFormat(vin) ? 'supported' : 'invalid_vin';
   }
 
   // ============================================================
@@ -240,16 +358,34 @@ export class VinHistoryService {
         error: {
           code: 'provider_unavailable',
           message:
-            'VIN history is temporarily unavailable — no data provider is configured. ' +
+            'Vehicle history is temporarily unavailable. ' +
             'You have not been charged.',
         },
       });
     }
 
-    const amountCents = await this.settings.getCents('vinHistoryPriceEur');
-    const existing = await this.prisma.vinHistoryPurchase.findUnique({
+    // The second load-bearing refusal, and the one that costs nothing to make.
+    //
+    // `preview` already hides the button in these cases, but the button is not
+    // the gate — this route is reachable directly, and a stale page is reachable
+    // by anyone who left a tab open. Refusing here, BEFORE a purchase row or a
+    // payment row exists, is what makes the refusal free: nothing is charged, so
+    // nothing has to be refunded, and the provider is never asked.
+    //
+    // Skipped entirely for someone who already owns the report. Ownership is
+    // permanent, and a VIN we would no longer SELL today is still a VIN this
+    // buyer paid for — the `alreadyOwned` answer below must keep working even
+    // once the cache remembers the VIN as record-less.
+    const owned = await this.prisma.vinHistoryPurchase.findUnique({
       where: { userId_vin: { userId, vin } },
     });
+    if (owned?.status !== 'ready') {
+      const coverage = await this.resolveCoverage(vin, await this.findFreshReport(vin));
+      if (coverage !== 'supported') throw this.coverageRefusal(coverage);
+    }
+
+    const amountCents = await this.settings.getCents('vinHistoryPriceEur');
+    const existing = owned;
 
     if (existing?.status === 'ready') {
       return {
@@ -312,7 +448,7 @@ export class VinHistoryService {
           error: {
             code: 'provider_failed',
             message:
-              'The VIN history provider did not answer. Your payment has been refunded in full.',
+              'The vehicle history could not be retrieved. Your payment has been refunded in full.',
             refunded: true,
           },
         });
@@ -396,7 +532,129 @@ export class VinHistoryService {
       // refunded purchase must not leak the data it did not pay for.
       payload: purchase.status === 'ready' ? payload : null,
       pdfLocale: purchase.pdfLocale,
+      shareUrl: this.shareUrl(purchase.shareToken),
+      sharedAt: purchase.shareTokenCreatedAt?.toISOString() ?? null,
     };
+  }
+
+  // ============================================================
+  // The public share link
+  // ============================================================
+
+  /**
+   * Mint a public link for a report, or return the one that already exists.
+   *
+   * IDEMPOTENT ON PURPOSE. Pressing "share" twice must not invalidate the link
+   * already pasted into a message — the common case is a buyer reopening the
+   * page to copy the address again, not asking for a new one. Rotating is a
+   * revoke followed by a share, which is two deliberate actions.
+   *
+   * Only a `ready` purchase can be shared. A pending one has nothing to show, and
+   * a refunded one is a report the buyer no longer owns — publishing either would
+   * hand out a link that renders an empty page or data that was paid back.
+   */
+  async share(userId: string, id: string): Promise<VinCheckShareDto> {
+    const purchase = await this.requireOwnedPurchase(userId, id);
+    if (purchase.status !== 'ready') {
+      throw new NotFoundException({
+        error: {
+          code: 'not_shareable',
+          message: 'Only a completed VIN history can be shared.',
+        },
+      });
+    }
+
+    if (purchase.shareToken) {
+      return {
+        shareUrl: this.shareUrl(purchase.shareToken),
+        sharedAt: purchase.shareTokenCreatedAt?.toISOString() ?? null,
+      };
+    }
+
+    const shareToken = randomBytes(SHARE_TOKEN_BYTES).toString('base64url');
+    const shareTokenCreatedAt = new Date();
+    // Conditional on the token still being null, so two clicks racing each other
+    // cannot leave one caller holding a token that the other has overwritten —
+    // the loser would walk away with a dead link and no way to know.
+    const claimed = await this.prisma.vinHistoryPurchase.updateMany({
+      where: { id: purchase.id, shareToken: null },
+      data: { shareToken, shareTokenCreatedAt },
+    });
+    if (claimed.count === 1) {
+      return { shareUrl: this.shareUrl(shareToken), sharedAt: shareTokenCreatedAt.toISOString() };
+    }
+
+    const winner = await this.prisma.vinHistoryPurchase.findUniqueOrThrow({
+      where: { id: purchase.id },
+    });
+    return {
+      shareUrl: this.shareUrl(winner.shareToken),
+      sharedAt: winner.shareTokenCreatedAt?.toISOString() ?? null,
+    };
+  }
+
+  /**
+   * Revoke the public link.
+   *
+   * Setting the token back to null is the whole operation: the public route
+   * looks a report up BY the token, so a null token is unreachable by
+   * construction rather than by a flag someone could forget to check. The
+   * report itself is untouched — the owner keeps it for ever, as always.
+   *
+   * Idempotent: revoking a report that is not shared is a success, not an error.
+   * The caller's intent is "this must not be public", and it already is not.
+   */
+  async unshare(userId: string, id: string): Promise<VinCheckShareDto> {
+    const purchase = await this.requireOwnedPurchase(userId, id);
+    await this.prisma.vinHistoryPurchase.update({
+      where: { id: purchase.id },
+      data: { shareToken: null, shareTokenCreatedAt: null },
+    });
+    return { shareUrl: null, sharedAt: null };
+  }
+
+  /**
+   * Read a shared report. Anonymous, unauthenticated, token-only.
+   *
+   * What is published is the REPORT, not the purchase: the vehicle history and
+   * the date the snapshot was taken. The purchase id, the buyer, any failure
+   * reason and the token itself all stay behind — whoever was handed this link
+   * was given a car's history, not somebody's transaction.
+   *
+   * Serves the buyer's frozen snapshot rather than the shared provider cache, so
+   * a link shows exactly the report that was paid for and never silently changes
+   * when a stranger refreshes the same VIN.
+   *
+   * A revoked, unknown or not-yet-ready token is one and the same 404. They must
+   * be indistinguishable: a distinct "this link was revoked" would confirm to
+   * whoever kept an old address that it once pointed at something real.
+   */
+  async getShared(token: string): Promise<PublicVinReportDto> {
+    const notFound = new NotFoundException({
+      error: { code: 'not_found', message: 'This report link is not valid.' },
+    });
+    if (!token) throw notFound;
+
+    const purchase = await this.prisma.vinHistoryPurchase.findUnique({
+      where: { shareToken: token },
+      include: { report: { select: { payload: true } } },
+    });
+    if (!purchase || purchase.status !== 'ready') throw notFound;
+
+    const payload = this.soldPayload(purchase, purchase.report);
+    if (!payload) throw notFound;
+
+    return {
+      vin: purchase.vin,
+      synthetic: payload.synthetic === true,
+      payload,
+      reportedAt: (purchase.readyAt ?? purchase.createdAt).toISOString(),
+    };
+  }
+
+  /** The address a share token resolves to, or null when there is no token. */
+  private shareUrl(token: string | null): string | null {
+    return token ? `${this.webOrigin}/vin-report/${token}` : null;
   }
 
   /**
@@ -519,6 +777,51 @@ export class VinHistoryService {
   // ============================================================
   // Internals
   // ============================================================
+
+  /**
+   * Turn a coverage verdict into the refusal the buyer should read.
+   *
+   * Four states, four messages, and the differences matter to whoever is
+   * reading. "Check what you typed" and "this car has no history on file" send
+   * someone to completely different next steps, and answering both with one
+   * generic failure is how a working product reads as a broken one.
+   *
+   * 404 rather than 400 for the three real-car cases: the VIN is fine, we simply
+   * hold no sellable report for it. A 400 would say the request was malformed,
+   * which for `no_records` is untrue and for `not_covered` is misleading.
+   *
+   * Every message states that nothing was charged, because the visitor arrived
+   * here by pressing a button with a price on it.
+   */
+  private coverageRefusal(coverage: VinHistoryCoverageState): NotFoundException {
+    if (coverage === 'invalid_vin') {
+      return new NotFoundException({
+        error: {
+          code: 'invalid_vin',
+          message: 'That is not a valid VIN. Check the 17 characters and try again. ' +
+            'You have not been charged.',
+        },
+      });
+    }
+    if (coverage === 'no_records') {
+      return new NotFoundException({
+        error: {
+          code: 'no_records',
+          message:
+            'We looked, and there is no history on file for this vehicle. ' +
+            'You have not been charged.',
+        },
+      });
+    }
+    return new NotFoundException({
+      error: {
+        code: 'not_covered',
+        message:
+          'There is no report available for this vehicle. ' +
+          'You have not been charged.',
+      },
+    });
+  }
 
   private async createPurchase(
     userId: string,
@@ -905,11 +1208,28 @@ export class VinHistoryService {
 
     const payload = await this.provider.fetch(vin);
 
-    // Refuse BEFORE the upsert so an empty answer is never cached: a VIN that
-    // gains its first record tomorrow must not stay unsellable for the rest of
-    // the cache window. The provider is re-queried on the next attempt, which is
-    // the same trade the existing failure path already makes.
+    // An empty answer is refused — and REMEMBERED.
+    //
+    // It used to be thrown away deliberately, so that a VIN gaining its first
+    // record would not stay unsellable for a thirty-day cache window. The
+    // reasoning was right and the remedy was too blunt: nothing was cached, so
+    // every subsequent attempt on a record-less VIN paid the provider's
+    // per-lookup fee again, refunded the buyer again, and reached the same
+    // answer. For a stable property of a VIN — and a car with no records today
+    // has none tomorrow — that is an unbounded cost with no upside.
+    //
+    // It is now written with its OWN, much shorter expiry
+    // (`vinHistoryEmptyCacheDays`, 7 by default against 30 for a real report),
+    // which keeps the original concern satisfied at a fraction of the cost: the
+    // repeat-billing window closes, and a VIN that gains a record becomes
+    // sellable again within the week. Setting that number to 0 restores exactly
+    // the old behaviour.
+    //
+    // The row is what `resolveCoverage` reads to refuse the NEXT buyer for free,
+    // before any payment exists. The throw still happens, because this buyer has
+    // already paid and is owed a refund.
     if (payload.summary.recordCount < MIN_SELLABLE_RECORD_COUNT) {
+      await this.rememberEmptyAnswer(vin, payload);
       throw new EmptyProviderResponseError(vin, payload.summary.recordCount);
     }
 
@@ -932,6 +1252,57 @@ export class VinHistoryService {
         expiresAt,
       },
     });
+  }
+
+  /**
+   * Write down that this VIN came back with nothing, so the next attempt is free.
+   *
+   * Stored as an ordinary `VinHistoryReport` row — same table, same unique key —
+   * carrying `recordCount: 0` and a short expiry. Reusing the cache rather than
+   * adding a second table is what makes `findFreshReport` and `resolveCoverage`
+   * pick it up with no new query, and what makes it expire by the same mechanism
+   * as everything else.
+   *
+   * BEST EFFORT, ALWAYS. This runs on a path where the buyer is already owed a
+   * refund. If the write fails, the only consequence is that the next attempt
+   * costs us another lookup — the same as before this existed. Throwing here
+   * would replace a routine empty answer with a crash inside `fulfill`, which
+   * pages every admin.
+   *
+   * A zero-day setting disables it: the row is not written and every attempt
+   * queries the provider again, which is the documented escape.
+   */
+  private async rememberEmptyAnswer(vin: string, payload: VinHistoryPayload): Promise<void> {
+    try {
+      const days = await this.settings.getNumber('vinHistoryEmptyCacheDays');
+      if (!Number.isFinite(days) || days <= 0) return;
+
+      const expiresAt = new Date(Date.now() + days * 86_400_000);
+      await this.prisma.vinHistoryReport.upsert({
+        where: { vin_provider: { vin, provider: this.provider.name } },
+        create: {
+          vin,
+          provider: this.provider.name,
+          payload: payload as unknown as Prisma.InputJsonValue,
+          recordCount: 0,
+          expiresAt,
+        },
+        // An existing row can only be another empty answer — a row with records
+        // would have been served by `findFreshReport` and this code never
+        // reached. Refreshing its expiry is right: the provider was asked again
+        // and said the same thing again.
+        update: {
+          payload: payload as unknown as Prisma.InputJsonValue,
+          recordCount: 0,
+          fetchedAt: new Date(),
+          expiresAt,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Could not record the empty VIN history answer for ${vin}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -1018,7 +1389,6 @@ export class VinHistoryService {
       id: purchase.id,
       vin: purchase.vin,
       status: purchase.status,
-      provider: purchase.provider,
       synthetic: payload ? payload.synthetic === true : this.provider.synthetic,
       failureReason: purchase.failureReason,
       createdAt: purchase.createdAt.toISOString(),

@@ -1,4 +1,5 @@
-import { VinHistoryPayloadV1, VinHistorySummary } from './vin-history-payload-v1';
+import { VinHistorySummary } from './vin-history-payload-v1';
+import { VinHistoryPayload } from './vin-history-payload-v2';
 
 /** DI token for the active provider. One provider is bound per process. */
 export const VIN_HISTORY_PROVIDER = Symbol('VIN_HISTORY_PROVIDER');
@@ -61,9 +62,44 @@ export interface VinHistoryProvider {
   /** True when this provider may back a PAID unlock. */
   get configured(): boolean;
 
-  /** Free availability probe — counts and flags only. Must not be billable. */
-  preview(vin: string): Promise<VinHistoryPreviewSummary>;
+  /**
+   * Can this provider hold anything for this VIN at all? Free, offline, no call.
+   *
+   * OPTIONAL, and its absence means "covers everything". A provider that answers
+   * for any VIN it is handed — the mock generates a history from the string
+   * itself — must not implement it, because implementing it would make the
+   * provider start refusing VINs it is perfectly able to answer for, including
+   * every made-up one the e2e suite previews.
+   *
+   * It is separate from `preview()` because it costs nothing and touches no
+   * network: the answer is computed from the VIN's own check digit
+   * (`vinHistoryCoverage` in `src/vin/vin.util.ts` explains why the check digit
+   * and not the region character). That is what lets a caller refuse to OFFER a
+   * paid report the source plainly cannot produce, before any request is made.
+   */
+  covers?(vin: string): 'supported' | 'not_covered' | 'invalid_vin';
 
-  /** The billable full lookup. */
-  fetch(vin: string): Promise<VinHistoryPayloadV1>;
+  /**
+   * Free availability probe — counts and flags only. Must not be billable.
+   *
+   * `null` means "this provider has no free probe". It is not "no records" and
+   * must never be rendered as zero of anything. Every CarsXE endpoint is
+   * billable, including the cheap ones, and the preview route is public and
+   * anonymous — so the only honest free answer that provider can give is that it
+   * has none. A caller that gets `null` shows the price and the vehicle decode,
+   * not a set of counters it made up.
+   */
+  preview(vin: string): Promise<VinHistoryPreviewSummary | null>;
+
+  /**
+   * The billable full lookup.
+   *
+   * Returns the UNION of contract versions, not v1. A provider emits whichever
+   * version it maps to — the mock still emits v1, CarsXE emits v2 — and every
+   * reader branches on `schemaVersion` via `isVinHistoryPayloadV2`. Narrowing
+   * this back to v1 would force a v2 provider to lie about what it produced;
+   * widening the v1 TYPE instead would retroactively invalidate every payload
+   * already sold at `schemaVersion: 1`.
+   */
+  fetch(vin: string): Promise<VinHistoryPayload>;
 }

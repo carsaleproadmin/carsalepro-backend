@@ -10,6 +10,7 @@ import {
   VIN_HISTORY_PROVIDER,
   VinHistoryProvider,
 } from '../src/vin-history/vin-history.provider';
+import { VinHistoryPayloadV1 } from '../src/vin-history/vin-history-payload-v1';
 
 /**
  * BE-S3 — paid VIN history.
@@ -19,6 +20,33 @@ import {
  * straight to PaymentsService, which is the same entry point the signed
  * webhook controller uses after verification.
  */
+
+/**
+ * The mock provider's answer, narrowed to the contract version it emits.
+ *
+ * Several tests below force a SECOND, different provider answer by spreading the
+ * first one and changing a field. `fetch()` is typed as the union of contract
+ * versions, and spreading a union widens `schemaVersion` to `1 | 2` — which then
+ * satisfies neither branch, so the copy cannot be handed back to a mocked
+ * `fetch()` without narrowing first.
+ *
+ * A runtime check rather than a cast, deliberately. If the provider bound in
+ * tests ever stops emitting v1, this throws with a clear message instead of
+ * letting a v2 payload through a v1-shaped hole and failing somewhere further
+ * downstream.
+ */
+async function fetchMockPayload(
+  provider: VinHistoryProvider,
+  vin: string,
+): Promise<VinHistoryPayloadV1> {
+  const payload = await provider.fetch(vin);
+  if (payload.schemaVersion !== 1) {
+    throw new Error(
+      `These tests mutate a v1 payload, but the bound provider emitted v${payload.schemaVersion}`,
+    );
+  }
+  return payload;
+}
 
 /** Valid ISO 3779 VINs (no I/O/Q), unique per run so the cache starts cold. */
 function uniqueVin(seed = ''): string {
@@ -89,7 +117,12 @@ describe('VIN history — paid provenance (e2e)', () => {
       .expect(200);
 
     expect(res.body.vin).toBe(vin);
-    expect(res.body.provider).toBe('mock');
+    // The wire NEVER names a data source. Which companies stand behind a
+    // report is commercial information; what a reader is owed is whether each
+    // one was asked and what it answered. `synthetic` is the opposite case and
+    // stays — hiding who supplied data is a choice, hiding that data was
+    // GENERATED is not.
+    expect(res.body.provider).toBeUndefined();
     // Never pass generated data off as real.
     expect(res.body.synthetic).toBe(true);
     expect(typeof res.body.summary.recordCount).toBe('number');
@@ -515,7 +548,7 @@ describe('VIN history — paid provenance (e2e)', () => {
       where: { vin },
       data: { expiresAt: new Date(Date.now() - 1000) },
     });
-    const original = await provider.fetch(vin);
+    const original = await fetchMockPayload(provider, vin);
     const mutated = {
       ...original,
       owners: [...original.owners, ...original.owners],
@@ -607,7 +640,7 @@ describe('VIN history — paid provenance (e2e)', () => {
     const user = await newUser();
     const vin = track(uniqueVin('q'));
 
-    const original = await provider.fetch(vin);
+    const original = await fetchMockPayload(provider, vin);
     const empty = {
       ...original,
       owners: [],
@@ -642,16 +675,25 @@ describe('VIN history — paid provenance (e2e)', () => {
     expect(payment.status).toBe('refunded');
     expect(await prisma.refund.count({ where: { paymentId: payment.id } })).toBe(1);
 
-    // An empty answer must not be cached: a VIN that gains a record tomorrow
-    // would otherwise stay unsellable for the rest of the cache window.
-    expect(await prisma.vinHistoryReport.count({ where: { vin } })).toBe(0);
+    // The empty answer is REMEMBERED, with its own short expiry, so the next
+    // attempt costs the provider nothing. See test 20 for the other half — the
+    // memory lapses, and the VIN becomes sellable again.
+    const remembered = await prisma.vinHistoryReport.findMany({ where: { vin } });
+    expect(remembered).toHaveLength(1);
+    expect(remembered[0].recordCount).toBe(0);
+    const settings = app.get(SettingsService);
+    const emptyDays = await settings.getNumber('vinHistoryEmptyCacheDays');
+    expect(emptyDays).toBeLessThan(await settings.getNumber('vinHistoryCacheDays'));
+    expect(remembered[0].expiresAt.getTime() - Date.now()).toBeLessThanOrEqual(
+      emptyDays * 86_400_000,
+    );
   });
 
-  it('20. a VIN that gains records after an empty answer sells on the next attempt', async () => {
+  it('20. a record-less VIN is refused for free, then sells once the memory lapses', async () => {
     const user = await newUser();
     const vin = track(uniqueVin('r'));
 
-    const original = await provider.fetch(vin);
+    const original = await fetchMockPayload(provider, vin);
     const empty = {
       ...original,
       owners: [],
@@ -667,6 +709,24 @@ describe('VIN history — paid provenance (e2e)', () => {
     } finally {
       nothing.mockRestore();
     }
+
+    // Straight away, the VIN is refused BEFORE a payment exists — 404, not the
+    // 502 the first attempt got. Nobody is charged, so nothing has to be
+    // refunded, and the provider is never asked a second time. That saved
+    // lookup is the point of remembering the empty answer at all.
+    const refused = await request(app.getHttpServer())
+      .post(`/api/v1/vin-history/${vin}/unlock`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(404);
+    expect(refused.body.error.code).toBe('no_records');
+    expect(await prisma.payment.count({ where: { userId: user.userId, purpose: 'vin_history' } })).toBe(1);
+
+    // The refusal is a short memory, not a verdict. Expiring the row by hand is
+    // what the clock does after `vinHistoryEmptyCacheDays`.
+    await prisma.vinHistoryReport.updateMany({
+      where: { vin },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
 
     const retry = await request(app.getHttpServer())
       .post(`/api/v1/vin-history/${vin}/unlock`)

@@ -1,11 +1,13 @@
 import PDFDocument from 'pdfkit';
 import { PdfFonts, registerPdfFonts } from '../legal/pdf-fonts';
-import { VinHistoryPayloadV1 } from './vin-history-payload-v1';
+import { VinHistoryPayload } from './vin-history-payload-v2';
 import {
   VinHistoryReportModel,
   VinHistoryReportRow,
   VinHistoryReportSection,
   VinHistoryReportSectionId,
+  VinHistoryReportSources,
+  VinHistoryReportVehicle,
   buildVinHistoryReportModel,
 } from './vin-history-report-model';
 
@@ -57,10 +59,28 @@ const COLUMN_WEIGHTS: Record<VinHistoryReportSectionId, number[]> = {
   mileage: [1.3, 1.6, 1.6, 1],
   damages: [1.3, 1.4, 2.4, 1.8, 1],
   registrations: [0.9, 1.2, 1.5, 1.5, 1.4, 1.3],
-  recalls: [1.4, 1.2, 1.1, 2.8, 1],
-  theft: [1.8, 1.2, 0.9, 1.8, 1.4],
+  recalls: [1.4, 1.2, 2.8, 1],
+  theft: [1.8, 1.2, 0.9, 1.8],
   inspections: [1.2, 1.4, 1.7, 1.4, 0.9, 1.2],
+  inspectionValidity: [2.0, 0.8, 1.4],
+  insurance: [1.2, 1.7, 0.8, 1.1, 2.2],
+  // The brand's own wording gets the widest column: it is printed verbatim and
+  // must not be the thing that wraps into an unreadable stack.
+  brands: [1.2, 2.3, 1.5, 1.4, 0.8],
+  service: [1.2, 1.2, 1.8, 0.8, 2.0],
+  equipment: [1.1, 3.3],
+  // The basis column carries a valuation number in front of the label when a
+  // payload holds more than one ladder, so it is the widest of the five.
+  marketValue: [1.8, 1.15, 1.15, 1.15, 1.15],
+  timeToSell: [1.1, 1.1, 1.4, 1.4],
 };
+
+/**
+ * Relative widths of the sources table, which is not a section.
+ *
+ * Two columns since the block stopped naming datasets: a position and a status.
+ */
+const SOURCE_COLUMN_WEIGHTS = [2.4, 1] as const;
 
 export interface VinHistoryPdfOptions {
   /** `User.locale`; anything unsupported falls back to the platform default. */
@@ -76,8 +96,13 @@ export function vinHistoryPdfFilename(vin: string): string {
   return `carsalepro-vin-history-${vin.toUpperCase()}.pdf`;
 }
 
+/**
+ * Renders EITHER contract version. The union goes straight to the report model,
+ * which owns the branch — a v1 payload draws the document it always drew, and
+ * the v2 blocks below are simply null for it.
+ */
 export function renderVinHistoryPdf(
-  payload: VinHistoryPayloadV1,
+  payload: VinHistoryPayload,
   options: VinHistoryPdfOptions = {},
 ): Promise<Buffer> {
   const renderedAt = options.renderedAt ?? new Date();
@@ -116,11 +141,20 @@ export function renderVinHistoryPdf(
       const fonts = registerPdfFonts(doc);
 
       drawHeader(doc, model, fonts);
+      // The generated-data frame stays directly under the VIN, ahead of the
+      // vehicle block: it is the one thing a reader must not scroll past, and
+      // naming the car first would make the page look like an ordinary report.
       if (model.syntheticWarning) drawSyntheticWarning(doc, model, fonts);
+      if (model.vehicle) drawVehicle(doc, model.vehicle, fonts);
       drawHighlights(doc, model, fonts);
       for (const section of model.sections) {
         drawSection(doc, section, fonts);
       }
+      // Last, like a bibliography: it explains how many queries stand behind
+      // everything above and is what makes an "unavailable" note checkable
+      // rather than an excuse. It names nobody — see the report model.
+      if (model.sources) drawSources(doc, model.sources, fonts);
+      if (model.closingNote) drawClosingNote(doc, model.closingNote, fonts);
       drawFooters(doc, model, fonts);
 
       doc.end();
@@ -147,12 +181,16 @@ function ensureSpace(doc: PDFKit.PDFDocument, needed: number): void {
   if (doc.y + needed > bottomLimit(doc)) doc.addPage();
 }
 
-function columnWidths(doc: PDFKit.PDFDocument, id: VinHistoryReportSectionId, count: number): number[] {
-  const weights =
-    COLUMN_WEIGHTS[id]?.length === count ? COLUMN_WEIGHTS[id] : new Array<number>(count).fill(1);
+function weightedWidths(doc: PDFKit.PDFDocument, weights: readonly number[]): number[] {
   const total = weights.reduce((a, b) => a + b, 0);
   const usable = contentWidth(doc);
   return weights.map((w) => (usable * w) / total);
+}
+
+function columnWidths(doc: PDFKit.PDFDocument, id: VinHistoryReportSectionId, count: number): number[] {
+  const weights =
+    COLUMN_WEIGHTS[id]?.length === count ? COLUMN_WEIGHTS[id] : new Array<number>(count).fill(1);
+  return weightedWidths(doc, weights);
 }
 
 // ============================================================
@@ -255,6 +293,101 @@ function drawSyntheticWarning(
   doc.x = PAGE_MARGIN;
 }
 
+/**
+ * The opening block: which car this is.
+ *
+ * Two label/value pairs per line, the same grid as the meta header, so a reader
+ * scanning for the model year finds it where they found the VIN. The model has
+ * already dropped every field the decoder did not know, so there is no empty
+ * row to draw here and no placeholder to invent.
+ */
+function drawVehicle(
+  doc: PDFKit.PDFDocument,
+  vehicle: VinHistoryReportVehicle,
+  fonts: PdfFonts,
+): void {
+  ensureSpace(doc, 52);
+  doc.font(fonts.bold).fontSize(12).fillColor(COLOR.ink).text(vehicle.title, PAGE_MARGIN, doc.y);
+  doc.moveDown(0.35);
+
+  const width = contentWidth(doc) / 2;
+  doc.fontSize(9);
+  for (let i = 0; i < vehicle.entries.length; i += 2) {
+    ensureSpace(doc, 14);
+    const y = doc.y;
+    drawMetaPair(doc, vehicle.entries[i], PAGE_MARGIN, y, width - 8, fonts);
+    if (vehicle.entries[i + 1]) {
+      drawMetaPair(doc, vehicle.entries[i + 1], PAGE_MARGIN + width, y, width - 8, fonts);
+    }
+    doc.y = y + 13;
+  }
+
+  doc.moveDown(0.8);
+  doc.x = PAGE_MARGIN;
+}
+
+/**
+ * The provenance block: how many queries stand behind the document, and how
+ * each one answered. Positions and statuses only; the model drops every name
+ * before it gets here.
+ *
+ * Only a FAILED source is toned as an alert — see the model. Everything else is
+ * ordinary bookkeeping and colouring it would spend the reader's attention on
+ * the wrong line.
+ */
+function drawSources(
+  doc: PDFKit.PDFDocument,
+  sources: VinHistoryReportSources,
+  fonts: PdfFonts,
+): void {
+  ensureSpace(doc, 74);
+  doc.font(fonts.bold).fontSize(12).fillColor(COLOR.ink).text(sources.title, PAGE_MARGIN, doc.y);
+  doc.moveDown(0.3);
+  doc
+    .font(fonts.regular)
+    .fontSize(8.5)
+    .fillColor(COLOR.muted)
+    .text(sources.note, PAGE_MARGIN, doc.y, { width: contentWidth(doc) });
+  doc.moveDown(0.4);
+
+  if (sources.lines.length === 0) {
+    drawNoteBox(doc, sources.emptyNote ?? '', fonts);
+    return;
+  }
+
+  const widths = weightedWidths(doc, SOURCE_COLUMN_WEIGHTS);
+  drawTableHead(doc, sources.columns, widths, fonts);
+  for (const line of sources.lines) {
+    drawTableRow(
+      doc,
+      sources.columns,
+      { cells: [line.label, line.statusLabel], flagged: line.tone === 'alert', notes: [] },
+      widths,
+      fonts,
+    );
+  }
+  doc.moveDown(0.9);
+  doc.x = PAGE_MARGIN;
+}
+
+/**
+ * The closing line.
+ *
+ * One muted sentence saying the report was compiled from several independent
+ * vehicle-data sources — no count, no ranking, no names. It sits under the
+ * provenance block because that is where a reader who has just counted the
+ * positions is looking, and it is the last thing on the page for the same
+ * reason a colophon is.
+ */
+function drawClosingNote(doc: PDFKit.PDFDocument, note: string, fonts: PdfFonts): void {
+  doc.font(fonts.regular).fontSize(8);
+  const height = doc.heightOfString(note, { width: contentWidth(doc) }) + 6;
+  ensureSpace(doc, height);
+  doc.fillColor(COLOR.muted).text(note, PAGE_MARGIN, doc.y, { width: contentWidth(doc) });
+  doc.moveDown(0.6);
+  doc.x = PAGE_MARGIN;
+}
+
 function drawHighlights(
   doc: PDFKit.PDFDocument,
   model: VinHistoryReportModel,
@@ -313,31 +446,36 @@ function drawSection(
   doc.moveDown(0.35);
 
   if (section.rows.length === 0) {
-    // The section still exists. "No accident records" and "we hold no accident
-    // data" are different claims, and a vanished heading makes the second one
-    // look like the first.
-    const width = contentWidth(doc);
-    doc.fontSize(9).font(fonts.regular);
-    const height = doc.heightOfString(section.emptyNote ?? '', { width: width - 20 }) + 14;
-    ensureSpace(doc, height);
-    const top = doc.y;
-    doc.roundedRect(PAGE_MARGIN, top, width, height, 3).fillAndStroke(COLOR.headerFill, COLOR.rule);
-    doc
-      .font(fonts.regular)
-      .fontSize(9)
-      .fillColor(COLOR.muted)
-      .text(section.emptyNote ?? '', PAGE_MARGIN + 10, top + 7, { width: width - 20 });
-    doc.y = top + height + 14;
-    doc.x = PAGE_MARGIN;
+    // The section still exists, and its note says WHICH kind of nothing this is
+    // — none found, source unreachable, or a source that never holds this. A
+    // vanished heading would make all three read as the first one.
+    drawNoteBox(doc, section.emptyNote ?? '', fonts);
     return;
   }
 
   const widths = columnWidths(doc, section.id, section.columns.length);
-  drawTableHead(doc, section, widths, fonts);
+  drawTableHead(doc, section.columns, widths, fonts);
   for (const row of section.rows) {
-    drawTableRow(doc, section, row, widths, fonts);
+    drawTableRow(doc, section.columns, row, widths, fonts);
   }
   doc.moveDown(0.9);
+  doc.x = PAGE_MARGIN;
+}
+
+/** The grey box that stands in for a table. One drawing, three meanings. */
+function drawNoteBox(doc: PDFKit.PDFDocument, text: string, fonts: PdfFonts): void {
+  const width = contentWidth(doc);
+  doc.fontSize(9).font(fonts.regular);
+  const height = doc.heightOfString(text, { width: width - 20 }) + 14;
+  ensureSpace(doc, height);
+  const top = doc.y;
+  doc.roundedRect(PAGE_MARGIN, top, width, height, 3).fillAndStroke(COLOR.headerFill, COLOR.rule);
+  doc
+    .font(fonts.regular)
+    .fontSize(9)
+    .fillColor(COLOR.muted)
+    .text(text, PAGE_MARGIN + 10, top + 7, { width: width - 20 });
+  doc.y = top + height + 14;
   doc.x = PAGE_MARGIN;
 }
 
@@ -345,16 +483,14 @@ const CELL_PAD = 5;
 
 function drawTableHead(
   doc: PDFKit.PDFDocument,
-  section: VinHistoryReportSection,
+  columns: string[],
   widths: number[],
   fonts: PdfFonts,
 ): void {
   doc.font(fonts.bold).fontSize(8);
   const height =
     Math.max(
-      ...section.columns.map((c, i) =>
-        doc.heightOfString(c, { width: widths[i] - CELL_PAD * 2 }),
-      ),
+      ...columns.map((c, i) => doc.heightOfString(c, { width: widths[i] - CELL_PAD * 2 })),
     ) +
     CELL_PAD * 2;
 
@@ -363,7 +499,7 @@ function drawTableHead(
   doc.rect(PAGE_MARGIN, top, contentWidth(doc), height).fill(COLOR.headerFill);
 
   let x = PAGE_MARGIN;
-  section.columns.forEach((label, i) => {
+  columns.forEach((label, i) => {
     doc
       .font(fonts.bold)
       .fontSize(8)
@@ -377,7 +513,7 @@ function drawTableHead(
 
 function drawTableRow(
   doc: PDFKit.PDFDocument,
-  section: VinHistoryReportSection,
+  columns: string[],
   row: VinHistoryReportRow,
   widths: number[],
   fonts: PdfFonts,
@@ -395,7 +531,7 @@ function drawTableRow(
 
   if (doc.y + height > bottomLimit(doc)) {
     doc.addPage();
-    drawTableHead(doc, section, widths, fonts);
+    drawTableHead(doc, columns, widths, fonts);
   }
 
   const top = doc.y;

@@ -108,10 +108,26 @@ export const envValidationSchema = Joi.object({
 
   NHTSA_BASE_URL: Joi.string().uri().default('https://vpic.nhtsa.dot.gov/api'),
 
-  // Paid VIN history (BE-S3). Only 'mock' is implemented; an unknown value
-  // falls back to the mock, which refuses PAID unlocks in production.
+  // Paid VIN history (BE-S3). 'mock', 'carsxe' and 'aggregate' are implemented;
+  // an unknown value falls back to the mock, which refuses PAID unlocks in
+  // production. 'aggregate' is the real one: it runs every source that has a key
+  // and merges them into one report, so turning a source on is a key, not a
+  // release.
+  //
+  // Deliberately NOT a Joi `.valid(...)`. A typo here should cost a
+  // 503 and a loud startup error, not a service that will not boot: the
+  // fall-through in vin-history.module.ts already makes the wrong value safe,
+  // and refusing to start would take the whole API down over one feature.
   VIN_HISTORY_PROVIDER: Joi.string().allow('').default('mock'),
   VIN_HISTORY_API_KEY: Joi.string().allow('').default(''),
+  // The CarAPI key, kept SEPARATE from VIN_HISTORY_API_KEY because the two
+  // providers are different accounts with different billing, and one env var
+  // holding whichever key the current provider needs is how a CarsXE key ends up
+  // being sent to CarAPI — which answers 401 and still charges nobody, so the
+  // feature simply stops working with no wrong-looking value anywhere. Empty is
+  // valid and means "not configured": the client then makes no call at all and
+  // POST /unlock refuses rather than taking money.
+  CARAPI_API_KEY: Joi.string().allow('').default(''),
   // Lets the mock provider sell in production. Payloads stay flagged synthetic.
   VIN_HISTORY_ALLOW_SYNTHETIC_SALE: Joi.boolean().default(false),
 

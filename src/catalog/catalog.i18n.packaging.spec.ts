@@ -37,7 +37,8 @@ describe('catalog i18n packaging', () => {
   it('every committed sidecar is a locale the app actually ships', () => {
     const dir = join(root, 'src/catalog/i18n');
     const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
-    expect(files).toHaveLength(26);
+    // 26 until 2026-08-13, when be/kk/ka/lv/lt shipped with the mobile app.
+    expect(files).toHaveLength(31);
     for (const file of files) {
       expect(file).toMatch(/^catalog\.[a-z]{2}(-[A-Z][a-z]{3})?\.json$/);
     }

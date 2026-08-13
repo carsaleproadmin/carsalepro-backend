@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
   ApiBearerAuth,
@@ -12,10 +12,12 @@ import {
 import { CurrentUser, Public } from '../auth/auth.decorators';
 import { ErrorResponseDto } from '../common/dto/error-response.dto';
 import {
+  PublicVinReportDto,
   VinCheckDetailDto,
   VinCheckDownloadDto,
   VinCheckDownloadQueryDto,
   VinCheckListDto,
+  VinCheckShareDto,
   VinHistoryPreviewDto,
   VinHistoryUnlockDto,
   VinParamDto,
@@ -59,6 +61,12 @@ export class VinHistoryController {
   })
   @ApiParam({ name: 'vin', example: 'WAUZZZ8V8MA012345' })
   @ApiOkResponse({ type: VinHistoryUnlockDto })
+  @ApiResponse({
+    status: 404,
+    type: ErrorResponseDto,
+    description:
+      'not_covered / no_records / invalid_vin — nothing to sell, and nothing charged.',
+  })
   @ApiResponse({ status: 502, type: ErrorResponseDto, description: 'provider_failed (auto-refunded)' })
   @ApiResponse({ status: 503, type: ErrorResponseDto, description: 'provider_unavailable' })
   unlock(
@@ -66,6 +74,37 @@ export class VinHistoryController {
     @Param() params: VinParamDto,
   ): Promise<VinHistoryUnlockDto> {
     return this.vinHistory.unlock(userId, params.vin);
+  }
+}
+
+/**
+ * The public face of a shared report.
+ *
+ * Separate controller because it is the only anonymous route in the module, and
+ * keeping it apart makes that visible rather than hidden behind one `@Public()`
+ * among many. It carries the `lookup` throttle for the same reason the preview
+ * does: it takes an opaque string and answers whether it addresses something.
+ */
+@ApiTags('vin-history')
+@Controller('api/v1/public')
+export class PublicVinReportController {
+  constructor(private readonly vinHistory: VinHistoryService) {}
+
+  @Public()
+  @Get('vin-report/:token')
+  @Throttle({ lookup: { limit: 20, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Read a report someone shared, with no account',
+    description:
+      'Serves the buyer\'s frozen snapshot, so the link always shows the report that was ' +
+      'paid for. A revoked, unknown or unfinished token is the same 404 — telling them ' +
+      'apart would confirm that an old link once pointed at something.',
+  })
+  @ApiParam({ name: 'token' })
+  @ApiOkResponse({ type: PublicVinReportDto })
+  @ApiResponse({ status: 404, type: ErrorResponseDto })
+  shared(@Param('token') token: string): Promise<PublicVinReportDto> {
+    return this.vinHistory.getShared(token);
   }
 }
 
@@ -115,5 +154,40 @@ export class MeVinChecksController {
     @Query() query: VinCheckDownloadQueryDto,
   ): Promise<VinCheckDownloadDto> {
     return this.vinHistory.downloadMine(userId, id, query.format ?? 'pdf');
+  }
+
+  @Post('vin-checks/:id/share')
+  @ApiOperation({
+    summary: 'Publish this report at an unguessable public address',
+    description:
+      'Idempotent — calling it twice returns the same link, so reopening the page to copy ' +
+      'the address again cannot break a link already sent. Only a completed check can be ' +
+      'shared.',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiOkResponse({ type: VinCheckShareDto })
+  @ApiResponse({ status: 404, type: ErrorResponseDto, description: 'not_found / not_shareable' })
+  share(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<VinCheckShareDto> {
+    return this.vinHistory.share(userId, id);
+  }
+
+  @Delete('vin-checks/:id/share')
+  @ApiOperation({
+    summary: 'Withdraw the public link',
+    description:
+      'The report itself is untouched and the owner keeps it. Idempotent: withdrawing a ' +
+      'link that does not exist is a success.',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiOkResponse({ type: VinCheckShareDto })
+  @ApiResponse({ status: 404, type: ErrorResponseDto })
+  unshare(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<VinCheckShareDto> {
+    return this.vinHistory.unshare(userId, id);
   }
 }

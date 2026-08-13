@@ -97,6 +97,9 @@ export class ReportWheelDto {
   @IsOptional() @IsIn(['steel', 'alloy']) rimType?: string;
   @IsOptional() @IsIn(['good', 'worn', 'damaged']) condition?: string;
   @IsOptional() @IsString() @MaxLength(32) sizeSpec?: string;
+
+  /** Tyre make as printed on the sidewall (Michelin, Continental, ...). */
+  @IsOptional() @IsString() @MaxLength(48) tyreBrand?: string;
 }
 
 export class ReportDamageDto {
