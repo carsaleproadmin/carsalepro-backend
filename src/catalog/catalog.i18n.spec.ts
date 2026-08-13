@@ -8,7 +8,7 @@ import { I18N_DIR, mergeCatalogI18n } from './catalog.i18n';
 /**
  * The catalog is the source of truth for angle, part, damage-type, K/S/T,
  * checklist and paint-station names in both the API and the mobile bundle. The
- * four human-translated locales are authored in `catalog.data.ts`; the 26
+ * four human-translated locales are authored in `catalog.data.ts`; the 31
  * machine-translated ones arrive as sidecars and are folded in here.
  *
  * A silent failure in that fold is expensive and invisible: every label has a
@@ -135,9 +135,11 @@ describe('the committed catalog i18n sidecars', () => {
     'ar', 'he', 'fa',
     'zh', 'zh-Hant', 'ja', 'ko', 'vi', 'th', 'id', 'ms',
     'hi', 'bn',
+    // Added 2026-08-13 with the mobile app's 30 -> 35 locale rollout.
+    'be', 'kk', 'ka', 'lv', 'lt',
   ];
 
-  it('exist for all 26 machine-translated locales', () => {
+  it('exist for all 31 machine-translated locales', () => {
     expect(existsSync(I18N_DIR)).toBe(true);
     const present = readdirSync(I18N_DIR)
       .map((f) => /^catalog\.(.+)\.json$/.exec(f)?.[1])
