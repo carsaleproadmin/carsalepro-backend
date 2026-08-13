@@ -7,6 +7,12 @@
 import { pdfFontsAvailable } from '../legal/pdf-fonts';
 import { pdfPageCount, trackPageVisits } from '../../test/helpers/pdf-inspect';
 import { VinHistoryPayloadV1, VinHistoryMileageRecord } from './vin-history-payload-v1';
+import {
+  VinHistoryCoverageMap,
+  VinHistoryPayloadV2,
+  VinHistorySectionCoverage,
+  emptyCoverageMap,
+} from './vin-history-payload-v2';
 import { VIN_HISTORY_PDF_LOCALES } from './vin-history-pdf.i18n';
 import { renderVinHistoryPdf, vinHistoryPdfFilename } from './vin-history-pdf.renderer';
 
@@ -218,5 +224,277 @@ describe('renderVinHistoryPdf — pagination and footers', () => {
     const short = await renderVinHistoryPdf(payload({ mileageRecords: mileage(10) }), OPTS);
     const long = await renderVinHistoryPdf(payload({ mileageRecords: mileage(120) }), OPTS);
     expect(pdfPageCount(long)).toBeGreaterThan(pdfPageCount(short));
+  });
+});
+
+
+// ============================================================
+// Contract v2
+// ============================================================
+//
+// Same rules as above: the renderer can only testify that it produced a PDF,
+// paginated it and did not throw. WHAT the v2 document says — the coverage
+// notes, the verbatim brands, the vehicle and sources blocks — is asserted in
+// `vin-history-report-model.spec.ts`, on data.
+
+function coverageMap(state: VinHistorySectionCoverage): VinHistoryCoverageMap {
+  const map = emptyCoverageMap();
+  for (const id of Object.keys(map) as (keyof VinHistoryCoverageMap)[]) map[id] = state;
+  return map;
+}
+
+function payloadV2(overrides: Partial<VinHistoryPayloadV2> = {}): VinHistoryPayloadV2 {
+  const v1 = payload();
+  return {
+    schemaVersion: 2,
+    vin: v1.vin,
+    provider: 'carsxe',
+    synthetic: true,
+    generatedAt: v1.generatedAt,
+    summary: {
+      ...v1.summary,
+      hasCommercialUse: true,
+      hasTitleBrand: true,
+      hasInsuranceTotalLoss: true,
+      insuranceRecordCount: 1,
+      brandCount: 2,
+      serviceRecordCount: 0,
+    },
+    vehicle: {
+      make: 'BMW',
+      model: '320d',
+      modelYear: 2015,
+      bodyClass: 'Sedan/Saloon',
+      fuelType: 'Diesel',
+      plantCountry: null,
+      source: 'carsxe-specs',
+    },
+    owners: v1.owners,
+    mileageRecords: v1.mileageRecords,
+    damageRecords: v1.damageRecords,
+    registrations: v1.registrations,
+    recalls: v1.recalls,
+    theft: v1.theft,
+    inspections: v1.inspections,
+    insuranceRecords: [
+      {
+        date: '2021-09-20',
+        insurer: 'Allianz',
+        countryCode: 'US',
+        totalLoss: true,
+        reason: 'Collision — repair cost exceeds value',
+        source: 'nmvtis',
+      },
+    ],
+    brands: [
+      {
+        code: 'PT',
+        category: 'commercial',
+        label: 'Prior Taxi',
+        reportedAt: '2018-02-01',
+        authority: 'NY DMV',
+        countryCode: 'US',
+      },
+      {
+        code: 'FL',
+        category: 'flood',
+        label: 'Flood Damage',
+        reportedAt: '2020-08-15',
+        authority: 'TX DMV',
+        countryCode: 'US',
+      },
+    ],
+    serviceRecords: [],
+    equipment: {
+      standard: ['Air conditioning', 'Anti-lock braking system', 'Rain sensor'],
+      exteriorColors: ['Alpine White'],
+      interiorColors: [],
+      warranties: [{ type: 'Basic', months: 36, distanceKm: 60_000 }],
+      msrpCents: 4_512_300,
+      invoiceCents: null,
+      currency: 'USD',
+    },
+    marketValue: {
+      currency: 'USD',
+      retail: {
+        excellentCents: 1_850_000,
+        cleanCents: 1_620_000,
+        averageCents: 1_410_000,
+        roughCents: 1_120_000,
+      },
+      tradeIn: {
+        excellentCents: 1_450_000,
+        cleanCents: 1_260_000,
+        averageCents: 1_090_000,
+        roughCents: 860_000,
+      },
+      msrpCents: 4_512_300,
+      mileageKm: 184_000,
+      asOf: '2026-01-15',
+    },
+    coverage: { ...coverageMap('covered'), service: 'not_covered', inspections: 'unavailable' },
+    sources: [
+      { id: 'carsxe.history', status: 'ok', dataset: 'NMVTIS' },
+      { id: 'carsxe.lienTheft', status: 'failed', dataset: 'CarsXE Lien & Theft' },
+      { id: 'carsxe.recalls', status: 'skipped', dataset: 'NHTSA' },
+    ],
+    ...overrides,
+  };
+}
+
+/**
+ * A payload from two sources: several valuations, the two chapters the second
+ * one brought, and a theft check that says which registers it searched.
+ */
+function payloadTwoSources(overrides: Partial<VinHistoryPayloadV2> = {}): VinHistoryPayloadV2 {
+  const one = payloadV2();
+  return payloadV2({
+    marketValues: [
+      one.marketValue!,
+      {
+        currency: 'EUR',
+        retail: null,
+        tradeIn: null,
+        msrpCents: 1_499_000,
+        mileageKm: 180_000,
+        asOf: '2026-01-20',
+      },
+    ],
+    timeToSell: { countryCode: 'DE', medianDays: 42, p25Days: 21, p75Days: 77 },
+    inspectionValidity: {
+      countryCode: 'DE',
+      technicalValidTo: '2028-03-31',
+      emissionsValidTo: '2024-03-31',
+    },
+    theftCoverage: { countryCodes: ['US'] },
+    vehicle: { ...one.vehicle!, transmission: 'automatic', drivetrain: 'ALL_WHEEL_DRIVE', enginePowerKw: 225 },
+    equipment: {
+      ...one.equipment!,
+      groups: [
+        { category: 'SAFETY_SYSTEM', items: ['ABS', 'ELECTRONIC_STABILITY_PROGRAM'] },
+        { category: 'INTERIOR_FEATURE', items: ['ELECTRIC_TRUNK'] },
+      ],
+    },
+    ...overrides,
+  });
+}
+
+describe('renderVinHistoryPdf — contract v2', () => {
+  it('produces a PDF from a v2 payload', async () => {
+    const pdf = await renderVinHistoryPdf(payloadV2(), OPTS);
+    expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    expect(pdf.length).toBeGreaterThan(2048);
+  });
+
+  it('is deterministic for identical input', async () => {
+    const [a, b] = await Promise.all([
+      renderVinHistoryPdf(payloadV2(), OPTS),
+      renderVinHistoryPdf(payloadV2(), OPTS),
+    ]);
+    expect(a.equals(b)).toBe(true);
+  });
+
+  it('renders every supported locale, Cyrillic included', async () => {
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const pdf = await renderVinHistoryPdf(payloadV2(), { ...OPTS, locale });
+      expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    }
+  });
+
+  it('draws more than the v1 document did, which is the five new sections and two blocks', async () => {
+    // Not readable in the bytes; this is the cheap proxy that the additions
+    // actually reach the page rather than being built and dropped.
+    const v1 = await renderVinHistoryPdf(payload(), OPTS);
+    const v2 = await renderVinHistoryPdf(payloadV2(), OPTS);
+    expect(v2.length).toBeGreaterThan(v1.length);
+    expect(pdfPageCount(v2)).toBeGreaterThanOrEqual(pdfPageCount(v1));
+  });
+
+  it('renders a v2 report with every section empty rather than an empty file', async () => {
+    // Twelve "here is why there is nothing here" notes still make a document.
+    const pdf = await renderVinHistoryPdf(
+      payloadV2({
+        owners: [],
+        mileageRecords: [],
+        damageRecords: [],
+        registrations: [],
+        recalls: [],
+        inspections: [],
+        theft: {
+          stolen: false,
+          reportedAt: null,
+          countryCode: null,
+          recoveredAt: null,
+          source: null,
+        },
+        insuranceRecords: [],
+        brands: [],
+        serviceRecords: [],
+        equipment: null,
+        marketValue: null,
+      }),
+      OPTS,
+    );
+    expect(pdfPageCount(pdf)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders each coverage state without complaint', async () => {
+    for (const state of ['covered', 'unavailable', 'not_covered'] as const) {
+      const pdf = await renderVinHistoryPdf(
+        payloadV2({ brands: [], insuranceRecords: [], coverage: coverageMap(state) }),
+        OPTS,
+      );
+      expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    }
+  });
+
+  it('paginates a long v2 history and puts a footer on every page', async () => {
+    const tracker = trackPageVisits();
+    try {
+      const pdf = await renderVinHistoryPdf(payloadV2({ mileageRecords: mileage(160) }), OPTS);
+      const pages = pdfPageCount(pdf);
+      expect(pages).toBeGreaterThan(1);
+      expect(tracker.visited()).toEqual(Array.from({ length: pages }, (_, i) => i));
+    } finally {
+      tracker.restore();
+    }
+  });
+
+  it('draws the two chapters and the extra valuation the second source brought', async () => {
+    // Same cheap proxy as above: the additions reach the page rather than being
+    // built and dropped.
+    const one = await renderVinHistoryPdf(payloadV2(), OPTS);
+    const two = await renderVinHistoryPdf(payloadTwoSources(), OPTS);
+    expect(two.length).toBeGreaterThan(one.length);
+    expect(pdfPageCount(two)).toBeGreaterThanOrEqual(pdfPageCount(one));
+  });
+
+  it('renders a two-source payload in every locale', async () => {
+    for (const locale of VIN_HISTORY_PDF_LOCALES) {
+      const pdf = await renderVinHistoryPdf(payloadTwoSources(), { ...OPTS, locale });
+      expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    }
+  });
+
+  it('draws a theft chapter whose registers searched nothing', async () => {
+    // The chapter prints no row at all in this case, so the section falls back
+    // to its note box — a different drawing path from every other empty one.
+    const pdf = await renderVinHistoryPdf(
+      payloadTwoSources({ theftCoverage: { countryCodes: [] } }),
+      OPTS,
+    );
+    expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+  });
+
+  it('never throws on a v2 payload the renderer has not seen before', async () => {
+    const broken = {
+      schemaVersion: 2,
+      vin: 'WAUZZZ8V8MA012345',
+      provider: 'carsxe',
+      synthetic: false,
+      generatedAt: null,
+    } as unknown as VinHistoryPayloadV2;
+    const pdf = await renderVinHistoryPdf(broken, OPTS);
+    expect(pdf.subarray(0, 5).toString('ascii')).toBe('%PDF-');
   });
 });

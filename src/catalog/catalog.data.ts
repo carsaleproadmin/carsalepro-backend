@@ -185,10 +185,15 @@ const ANGLES: AngleDef[] = [
   //  - Angle IDS are persisted (mobile photo kinds `exterior-<id>`, R2 cloud
   //    slot keys, `ReportPhoto.kind`). Renaming one orphans every shot already
   //    taken with it. `order` is persisted nowhere and is free to move.
-  //  - The mobile quality score spreads a fixed 25 points over the REQUIRED
-  //    exterior angles, so adding one lowers the score of every report that does
-  //    not have it. That is why `minReportQualityScore` moved 90 → 85 in the
-  //    same release.
+  //  - Adding a required angle used to lower the score of every report that did
+  //    not have one (the mobile score spreads a fixed 25 points over the
+  //    REQUIRED exterior angles), which is why `minReportQualityScore` moved
+  //    90 → 85 in the same release. That arithmetic no longer decides anything:
+  //    the order gate stopped comparing a score to a threshold on 2026-08-13
+  //    and now checks which elements a report contains, with an amnesty that
+  //    judges a report by the angle set it was filed under
+  //    (`resolveRequiredAngles`). Growing this list therefore no longer needs a
+  //    matching setting change — old reports stay closable by construction.
   //  - `CATALOG_VERSION` deliberately stays '1'; see the note on that constant.
   //
   // ALL required exterior angles carry a `hint`, and the hints fall into three

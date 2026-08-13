@@ -6,9 +6,20 @@ import { OrdersService } from '../src/orders/orders.service';
 import { PaymentsService } from '../src/payments/payments.service';
 import { StripeService } from '../src/payments/stripe.service';
 import { PrismaService } from '../src/prisma/prisma.service';
+import {
+  currentRequiredAngles,
+  thicknessPanelIds,
+} from '../src/reports/report-completeness';
 import { SettingsService } from '../src/settings/settings.service';
 import { PLATFORM_SETTING_DEFAULTS } from '../src/settings/platform-settings.constants';
 import { FakeStripeService } from './helpers/fake-stripe';
+import {
+  CompleteReportData,
+  LEGACY_EXTERIOR_ANGLES_8,
+  completeReportData,
+  dropPhotoKind,
+  legacyReportData,
+} from './helpers/report-payload';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { PinnedTariff, colocatedQuote, pinTariff } from './helpers/tariff';
 
@@ -86,6 +97,13 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
   const inspectorTokens = new Map<string, string>();
 
   const FARE = colocatedQuote();
+  /**
+   * `minReportQualityScore` is no longer a threshold — since 2026-08-13 only its
+   * sign is read: above zero the completeness gate runs, at zero it does not.
+   * The name survived so no migration, seed or admin control had to change, and
+   * it is still what `reportRequirement.minQualityScore` reports, which is why
+   * this constant keeps it too. Nothing here compares a score to it.
+   */
   const MIN_QUALITY = PLATFORM_SETTING_DEFAULTS.minReportQualityScore;
   let tariff: PinnedTariff;
 
@@ -704,9 +722,18 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
       return { orderId, token };
     }
 
+    /**
+     * Seed a report the inspector can try to close the order with.
+     *
+     * `reportData` is what the gate reads: the payload's own photo manifest is
+     * the only evidence that exists at gate time, since no photo has been
+     * uploaded yet. `qualityScore` is stored and echoed back on a refusal, but
+     * it decides nothing — several cases below pass 100 and are still refused.
+     */
     async function seedReport(
       inspectorId: string,
-      qualityScore: number | null,
+      reportData: CompleteReportData | null,
+      qualityScore: number | null = reportData?.scores.qualityScore ?? null,
     ): Promise<{ id: string; code: string }> {
       const deviceId = uniqueDeviceId('gate');
       createdDeviceIds.add(deviceId);
@@ -721,27 +748,43 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
           uploaded: true,
           userId: inspectorId,
           qualityScore,
+          reportSchemaVersion: reportData ? 1 : null,
+          reportData: reportData ?? undefined,
         },
       });
       createdReportIds.add(report.id);
       return { id: report.id, code: report.code };
     }
 
-    it('7. an incomplete report is refused with BOTH numbers on the wire', async () => {
-      const { orderId, token } = await orderInProgress();
-      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-      const report = await seedReport(order.inspectorId as string, 41);
-
-      const res = await request(app.getHttpServer())
+    /** Attach a report to an order as its inspector. */
+    function attach(orderId: string, token: string, code: string) {
+      return request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/report`)
         .set('Authorization', `Bearer ${token}`)
-        .send({ code: report.code })
-        .expect(409);
+        .send({ code });
+    }
 
-      expect(res.body.error.code).toBe('report_quality_too_low');
-      // A bare code the client cannot turn into "41 of 90" is a code the
-      // inspector cannot act on. Both numbers ride beside `error`.
-      expect(res.body.qualityScore).toBe(41);
+    it('7. a missing exterior angle is refused, and the gap is named on the wire', async () => {
+      const { orderId, token } = await orderInProgress();
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const angle = currentRequiredAngles()[0];
+      const report = await seedReport(
+        order.inspectorId as string,
+        dropPhotoKind(completeReportData(), `exterior-${angle}`),
+      );
+
+      const res = await attach(orderId, token, report.code).expect(409);
+
+      expect(res.body.error.code).toBe('report_incomplete');
+      // A bare code the client cannot turn into "you never shot the rear" is a
+      // code the inspector cannot act on — they would drive back to the car
+      // with no idea what to photograph. The structured gap list is the point
+      // of refusing by family instead of by score.
+      expect(res.body.missing.exteriorAngles).toEqual([angle]);
+      expect(res.body.exteriorAngleCount).toBe(currentRequiredAngles().length);
+      // Both numbers still ride along: the score is displayed, it just no
+      // longer decides.
+      expect(res.body.qualityScore).toBe(100);
       expect(res.body.minQualityScore).toBe(MIN_QUALITY);
 
       // Nothing was linked and the order did not move.
@@ -752,35 +795,29 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
       ).toBeNull();
     });
 
-    it('7b. a report with NO score is a DIFFERENT refusal', async () => {
+    it('7b. a report with NO structured payload is a DIFFERENT refusal', async () => {
       const { orderId, token } = await orderInProgress();
       const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-      const report = await seedReport(order.inspectorId as string, null);
+      // A perfect score and nothing to judge: exactly what an app built before
+      // the structured payload existed sends.
+      const report = await seedReport(order.inspectorId as string, null, 100);
 
-      const res = await request(app.getHttpServer())
-        .post(`/api/v1/orders/${orderId}/report`)
-        .set('Authorization', `Bearer ${token}`)
-        .send({ code: report.code })
-        .expect(409);
+      const res = await attach(orderId, token, report.code).expect(409);
 
       // Separate code on purpose: an inspector on an older app build is told to
       // update, not accused of poor work. Collapsing the two would have them
       // re-uploading a perfectly good report until someone reads the logs.
       expect(res.body.error.code).toBe('report_quality_unknown');
-      expect(res.body.qualityScore).toBeNull();
+      expect(res.body.missing).toBeUndefined();
       expect(res.body.minQualityScore).toBe(MIN_QUALITY);
     });
 
     it('7c. a complete report attaches and submits the order', async () => {
       const { orderId, token } = await orderInProgress();
       const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-      const report = await seedReport(order.inspectorId as string, MIN_QUALITY);
+      const report = await seedReport(order.inspectorId as string, completeReportData());
 
-      await request(app.getHttpServer())
-        .post(`/api/v1/orders/${orderId}/report`)
-        .set('Authorization', `Bearer ${token}`)
-        .send({ code: report.code })
-        .expect(200);
+      await attach(orderId, token, report.code).expect(200);
 
       const after = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
       expect(after.status).toBe(OrderStatus.SUBMITTED);
@@ -789,102 +826,121 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
         .get(`/api/v1/orders/${orderId}`)
         .set('Authorization', `Bearer ${token}`)
         .expect(200);
+      // The counts are data, not copy: the website owns the wording, this owns
+      // how many of each element the inspector has to bring back, so growing
+      // the walk-around does not need a website release.
       expect(detail.body.reportRequirement).toEqual({
         minQualityScore: MIN_QUALITY,
-        currentQualityScore: MIN_QUALITY,
+        currentQualityScore: 100,
+        gateEnabled: true,
+        exteriorAngles: currentRequiredAngles().length,
+        thicknessPanels: thicknessPanelIds().length,
+        calibrationPhotos: 2,
+        wheels: 4,
       });
     });
 
     /**
-     * The 17-angle arithmetic, as executable cases rather than a comment.
+     * The families the score could not tell apart, as executable cases.
      *
-     * The mobile score prorates a fixed 25 points over the REQUIRED exterior
-     * angles, so growing the walk-around from 8 to 17 lowered the score of the
-     * very same inspection. `minReportQualityScore` moved 90 -> 85 to sit
-     * inside a window bounded on both sides — and the bounds are what these
-     * three cases pin, since the middle of a range is easy to keep and the
-     * edges are what a future tweak breaks.
+     * A score is a weighted average, so a whole missing family could be paid
+     * for by another: a report with no wheel data at all still cleared 90 on
+     * the strength of its exterior walk. Each case below drops exactly ONE
+     * element from an otherwise perfect payload scoring 100, which is what
+     * proves the gate reads the payload and not the number.
      */
-    it('7e. a report shot before the 17-angle expansion (87) still closes an order', async () => {
-      // 8 of 17 exterior = round(25 * 8/17) = 12, everything else complete.
-      // At the old 90 this same report would have been refused, which is the
-      // whole reason the threshold moved with the catalog.
+    it('7e. a paint panel with a photo but no reading is refused', async () => {
+      // The old score counted this panel as measured — reading OR photo. A
+      // picture of a gauge nobody transcribed is not a measurement.
       const { orderId, token } = await orderInProgress();
       const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-      const report = await seedReport(order.inspectorId as string, 87);
+      const data = completeReportData();
+      const panel = thicknessPanelIds()[0];
+      data.thickness.panels = data.thickness.panels.filter(
+        (p) => p.panelId !== panel,
+      );
+      const report = await seedReport(order.inspectorId as string, data);
 
-      await request(app.getHttpServer())
-        .post(`/api/v1/orders/${orderId}/report`)
-        .set('Authorization', `Bearer ${token}`)
-        .send({ code: report.code })
-        .expect(200);
+      const res = await attach(orderId, token, report.code).expect(409);
+
+      expect(res.body.error.code).toBe('report_incomplete');
+      expect(res.body.missing.thicknessValues).toEqual([panel]);
+      // The photo is there — only the number is missing, and the refusal says so.
+      expect(res.body.missing.thicknessPhotos).toEqual([]);
+      expect(res.body.qualityScore).toBe(100);
+    });
+
+    it('7f. a wheel missing its DOT code is refused', async () => {
+      // The old score accepted tread OR a condition word, so a tyre's age —
+      // the one thing a buyer cannot read off a photograph — could be absent
+      // from a report that closed a paid order.
+      const { orderId, token } = await orderInProgress();
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const data = completeReportData();
+      delete data.wheels.find((w) => w.corner === 'rr')!.dot;
+      const report = await seedReport(order.inspectorId as string, data);
+
+      const res = await attach(orderId, token, report.code).expect(409);
+
+      expect(res.body.error.code).toBe('report_incomplete');
+      expect(res.body.missing.wheels).toEqual([{ corner: 'rr', missing: ['dot'] }]);
+      expect(
+        (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status,
+      ).toBe(OrderStatus.IN_PROGRESS);
+    });
+
+    it('7g. a legacy 8-angle report still closes an order', async () => {
+      // The amnesty. The walk-around grew from 8 angles to 17 on 2026-08-10,
+      // and a report filed by a build that only knew the 8 can never satisfy
+      // the 17 — its inspector would be permanently unable to be paid for work
+      // that was correct when it was done. Judged by the set it was filed
+      // under, it closes; the count on the wire says which set that was.
+      const { orderId, token } = await orderInProgress();
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const report = await seedReport(order.inspectorId as string, legacyReportData());
+
+      await attach(orderId, token, report.code).expect(200);
 
       expect(
         (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status,
       ).toBe(OrderStatus.SUBMITTED);
     });
 
-    it('7f. skipping the engine bay and open bonnet (93) closes an order', async () => {
-      // 12 of 17 exterior = 18, everything else complete. The client asked for
-      // exactly this: an inspector without a lift, or with a hot engine, must
-      // still be able to close the job.
+    it('7h. an inspector cannot claim the amnesty by skipping the new angles', async () => {
+      // One newer angle proves the build knows about all of them, so the
+      // remaining eight are missing rather than unknown. Without this, the
+      // amnesty is an opt-out from the expansion the client paid for.
       const { orderId, token } = await orderInProgress();
       const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-      const report = await seedReport(order.inspectorId as string, 93);
+      const data = legacyReportData();
+      const legacy: readonly string[] = LEGACY_EXTERIOR_ANGLES_8;
+      const newAngle = currentRequiredAngles().find(
+        (id) => !legacy.includes(id),
+      ) as string;
+      data.photos.push({ kind: `exterior-${newAngle}` });
+      const report = await seedReport(order.inspectorId as string, data);
 
-      await request(app.getHttpServer())
-        .post(`/api/v1/orders/${orderId}/report`)
-        .set('Authorization', `Bearer ${token}`)
-        .send({ code: report.code })
-        .expect(200);
+      const res = await attach(orderId, token, report.code).expect(409);
 
-      expect(
-        (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status,
-      ).toBe(OrderStatus.SUBMITTED);
-    });
-
-    it('7g. a report that does not identify the vehicle (80) is still refused', async () => {
-      // All 17 angles, both calibrations, the gauge, a signature — and no
-      // make/model/VIN, which costs the whole 20-point identity component.
-      // This is the lower bound: drop the threshold to 80 and a paid inspection
-      // could be closed with a report that never says which car it is.
-      const { orderId, token } = await orderInProgress();
-      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-      const report = await seedReport(order.inspectorId as string, 80);
-
-      const res = await request(app.getHttpServer())
-        .post(`/api/v1/orders/${orderId}/report`)
-        .set('Authorization', `Bearer ${token}`)
-        .send({ code: report.code })
-        .expect(409);
-
-      expect(res.body.error.code).toBe('report_quality_too_low');
-      expect(res.body.qualityScore).toBe(80);
-      expect(res.body.minQualityScore).toBe(MIN_QUALITY);
-    });
-
-    it('7h. the threshold stays inside the window the angle count implies', () => {
-      // Upper bound 87: a legacy 8-of-17 report must stay closable.
-      // Lower bound 81: a report with no vehicle identity scores 80 and must not.
-      expect(MIN_QUALITY).toBeGreaterThan(80);
-      expect(MIN_QUALITY).toBeLessThanOrEqual(87);
-      expect(MIN_QUALITY).toBe(85);
+      expect(res.body.error.code).toBe('report_incomplete');
+      expect(res.body.exteriorAngleCount).toBe(currentRequiredAngles().length);
+      expect(res.body.missing.exteriorAngles).not.toContain(newAngle);
     });
 
     it('7d. minReportQualityScore = 0 turns the gate off', async () => {
       const { orderId, token } = await orderInProgress();
       const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      // Unjudgeable AND incomplete: with the lever down, neither refusal fires.
       const report = await seedReport(order.inspectorId as string, null);
 
       // The operational lever: an inspector fleet on an old build must be
-      // unblockable from the admin panel in a minute, not by a release.
+      // unblockable from the admin panel in a minute, not by a release. The
+      // setting kept both its name and this behaviour when the rule behind it
+      // changed, precisely so the lever needs no deploy at the moment it is
+      // wanted.
       await settings.set('minReportQualityScore', 0);
       try {
-        await request(app.getHttpServer())
-          .post(`/api/v1/orders/${orderId}/report`)
-          .set('Authorization', `Bearer ${token}`)
-          .send({ code: report.code })
-          .expect(200);
+        await attach(orderId, token, report.code).expect(200);
       } finally {
         await settings.set('minReportQualityScore', MIN_QUALITY);
       }

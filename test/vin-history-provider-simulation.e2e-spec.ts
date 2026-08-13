@@ -384,7 +384,8 @@ describe('VIN history — simulated real provider (e2e)', () => {
     it('2.4 reports a real provider as non-synthetic and purchasable', async () => {
       const vin = track(uniqueVin('p4'));
       const res = await preview(vin).expect(200);
-      expect(res.body.provider).toBe('simulated');
+      // Never on the wire — see the note in vin-history.e2e-spec.ts.
+      expect(res.body.provider).toBeUndefined();
       expect(res.body.synthetic).toBe(false);
       expect(res.body.purchasable).toBe(true);
     });
@@ -490,7 +491,7 @@ describe('VIN history — simulated real provider (e2e)', () => {
       expect(body.payload.registrations).toHaveLength(1);
     });
 
-    it('3.4 an empty report is refunded, not sold, and never cached', async () => {
+    it('3.4 an empty report is refunded, not sold, and remembered', async () => {
       const user = await newUser();
       const vin = track(uniqueVin('b4'));
       provider.respondWith(RAW_EMPTY);
@@ -513,9 +514,30 @@ describe('VIN history — simulated real provider (e2e)', () => {
       const refund = await prisma.refund.findUniqueOrThrow({ where: { paymentId: payment.id } });
       expect(refund.amountCents).toBe(payment.amountCents);
 
-      // Not cached: a VIN that gains its first record tomorrow must not stay
-      // unsellable for the rest of the cache window.
-      expect(await prisma.vinHistoryReport.count({ where: { vin } })).toBe(0);
+      // REMEMBERED, with a deliberately short expiry.
+      //
+      // This assertion was the exact opposite until 2026-08-12, and the reason
+      // it changed is worth keeping. The old rule cached nothing, so that a VIN
+      // gaining its first record tomorrow would not stay unsellable for the rest
+      // of a thirty-day window. The concern was right; the remedy was too blunt.
+      // The provider bills the same for a record-less answer as for a full one,
+      // so discarding it meant every later attempt on the same VIN paid that fee
+      // again to arrive back at the same refund — for a stable property of a
+      // car, since one with no records today has none tomorrow.
+      //
+      // The row now carries its own much shorter window, which keeps both
+      // properties: the repeat-billing stops immediately, and the VIN is offered
+      // again within days rather than a month. See 3.5b for the other half.
+      const remembered = await prisma.vinHistoryReport.findMany({ where: { vin } });
+      expect(remembered).toHaveLength(1);
+      expect(remembered[0].recordCount).toBe(0);
+
+      const emptyDays = await settings.getNumber('vinHistoryEmptyCacheDays');
+      const fullDays = await settings.getNumber('vinHistoryCacheDays');
+      expect(emptyDays).toBeLessThan(fullDays);
+      const lifetimeMs = remembered[0].expiresAt.getTime() - Date.now();
+      expect(lifetimeMs).toBeLessThanOrEqual(emptyDays * 86_400_000);
+      expect(lifetimeMs).toBeLessThan(fullDays * 86_400_000);
     });
 
     it('3.5 an empty report does not page the admins', async () => {
@@ -542,19 +564,43 @@ describe('VIN history — simulated real provider (e2e)', () => {
       expect(purchase.status).toBe('refunded');
     });
 
-    it('3.5 a VIN that gains its first record then sells', async () => {
+    it('3.5b a record-less VIN is refused for free, and sells once the memory lapses', async () => {
       const user = await newUser();
-      const vin = track(uniqueVin('b5'));
+      const vin = track(uniqueVin('b5b'));
 
       provider.respondWith(RAW_EMPTY);
       await unlock(vin, user.token).expect(502);
+      const billedOnce = provider.fetchCalls.length;
+
+      /*
+       * The second attempt is the point of the whole feature.
+       *
+       * It is refused BEFORE a payment exists — a 404 rather than the 502 the
+       * first attempt got — so nobody is charged and nothing has to be refunded.
+       * And `fetchCalls` does not grow: the provider is never asked again, which
+       * is the money this change actually saves. Previously this attempt cost a
+       * full billable lookup, took the buyer's money, and gave it back.
+       */
+      const refused = await unlock(vin, user.token).expect(404);
+      expect(refused.body.error.code).toBe('no_records');
+      expect(provider.fetchCalls.length).toBe(billedOnce);
+
+      /*
+       * And the original concern still holds: the refusal is a short memory, not
+       * a verdict. Expiring the row is what the clock does after
+       * `vinHistoryEmptyCacheDays`; doing it by hand here keeps the test fast.
+       */
+      await prisma.vinHistoryReport.updateMany({
+        where: { vin },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
 
       provider.respondWith(RAW_MINIMAL);
       const retry = await unlock(vin, user.token).expect(201);
       expect(retry.body.status).toBe('ready');
 
       // One purchase row across the whole retry — the (userId, vin) guarantee
-      // survives a failure.
+      // survives a failure, a free refusal and a later success.
       expect(await prisma.vinHistoryPurchase.count({ where: { userId: user.userId, vin } })).toBe(1);
     });
 

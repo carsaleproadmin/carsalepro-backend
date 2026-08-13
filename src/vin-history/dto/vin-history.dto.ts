@@ -78,9 +78,48 @@ export class VinHistoryPreviewSummaryDto {
   @ApiProperty({ example: 184000, nullable: true }) lastRecordedMileageKm!: number | null;
 }
 
+/**
+ * Which car the visitor typed, from the FREE decode.
+ *
+ * Costs nothing: the decode is cached in Postgres and is the same one the mobile
+ * app has always used. It exists because the preview showed eight counters
+ * against a bare seventeen-character string and never named the car — the one
+ * thing that tells a visitor they typed the VIN correctly.
+ *
+ * Every field is individually nullable. The decoder is US-centric and answers
+ * less for a European VIN, and a field it does not know is omitted rather than
+ * printed empty.
+ */
+export class VinHistoryVehicleDto {
+  @ApiProperty({ example: 'BMW', nullable: true }) make!: string | null;
+  @ApiProperty({ example: '535i', nullable: true }) model!: string | null;
+  @ApiProperty({ example: 2012, nullable: true }) modelYear!: number | null;
+  @ApiProperty({ example: 'Sedan/Saloon', nullable: true }) bodyClass!: string | null;
+  @ApiProperty({ example: 'Gasoline', nullable: true }) fuelType!: string | null;
+  @ApiProperty({ example: 'GERMANY', nullable: true }) plantCountry!: string | null;
+}
+
+/**
+ * Whether the history source can hold anything for this VIN at all.
+ *
+ * - `supported`   — worth offering. The paid button appears.
+ * - `not_covered` — a real car the source does not cover. We say so and offer an
+ *   inspection instead; no payment is possible.
+ * - `invalid_vin` — not a VIN.
+ * - `no_records`  — we already looked, at our own expense, and there was nothing.
+ *   Remembered for a short window so the same VIN cannot bill us again.
+ *
+ * The last two are refusals a visitor should read differently: one is "check
+ * what you typed", the other is "this car has no history on file".
+ */
+export type VinHistoryCoverageState =
+  | 'supported'
+  | 'not_covered'
+  | 'invalid_vin'
+  | 'no_records';
+
 export class VinHistoryPreviewDto {
   @ApiProperty({ example: 'WAUZZZ8V8MA012345' }) vin!: string;
-  @ApiProperty({ example: 'mock' }) provider!: string;
 
   @ApiProperty({
     example: true,
@@ -90,12 +129,42 @@ export class VinHistoryPreviewDto {
 
   @ApiProperty({
     example: true,
-    description: 'False when no provider can serve a PAID unlock right now.',
+    description:
+      'False when no provider can serve a PAID unlock right now, OR when the source cannot ' +
+      'cover this VIN. Read `coverage` for which.',
   })
   purchasable!: boolean;
 
-  @ApiProperty({ type: VinHistoryPreviewSummaryDto })
-  summary!: VinHistoryPreviewSummaryDto;
+  @ApiProperty({
+    enum: ['supported', 'not_covered', 'invalid_vin', 'no_records'],
+    description: 'Why the paid report is or is not on offer.',
+  })
+  coverage!: VinHistoryCoverageState;
+
+  @ApiProperty({
+    type: VinHistoryVehicleDto,
+    nullable: true,
+    description: 'Which car this is, from the free decode. Null when it cannot be decoded.',
+  })
+  vehicle!: VinHistoryVehicleDto | null;
+
+  @ApiProperty({
+    example: false,
+    description:
+      'TRUE when the counters below were actually measured — from a warm cache, or from a ' +
+      'provider that offers a free probe. FALSE means NOTHING was counted and `summary` is ' +
+      'null: do not render zeros, and do not imply the car is clean.',
+  })
+  probed!: boolean;
+
+  @ApiProperty({
+    type: VinHistoryPreviewSummaryDto,
+    nullable: true,
+    description:
+      'Null when `probed` is false. The active provider bills per lookup and has no free ' +
+      'probe, so before a purchase there is genuinely nothing to count.',
+  })
+  summary!: VinHistoryPreviewSummaryDto | null;
 
   @ApiProperty({ example: 1999, description: 'What the full history costs, integer cents.' })
   priceCents!: number;
@@ -127,7 +196,6 @@ export class VinCheckItemDto {
   @ApiProperty({ example: 'WAUZZZ8V8MA012345' }) vin!: string;
   @ApiProperty({ example: 'ready', enum: ['pending', 'ready', 'failed', 'refunded'] })
   status!: string;
-  @ApiProperty({ example: 'mock', nullable: true }) provider!: string | null;
   @ApiProperty({ example: false }) synthetic!: boolean;
   @ApiProperty({ nullable: true }) failureReason!: string | null;
   @ApiProperty() createdAt!: string;
@@ -142,7 +210,9 @@ export class VinCheckListDto {
 
 export class VinCheckDetailDto extends VinCheckItemDto {
   @ApiProperty({
-    description: 'The full VinHistoryPayloadV1. Null while the purchase is not ready.',
+    description:
+      'The full payload — VinHistoryPayloadV1 or V2, branch on `schemaVersion`. Null while ' +
+      'the purchase is not ready.',
     nullable: true,
   })
   payload!: unknown;
@@ -153,6 +223,50 @@ export class VinCheckDetailDto extends VinCheckItemDto {
     example: 'de',
   })
   pdfLocale!: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'The public share link, or null when the report is not shared. Present only on the ' +
+      "owner's own view — the public route never echoes it back.",
+  })
+  shareUrl!: string | null;
+
+  @ApiProperty({ nullable: true, description: 'When the current link was minted.' })
+  sharedAt!: string | null;
+}
+
+/**
+ * The answer to minting or revoking a share link.
+ *
+ * `shareUrl` is null after a revoke. Returning the whole state rather than just
+ * the new token means a caller never has to reconstruct the URL, and the origin
+ * stays a server-side fact.
+ */
+export class VinCheckShareDto {
+  @ApiProperty({ nullable: true, example: 'https://www.carsalepro.de/vin-report/3f9a…' })
+  shareUrl!: string | null;
+
+  @ApiProperty({ nullable: true }) sharedAt!: string | null;
+}
+
+/**
+ * A shared report as an anonymous reader sees it.
+ *
+ * Deliberately NOT `VinCheckDetailDto`: that shape carries the purchase id, the
+ * buyer's failure reasons and the share token itself, none of which belong to
+ * whoever was handed the link. What is published is the vehicle history and the
+ * date it was taken — the report, not the transaction.
+ */
+export class PublicVinReportDto {
+  @ApiProperty({ example: 'WAUZZZ8V8MA012345' }) vin!: string;
+  @ApiProperty({ example: false }) synthetic!: boolean;
+
+  @ApiProperty({ description: 'VinHistoryPayloadV1 or V2 — branch on `schemaVersion`.' })
+  payload!: unknown;
+
+  @ApiProperty({ description: 'When the buyer\'s snapshot was taken. The age of this data.' })
+  reportedAt!: string;
 }
 
 export class VinCheckDownloadDto {
