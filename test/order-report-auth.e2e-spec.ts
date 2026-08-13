@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { OrdersService } from '../src/orders/orders.service';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { completeReportData } from './helpers/report-payload';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { PinnedTariff, pinTariff } from './helpers/tariff';
 
@@ -260,9 +261,16 @@ describe('Order report submitter authorisation (e2e)', () => {
       process.env.R2_ACCESS_KEY_ID &&
       process.env.R2_SECRET_ACCESS_KEY
     );
-    // A complete report: the quality gate sits between the submitter check and
-    // the R2 gate, so an unscored report would 409 before either.
-    const res = await fileReport(deviceId, { orderId, qualityScore: 95 });
+    // A complete report: the completeness gate sits between the submitter check
+    // and the R2 gate, so a report with no structured payload would 409 before
+    // either and this case would stop testing authorisation. Since 2026-08-13
+    // the gate reads the payload's own manifest, not the score.
+    const res = await fileReport(deviceId, {
+      orderId,
+      qualityScore: 95,
+      reportSchemaVersion: 1,
+      reportData: completeReportData(),
+    });
 
     if (r2Off) {
       // No storage → 503 from the R2 gate, which sits AFTER the submitter check.

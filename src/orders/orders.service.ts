@@ -31,6 +31,12 @@ import {
 import { ATTACHABLE_REPORT_ORDER_STATUSES, canTransition } from './order-state-machine';
 import { PriceBreakdown, computePrice } from './order-pricing';
 import { MONEY_RETRY_MAX_ATTEMPTS, planRetry } from './retry-schedule';
+import {
+  countMissing,
+  currentRequiredAngles,
+  evaluateCompleteness,
+  thicknessPanelIds,
+} from '../reports/report-completeness';
 
 /**
  * Result of a server-side quote.
@@ -1429,6 +1435,17 @@ export class OrdersService {
       reportRequirement: {
         minQualityScore,
         currentQualityScore: reportRow?.qualityScore ?? null,
+        // The counts the inspector actually has to satisfy. Data, not copy:
+        // the frontend owns the wording of "photograph every exterior angle",
+        // this owns how many angles that is, so growing the walk-around does
+        // not need a website release. `gateEnabled` mirrors the lever in
+        // `assertReportComplete` so a disabled gate does not display a
+        // requirement nobody is being held to.
+        gateEnabled: minQualityScore > 0,
+        exteriorAngles: currentRequiredAngles().length,
+        thicknessPanels: thicknessPanelIds().length,
+        calibrationPhotos: 2,
+        wheels: 4,
       },
       autoApproveAt: order.autoApproveAt ? order.autoApproveAt.toISOString() : null,
       submittedAt: order.submittedAt ? order.submittedAt.toISOString() : null,
@@ -2753,6 +2770,12 @@ export class OrdersService {
         make: true,
         model: true,
         qualityScore: true,
+        // REQUIRED by the completeness gate below. Omit it and `reportData`
+        // reads `undefined`, which the evaluator reports as "not evaluable" —
+        // so the gate would refuse every report with "update your app" instead
+        // of checking anything. A silent total bypass in the other direction is
+        // one `if` away, which is why this comment exists.
+        reportData: true,
       },
     });
     if (!report) {
@@ -2782,7 +2805,7 @@ export class OrdersService {
     // The completeness gate runs AFTER the vehicle check on purpose: "this is
     // the wrong car" is the more useful thing to be told, and a right-car report
     // that is merely incomplete is the only one worth quoting a score at.
-    await this.assertReportQuality(report.qualityScore);
+    await this.assertReportComplete(report.reportData, report.qualityScore);
 
     const deviceLink = await this.prisma.deviceLink.findUnique({
       where: { deviceId: report.deviceId },
@@ -2817,46 +2840,62 @@ export class OrdersService {
    * The completeness gate: an order may only be closed with a report that
    * actually covers the vehicle. Throws, or returns silently.
    *
-   * The threshold is `minReportQualityScore` (a PlatformSetting, seeded at 90)
-   * rather than a constant for one operational reason: an inspector running an
-   * older mobile build files reports with NO score at all, and discovering that
-   * in production has to be fixable from the admin panel in a minute rather
-   * than by a release. **`min <= 0` disables the gate entirely** — that is the
-   * lever, and it is why the comparison is not `score < min || min === 0`.
+   * Since 2026-08-13 this checks WHICH elements are present, not a score. See
+   * `src/reports/report-completeness.ts` for what "complete" means and why the
+   * score stopped being the gate. The score is still stored and still shown; it
+   * is simply no longer what decides.
+   *
+   * **`minReportQualityScore <= 0` still disables the gate entirely.** The
+   * setting kept its name so no migration, seed, admin control or order DTO had
+   * to change; its meaning is now a lever, not a threshold. That mismatch is
+   * deliberate and is the reason for this paragraph: it is the only way to
+   * unblock production without a release, and renaming it would cost that lever
+   * a deploy at exactly the moment it is needed.
    *
    * The two refusals are separate codes on purpose. `report_quality_unknown`
-   * means "your app is too old, update it"; `report_quality_too_low` means "the
-   * inspection is incomplete, go back to the car". Collapsing them into one
-   * accuses an inspector of poor work when the real problem is a stale build,
-   * and they would keep re-uploading the same perfectly good report.
+   * means "your app is too old, update it" — a report with no structured
+   * payload cannot be judged, and that is not the inspector's fault.
+   * `report_incomplete` means "the inspection is missing these specific things,
+   * go back to the car". Collapsing them into one accuses an inspector of poor
+   * work when the real problem is a stale build, and they would keep
+   * re-uploading the same perfectly good report.
    *
-   * Both numbers ride on the exception beside `error`, where
+   * The details ride on the exception beside `error`, where
    * `AllExceptionsFilter` passes them through to the wire — a bare code the
-   * client cannot turn into "87 of 90" is a code the user cannot act on.
+   * client cannot turn into "3 exterior angles and 1 wheel" is a code the user
+   * cannot act on.
    */
-  async assertReportQuality(qualityScore: number | null | undefined): Promise<void> {
+  async assertReportComplete(
+    reportData: unknown,
+    qualityScore: number | null | undefined,
+  ): Promise<void> {
     const minQualityScore = await this.settings.getNumber('minReportQualityScore');
     if (minQualityScore <= 0) return;
 
-    if (qualityScore === null || qualityScore === undefined) {
+    const result = evaluateCompleteness(reportData);
+
+    if (!result.evaluable) {
       throw new ConflictException({
         error: {
           code: 'report_quality_unknown',
           message:
-            'This report carries no completeness score. Update the CarSalePro app and re-sync the report.',
+            'This report carries no structured inspection data. Update the CarSalePro app and re-sync the report.',
         },
-        qualityScore: null,
+        qualityScore: qualityScore ?? null,
         minQualityScore,
       });
     }
 
-    if (qualityScore < minQualityScore) {
+    if (!result.complete) {
+      const count = countMissing(result.missing);
       throw new ConflictException({
         error: {
-          code: 'report_quality_too_low',
-          message: `This report is ${qualityScore}% complete; ${minQualityScore}% is required to close an order.`,
+          code: 'report_incomplete',
+          message: `This inspection is missing ${count} required element(s). Every exterior angle, paint panel, calibration reference and wheel needs its data and its photo.`,
         },
-        qualityScore,
+        missing: result.missing,
+        exteriorAngleCount: result.exteriorAngleCount,
+        qualityScore: qualityScore ?? null,
         minQualityScore,
       });
     }
@@ -3167,6 +3206,17 @@ export interface OrderDetail {
   reportRequirement?: {
     minQualityScore: number;
     currentQualityScore: number | null;
+    /**
+     * The four counts below are OPTIONAL so the website can deploy before or
+     * after the backend without either half breaking — the panel falls back to
+     * its previous rendering when they are absent. That independence is a
+     * tested property of this block, not an accident.
+     */
+    gateEnabled?: boolean;
+    exteriorAngles?: number;
+    thicknessPanels?: number;
+    calibrationPhotos?: number;
+    wheels?: number;
   } | null;
   autoApproveAt: string | null;
   submittedAt: string | null;

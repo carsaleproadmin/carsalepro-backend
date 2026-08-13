@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { OrdersService } from '../src/orders/orders.service';
+import {
+  currentRequiredAngles,
+  thicknessPanelIds,
+} from '../src/reports/report-completeness';
+import { completeReportData } from './helpers/report-payload';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { PinnedTariff, colocatedQuote, pinTariff } from './helpers/tariff';
 import { PLATFORM_SETTING_DEFAULTS } from '../src/settings/platform-settings.constants';
@@ -453,10 +458,22 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(detail.body.search.deadlineAt).toBeTruthy();
     expect(detail.body.search.expiredAt).toBeNull();
     // Readable while ASSIGNED — before the inspector drives anywhere — which is
-    // the entire reason it is returned in every status.
+    // the entire reason it is returned in every status: telling someone what
+    // the report must contain once they have filed it is telling them too late.
+    //
+    // The four counts arrived with the completeness gate on 2026-08-13 and are
+    // OPTIONAL on the wire so the website could ship before or after this
+    // backend. `minQualityScore` survives with its old name and a new job: it
+    // is now only read for its sign — above zero the gate runs, at zero it does
+    // not — which `gateEnabled` states outright so no client has to infer it.
     expect(detail.body.reportRequirement).toEqual({
       minQualityScore: PLATFORM_SETTING_DEFAULTS.minReportQualityScore,
       currentQualityScore: null,
+      gateEnabled: true,
+      exteriorAngles: currentRequiredAngles().length,
+      thicknessPanels: thicknessPanelIds().length,
+      calibrationPhotos: 2,
+      wheels: 4,
     });
   });
 
@@ -693,9 +710,22 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const reportRes = await request(app.getHttpServer())
       .post('/reports')
       .set('X-Device-Id', deviceId)
-      // `qualityScore` is now part of the happy path: an order can only be
-      // closed with a report that reaches `minReportQualityScore`.
-      .send({ code, orderId, make: 'BMW', model: '320d', qualityScore: 95 });
+      // A full `reportData` payload is now part of the happy path: an order can
+      // only be closed with a report that covers the car, and since 2026-08-13
+      // "covers" is judged from the payload's own manifest — every exterior
+      // angle, every paint panel with a reading and a photo, both calibration
+      // shots, all four wheels. The score rides along and decides nothing.
+      // The gate runs before quota and before R2, so an unjudgeable payload
+      // would 409 here rather than reaching either.
+      .send({
+        code,
+        orderId,
+        make: 'BMW',
+        model: '320d',
+        qualityScore: 95,
+        reportSchemaVersion: 1,
+        reportData: completeReportData(),
+      });
 
     if (r2Off) {
       // Without R2 the report-create returns 503 — but the order side effect runs
@@ -749,8 +779,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         s3Key: 'test/mismatch.pdf',
         tier: 'free',
         uploaded: true,
-        // Passes the completeness gate, so the 409 below can only be the
-        // vehicle mismatch this case is about.
+        // No payload, and deliberately so: the vehicle check runs BEFORE the
+        // completeness gate, so "this is the wrong car" is what an inspector is
+        // told first — the more useful of the two, and the only one that is
+        // worth acting on. This case would still be a 409 either way, so it
+        // asserts the CODE to prove which check answered.
         qualityScore: 95,
         userId: assignedId,
       },
@@ -805,6 +838,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         tier: 'free',
         uploaded: true,
         qualityScore: 95,
+        // A complete payload, so the 200 below can only be about the code's
+        // case. Without it the completeness gate answers 409 first and this
+        // case would pass or fail for the wrong reason.
+        reportSchemaVersion: 1,
+        reportData: completeReportData(),
         userId: assignedId,
       },
     });

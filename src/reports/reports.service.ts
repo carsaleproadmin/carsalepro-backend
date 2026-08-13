@@ -66,6 +66,7 @@ export class ReportsService {
       // path is gated: every legacy mobile submission has no orderId, carries no
       // score, and gating those would brick the shipped app.
       await this.assertOrderReportQuality(
+        dto.reportData,
         dto.qualityScore ?? extracted?.qualityScore ?? null,
       );
     }
@@ -369,16 +370,21 @@ export class ReportsService {
   /**
    * Apply the order completeness gate to a report being filed from a device.
    *
-   * The rule itself lives in `OrdersService.assertReportQuality` — one gate, one
-   * threshold, one pair of error codes, shared with `POST /orders/:id/report`.
+   * The rule itself lives in `OrdersService.assertReportComplete` — one gate,
+   * one lever, one pair of error codes, shared with `POST /orders/:id/report`.
    * OrdersService is resolved lazily through ModuleRef for the same reason
    * `submitOrderForReport` does: ReportsModule must not import OrdersModule.
    *
    * Unlike `submitOrderForReport`, a failure here is NOT swallowed. This is a
    * refusal, and the whole point is that the inspector is told.
    */
-  private async assertOrderReportQuality(qualityScore: number | null): Promise<void> {
-    let orders: { assertReportQuality(score: number | null): Promise<void> };
+  private async assertOrderReportQuality(
+    reportData: unknown,
+    qualityScore: number | null,
+  ): Promise<void> {
+    let orders: {
+      assertReportComplete(data: unknown, score: number | null): Promise<void>;
+    };
     try {
       const { OrdersService } = await import('../orders/orders.service');
       orders = this.moduleRef.get(OrdersService, { strict: false });
@@ -388,7 +394,7 @@ export class ReportsService {
       this.logger.warn('OrdersService unavailable — report quality gate skipped');
       return;
     }
-    await orders.assertReportQuality(qualityScore);
+    await orders.assertReportComplete(reportData, qualityScore);
   }
 
   /**
