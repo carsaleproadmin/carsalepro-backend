@@ -735,6 +735,12 @@ model Listing {
   package                String        @default("standard") // standard | gold
   priceCents             Int           @map("price_cents")
   city                   String
+  /// ISO 3166-1 alpha-2, upper case. The showroom is worldwide, so the search
+  /// starts with the country — and a city name alone cannot answer it (there is
+  /// a Frankfurt in Germany and a Frankfort in Kentucky). Nullable because every
+  /// listing written before this column exists has no country to claim, and a
+  /// guessed one filters a real car out of a real search.
+  countryCode            String?       @map("country_code") @db.VarChar(2)
   plz                    String?
   description            String?
   contactPhone           String?       @map("contact_phone")
@@ -776,6 +782,7 @@ model Listing {
   @@index([status, package, publishedAt])
   @@index([sellerId])
   @@index([make, model, year])
+  @@index([countryCode, city])
   @@map("listing")
 }
 
