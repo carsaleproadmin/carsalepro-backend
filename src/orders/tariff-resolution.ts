@@ -125,8 +125,19 @@ export function resolveTariff(
       ratePerMinuteCents: resolved.ratePerMinuteCents as number,
       minimumFareCents: resolved.minimumFareCents as number,
       returnTripFactor: resolved.returnTripFactor as number,
+      // The free radius is a FARE term and must travel on the tariff, not only
+      // in `limits`. `computePrice` reads `tariff.freeRadiusKm` and nothing
+      // else, so a resolved radius left out here is read from the global
+      // spread instead: the row is loaded, the override is resolved, and the
+      // price does not move. It shipped that way, and only the cap — which the
+      // caller reads out of `limits` by hand — ever did anything regionally.
+      freeRadiusKm: resolved.freeRadiusKm as number,
     },
     limits: {
+      // The same number as `tariff.freeRadiusKm`, kept because a caller that
+      // must EXPLAIN the fare (the order row, the contract) asks `limits` for
+      // both boundaries at once and should not have to know that one of them
+      // is priced and the other refuses.
       freeRadiusKm: resolved.freeRadiusKm as number,
       capKm: resolved.capKm,
     },

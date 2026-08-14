@@ -31,7 +31,7 @@ import {
   QuoteOrderDto,
 } from './dto/order.dto';
 import { ATTACHABLE_REPORT_ORDER_STATUSES, canTransition } from './order-state-machine';
-import { PriceBreakdown, computePrice } from './order-pricing';
+import { PriceBreakdown, computePrice, describeStoredFare } from './order-pricing';
 import { RegionalOverrides, exceedsCap, resolveTariff } from './tariff-resolution';
 import { MONEY_RETRY_MAX_ATTEMPTS, planRetry } from './retry-schedule';
 import {
@@ -1590,6 +1590,13 @@ export class OrdersService {
       this.settings.getNumber('minReportQualityScore'),
     ]);
 
+    const money = describeStoredFare({
+      billedDistanceKm: Number(order.distanceKm),
+      returnTripFactor: Number(order.returnTripFactor),
+      freeRadiusKm: Number(order.freeRadiusKm),
+      billedDurationMin: order.durationMin,
+    });
+
     return {
       id: order.id,
       number: order.number,
@@ -1599,18 +1606,14 @@ export class OrdersService {
       scheduledAt: order.scheduledAt.toISOString(),
       money: {
         baseFeeCents: order.baseFeeCents,
-        // Stored billed; everything else is derived, so a stored order and a
-        // fresh quote describe the same quantities. Undo the return trip first,
-        // then add the free radius back: that is the order the fare applied
-        // them in, and reversing it would report the wrong trip.
-        distanceKm:
-          Number(order.distanceKm) / Number(order.returnTripFactor) + Number(order.freeRadiusKm),
-        chargeableDistanceKm: Number(order.distanceKm) / Number(order.returnTripFactor),
-        billedDistanceKm: Number(order.distanceKm),
-        returnTripFactor: Number(order.returnTripFactor),
-        freeRadiusKm: Number(order.freeRadiusKm),
+        distanceKm: money.distanceKm,
+        chargeableDistanceKm: money.chargeableDistanceKm,
+        billedDistanceKm: money.billedDistanceKm,
+        returnTripFactor: money.returnTripFactor,
+        freeRadiusKm: money.freeRadiusKm,
         distanceFeeCents: order.distanceFeeCents,
-        durationMin: order.durationMin,
+        durationMin: money.durationMin,
+        billedDurationMin: money.billedDurationMin,
         timeFeeCents: order.timeFeeCents,
         surgeMultiplier: Number(order.surgeMultiplier),
         minimumFareApplied: order.minimumFareApplied,
@@ -3393,8 +3396,15 @@ export interface OrderDetail {
   scheduledAt: string;
   money: {
     baseFeeCents: number;
-    /** One direction, derived from the stored billed distance. */
-    distanceKm: number;
+    /**
+     * The measured one-direction trip.
+     *
+     * **Null when the row cannot answer** — a vehicle inside the free radius
+     * bills 0 kilometres whatever its distance, so the measurement is not in
+     * the row and `describeStoredFare` refuses to invent one. Render nothing
+     * for null; the fee rows should read the billed quantities anyway.
+     */
+    distanceKm: number | null;
     /** What the per-km rate was applied to. Optional so the website can lag. */
     billedDistanceKm?: number;
     /** One direction, after the free radius came off. */
@@ -3402,8 +3412,21 @@ export interface OrderDetail {
     returnTripFactor?: number;
     freeRadiusKm?: number;
     distanceFeeCents: number;
-    /** Null for orders placed before the ride-hailing tariff. */
+    /**
+     * The measured one-direction travel time. Null for orders placed before the
+     * ride-hailing tariff.
+     */
     durationMin: number | null;
+    /**
+     * What the per-minute rate was applied to — both directions, the figure the
+     * column actually stores. Optional so the website can lag.
+     *
+     * It exists because `durationMin` and `distanceKm` must describe the same
+     * trip: the detail used to report the distance one-way and the minutes
+     * both ways, and a page showing "38 km" beside "114 min" reads as a
+     * traffic jam rather than a return trip.
+     */
+    billedDurationMin?: number | null;
     timeFeeCents: number;
     surgeMultiplier: number;
     minimumFareApplied: boolean;
@@ -3414,11 +3437,16 @@ export interface OrderDetail {
     inspectorShareCents: number;
     currency: string;
   };
-  /** The inspector's channels. Non-null only for the customer (or an admin), from ASSIGNED on. */
+  /**
+   * The inspector's channels. Non-null for the customer only once the order is
+   * COMPLETED, and for an admin in every status — see the disclosure rule in
+   * `getDetail`, which is where the reasoning lives.
+   */
   inspectorContact: PartyContact | null;
   /**
-   * The customer's channels. Non-null only for the ASSIGNED inspector (or an
-   * admin) — optional in the type so the website can deploy in either order.
+   * The customer's channels. Non-null for an **admin and nobody else** — not
+   * for the assigned inspector, at any status. Optional in the type so the
+   * website can deploy in either order.
    */
   customerContact?: PartyContact | null;
   report: { id: string; code: string; qualityScore: number | null } | null;

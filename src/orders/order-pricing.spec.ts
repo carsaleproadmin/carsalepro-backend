@@ -1,5 +1,5 @@
 // Category: MONEY MATHS. Pure arithmetic, no DB, no network, no Nest container.
-import { PricingTariff, computePrice, isPeak } from './order-pricing';
+import { PricingTariff, computePrice, describeStoredFare, isPeak } from './order-pricing';
 
 /** The shipped defaults, in cents — see platform-settings.constants.ts. */
 const TARIFF: PricingTariff = {
@@ -263,5 +263,103 @@ describe('isPeak', () => {
 
   it('is false for non-finite bounds', () => {
     expect(isPeak(at(17), Number.NaN, 19)).toBe(false);
+  });
+});
+
+/*
+ * Reading a stored order back. Every case here is a ROUND TRIP through
+ * `computePrice`: the quote and the order page describe one inspection, and a
+ * customer who compares the two is the only reader that matters.
+ */
+describe('describeStoredFare', () => {
+  /** Store a priced quote the way `insertOrder` does, then read it back. */
+  const roundTrip = (distanceKm: number, durationMin: number, tariff: Partial<PricingTariff> = {}) => {
+    const p = price(distanceKm, durationMin, tariff);
+    return {
+      quote: p,
+      stored: describeStoredFare({
+        billedDistanceKm: p.billedDistanceKm,
+        returnTripFactor: p.returnTripFactor,
+        freeRadiusKm: p.freeRadiusKm,
+        billedDurationMin: p.billedDurationMin,
+      }),
+    };
+  };
+
+  it('gives the order page the same trip the quote showed', () => {
+    const { quote, stored } = roundTrip(38, 57);
+
+    expect(stored.distanceKm).toBe(quote.distanceKm);
+    expect(stored.durationMin).toBe(quote.durationMin);
+    expect(stored.billedDistanceKm).toBe(quote.billedDistanceKm);
+    expect(stored.billedDurationMin).toBe(quote.billedDurationMin);
+  });
+
+  /*
+   * The defect this function exists for. Inside the free radius the row bills
+   * zero kilometres, so the measurement is GONE — 1 km and 9 km store the same
+   * thing. The old derivation added the radius back regardless and answered
+   * "10 km" for a car one kilometre away, on the page the customer opens right
+   * after paying for a quote that said 1 km.
+   */
+  it('says nothing rather than the free radius when the trip was inside it', () => {
+    const { quote, stored } = roundTrip(1, 3);
+
+    expect(quote.billedDistanceKm).toBe(0);
+    expect(stored.distanceKm).toBeNull();
+    expect(stored.chargeableDistanceKm).toBe(0);
+  });
+
+  it('still reports the minutes of a trip inside the free radius', () => {
+    // Only the DISTANCE is clamped. Reporting no travel time for an order that
+    // was charged for travel time would trade one silence for another.
+    const { stored } = roundTrip(1, 3);
+
+    expect(stored.durationMin).toBe(3);
+    expect(stored.billedDurationMin).toBe(6);
+  });
+
+  it('keeps the derived distance at the 0.1 km the fare was computed on', () => {
+    const { quote, stored } = roundTrip(24.8, 30);
+
+    expect(stored.distanceKm).toBe(24.8);
+    expect(stored.chargeableDistanceKm).toBe(quote.chargeableDistanceKm);
+  });
+
+  /*
+   * A row written before the return trip: factor 1, no radius, minutes stored
+   * one-way. Every derivation must be the identity, or the whole back catalogue
+   * of orders halves its distance the day this ships.
+   */
+  it('leaves a pre-return-trip order exactly as it was stored', () => {
+    const stored = describeStoredFare({
+      billedDistanceKm: 42,
+      returnTripFactor: 1,
+      freeRadiusKm: 0,
+      billedDurationMin: 55,
+    });
+
+    expect(stored).toEqual({
+      distanceKm: 42,
+      chargeableDistanceKm: 42,
+      billedDistanceKm: 42,
+      returnTripFactor: 1,
+      freeRadiusKm: 0,
+      durationMin: 55,
+      billedDurationMin: 55,
+    });
+  });
+
+  it('survives a broken row without dividing by zero', () => {
+    const stored = describeStoredFare({
+      billedDistanceKm: 20,
+      returnTripFactor: 0,
+      freeRadiusKm: -5,
+      billedDurationMin: null,
+    });
+
+    expect(stored.chargeableDistanceKm).toBe(20);
+    expect(stored.freeRadiusKm).toBe(0);
+    expect(stored.durationMin).toBeNull();
   });
 });

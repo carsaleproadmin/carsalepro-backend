@@ -17,7 +17,14 @@ const GLOBAL: PricingTariff = {
   freeRadiusKm: 10,
 };
 
-const GLOBAL_FREE_RADIUS_KM = 0;
+/*
+ * The same radius the global tariff carries, because the caller passes one
+ * value into both: `OrdersService` reads `orderFreeRadiusKm` once and puts it
+ * on `globalTariff` AND into this argument. A fixture where the two disagreed
+ * hid the defect this file now pins — the resolved radius never reached the
+ * tariff, so the two numbers were free to differ and no test minded.
+ */
+const GLOBAL_FREE_RADIUS_KM = 10;
 
 const resolve = (
   zone: Parameters<typeof resolveTariff>[2] = null,
@@ -30,7 +37,7 @@ describe('resolveTariff', () => {
     const r = resolve();
 
     expect(r.tariff).toEqual(GLOBAL);
-    expect(r.limits).toEqual({ freeRadiusKm: 0, capKm: null });
+    expect(r.limits).toEqual({ freeRadiusKm: 10, capKm: null });
     expect(new Set(Object.values(r.sources))).toEqual(new Set(['global']));
   });
 
@@ -107,6 +114,28 @@ describe('resolveTariff', () => {
     const r = resolve({ freeRadiusKm: 15 }, { capKm: 150 });
 
     expect(r.limits).toEqual({ freeRadiusKm: 15, capKm: 150 });
+  });
+
+  /*
+   * The one that matters: `computePrice` reads the radius off the TARIFF and
+   * never looks at `limits`. A resolved radius that reaches `limits` alone is
+   * a row an operator filled in, a source that reports 'zone', and a price
+   * that does not move — which is exactly what shipped. Asserting `limits`
+   * proves the resolution ran; only this asserts it is priced.
+   */
+  it('puts the resolved free radius on the tariff, where the fare reads it', () => {
+    const r = resolve({ freeRadiusKm: 25 });
+
+    expect(r.tariff.freeRadiusKm).toBe(25);
+    expect(r.tariff.freeRadiusKm).toBe(r.limits.freeRadiusKm);
+    expect(r.sources.freeRadiusKm).toBe('zone');
+  });
+
+  it('lets a country override its band free radius on the tariff too', () => {
+    const r = resolve({ freeRadiusKm: 25 }, { freeRadiusKm: 5 });
+
+    expect(r.tariff.freeRadiusKm).toBe(5);
+    expect(r.sources.freeRadiusKm).toBe('country');
   });
 });
 
