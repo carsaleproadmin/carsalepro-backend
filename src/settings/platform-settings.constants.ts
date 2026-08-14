@@ -114,15 +114,23 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    */
   orderFreeRadiusKm: 10,
   /**
-   * Refuse to quote beyond this one-direction distance.
+   * Refuse to quote beyond this ROUTED one-direction distance.
    *
-   * Past 100 km the travel charge alone passes 60 EUR, no inspector accepts,
-   * and the order sits for the whole six-hour search window before the cron
-   * cancels it — with the customer's money held the entire time. Refusing at
-   * the quote turns that into a waitlist entry, which is a lead rather than a
-   * dead hold. 0 disables the cap.
+   * This is the number that defines how far the platform travels — it refuses
+   * at the quote, before a price exists, which turns a trip nobody would accept
+   * into a waitlist entry (a lead) instead of a dead six-hour hold on the
+   * customer's card. `expertSearchRadiusKm` only decides who is CONSIDERED, and
+   * is measured on a straight line; this is measured on the route. 0 disables
+   * the cap.
+   *
+   * Raised from 100 to 300 on 2026-08-14 (DEN-118), on the owner's decision,
+   * with the tariff left alone. That is deliberate and it is expensive: at
+   * 39 base + 0.30/km + 0.35/min, everything charged both ways, a 300 km order
+   * prices at roughly 350 EUR — more than some of the cars being inspected. The
+   * cap no longer protects against that; it only protects against a distance no
+   * inspector could drive in a day.
    */
-  orderCapKm: 100,
+  orderCapKm: 300,
   orderRoutingCacheHours: 24,
   platformFeePercent: 20,
   payPerViewPriceEur: 14.99,
@@ -154,7 +162,17 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   goldPackagePriceEur: 9.99,
   standardListingPriceEur: 0,
   listingDurationDays: 30,
-  expertSearchRadiusKm: 50,
+  /**
+   * How far dispatch looks for an inspector, as a STRAIGHT LINE.
+   *
+   * PostGIS measures it on geography, so it is map distance, not road distance
+   * — at the 1.3 detour factor, the 300 km of road `orderCapKm` allows is about
+   * 230 km here. It is set to 300 anyway, deliberately wider: a prefilter that
+   * is a superset lets the cap, which measures the real route, do the refusing.
+   * A tighter radius would answer "no coverage" for an inspector sitting on a
+   * motorway corridor who is well inside the cap by road (DEN-118).
+   */
+  expertSearchRadiusKm: 300,
   offerTimeoutMinutes: 60,
   /**
    * How long we keep looking for an inspector before releasing the customer's
