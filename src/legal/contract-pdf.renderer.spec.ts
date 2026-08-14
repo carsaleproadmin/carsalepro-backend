@@ -1,5 +1,5 @@
 // Category: DOCUMENT RENDERING. Pure — no DB, no R2, no Nest container.
-import { pdfPageCount, trackPageVisits } from '../../test/helpers/pdf-inspect';
+import { pdfPageCount, trackPageVisits, trackTextDraws } from '../../test/helpers/pdf-inspect';
 import { parseInline, parseMarkdownBlocks, spansToText } from './markdown-blocks';
 import { contractFontsAvailable, renderContractPdf } from './contract-pdf.renderer';
 
@@ -156,5 +156,77 @@ describe('renderContractPdf', () => {
     // 200 one-line paragraphs are ~7 A4 pages. Three times that is the wrapper
     // paginating the footer itself.
     expect(pdfPageCount(pdf)).toBeLessThan(12);
+  });
+
+  /*
+   * A heading is never the last thing on a page.
+   *
+   * pdfkit breaks a page when the block being drawn does not fit, and a heading
+   * is one line, so it fits almost anywhere — "3. Scope of the inspection" sat
+   * alone at the foot of page 1 of the English contract while the terms it
+   * introduces started on page 2. A reader takes that as an empty section.
+   *
+   * The drawn glyphs cannot be read back out of the file, so these assert the
+   * cursor position at the moment the heading was drawn. `PAGE_MARGIN` is 56.
+   */
+  const TOP_OF_PAGE = 100;
+  /**
+   * A4 is 841.89 pt tall and the bottom margin leaves `maxY` at 761.89. A
+   * heading plus the two body lines reserved under it is about 45 pt, so a
+   * heading drawn below this has nothing readable following it on the page.
+   */
+  const LOWEST_LEGAL_HEADING_Y = 715;
+
+  it('never strands a heading at the foot of a page', async () => {
+    /*
+     * Sections of uneven length, so headings land at every distance from the
+     * page foot rather than at one contrived offset. Fixing a single filler
+     * height to land exactly at the bottom would pin the arithmetic of THIS
+     * page geometry instead of the property.
+     */
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWX'.split('');
+    const sections = letters
+      .map((letter, i) => {
+        const body = Array.from({ length: (i % 5) + 1 }, (_, j) => `Satz ${j + 1} hier.`).join(
+          '\n\n',
+        );
+        return `## Kapitel ${letter}\n\n${body}`;
+      })
+      .join('\n\n');
+
+    const tracker = trackTextDraws();
+    try {
+      await renderContractPdf(sections, OPTS);
+      const headingYs = letters.map((letter) => tracker.drawnAt(`Kapitel ${letter}`)).flat();
+
+      expect(headingYs).toHaveLength(letters.length);
+      expect(Math.max(...headingYs)).toBeLessThanOrEqual(LOWEST_LEGAL_HEADING_Y);
+    } finally {
+      tracker.restore();
+    }
+  });
+
+  it('leaves a heading where it is when the section fits under it', async () => {
+    const tracker = trackTextDraws();
+    try {
+      await renderContractPdf(
+        ['# Vertrag', '', 'Ein Satz.', '', '## 1. Leistungen', '', 'Ein weiterer Satz.'].join('\n'),
+        OPTS,
+      );
+      const [y] = tracker.drawnAt('1. Leistungen');
+      // Well down the first page: a break here would be a page-per-heading bug.
+      expect(y).toBeGreaterThan(TOP_OF_PAGE);
+    } finally {
+      tracker.restore();
+    }
+  });
+
+  it('does not paginate per heading', async () => {
+    const manyHeadings = Array.from(
+      { length: 12 },
+      (_, i) => `## ${i + 1}. Abschnitt\n\nEin kurzer Satz.`,
+    ).join('\n\n');
+    const pdf = await renderContractPdf(manyHeadings, OPTS);
+    expect(pdfPageCount(pdf)).toBeLessThanOrEqual(2);
   });
 });

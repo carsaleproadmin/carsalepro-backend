@@ -27,6 +27,9 @@ const TARIFF_KEYS: SettingKey[] = [
   'orderPeakStartHour',
   'orderPeakEndHour',
   'orderDetourFactor',
+  'orderReturnTripFactor',
+  'orderFreeRadiusKm',
+  'orderCapKm',
   'platformFeePercent',
   'expertSearchRadiusKm',
 ];
@@ -79,17 +82,20 @@ export async function pinTariff(
 /**
  * What a quote costs when the inspector sits at the order location.
  *
- * Distance is 0, and RoutingService floors travel time at one minute, so the
- * fare is base + one minute — which lands under the minimum fare and is floored
- * to it. Expressed as a computation rather than a literal so the suites stay
- * correct if a default is ever retuned.
+ * Distance is 0, and RoutingService floors travel time at one minute — which
+ * the return-trip factor then bills twice, so the fare is base + two minutes.
+ * That lands under the minimum fare and is floored to it. Expressed as a
+ * computation rather than a literal so the suites stay correct if a default is
+ * ever retuned.
  */
 export function colocatedQuote(overrides: Partial<Record<SettingKey, number>> = {}) {
   const get = (key: SettingKey) => overrides[key] ?? PLATFORM_SETTING_DEFAULTS[key];
   const cents = (key: SettingKey) => Math.round(get(key) * 100);
 
   const baseFeeCents = cents('orderBaseFeeEur');
-  const timeFeeCents = cents('orderRatePerMinuteEur');
+  const timeFeeCents = Math.round(
+    cents('orderRatePerMinuteEur') * Math.max(1, get('orderReturnTripFactor')),
+  );
   const subtotalCents = baseFeeCents + timeFeeCents;
   const totalCents = Math.max(subtotalCents, cents('orderMinimumFareEur'));
   const platformFeeCents = Math.round((totalCents * get('platformFeePercent')) / 100);
