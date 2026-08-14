@@ -119,8 +119,32 @@ describe('Catalog (e2e)', () => {
     expect(res.body.kstCodes.length).toBe(68);
     expect(Array.isArray(res.body.checklist)).toBe(true);
     expect(res.body.checklist.length).toBe(98);
-    expect(res.body.damageTypes.length).toBe(10);
+    // The client's three registers replaced the old lists on 2026-08-14.
+    // Exact, for the same reason as the angles: these counts drive what an
+    // inspector can record and what the cost engine can price.
+    expect(res.body.damageTypes.length).toBe(127);
     expect(Array.isArray(res.body.parts)).toBe(true);
+    expect(res.body.parts.length).toBe(410);
+    expect(Array.isArray(res.body.repairMethods)).toBe(true);
+    expect(res.body.repairMethods.length).toBe(205);
+    expect(res.body.groups.length).toBe(7);
+    expect(res.body.subgroups.length).toBe(67);
+    // Every entry of the three registers must land in a real group, or it is
+    // unreachable in the app's pickers — which is silent, not an error.
+    const groupIds = new Set<string>(
+      res.body.groups.map((g: { id: string }) => g.id),
+    );
+    const subgroupIds = new Set<string>(
+      res.body.subgroups.map((s: { id: string }) => s.id),
+    );
+    for (const collection of ['parts', 'damageTypes', 'repairMethods']) {
+      for (const entry of res.body[collection]) {
+        expect(groupIds.has(entry.groupId)).toBe(true);
+        if (entry.subgroupId !== null) {
+          expect(subgroupIds.has(entry.subgroupId)).toBe(true);
+        }
+      }
+    }
     // Every label is trilingual (four-locale completeness is asserted below).
     for (const code of res.body.kstCodes) {
       expect(code.label.de).toBeTruthy();

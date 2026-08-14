@@ -158,8 +158,16 @@ describe('the committed catalog i18n sidecars', () => {
       add(`angles.${a.id}`, a.label);
       add(`angles.${a.id}.hint`, a.hint);
     }
+    // Mirrors `indexLabels` in catalog.i18n.ts. A collection missing from
+    // EITHER list is silent: the sidecar keys become orphans at export and
+    // every locale falls back to English while the run still reports success.
+    for (const g of catalog.groups) add(`groups.${g.id}`, g.label);
+    for (const s of catalog.subgroups) add(`subgroups.${s.id}`, s.label);
     for (const p of catalog.parts) add(`parts.${p.id}`, p.label);
     for (const t of catalog.damageTypes) add(`damageTypes.${t.id}`, t.label);
+    for (const m of catalog.repairMethods) {
+      add(`repairMethods.${m.id}`, m.label);
+    }
     for (const c of catalog.kstCodes) add(`kstCodes.${c.code}`, c.label);
     for (const i of catalog.checklist) add(`checklist.${i.number}`, i.label);
     for (const p of catalog.thicknessPanels) add(`thicknessPanels.${p.id}`, p.label);

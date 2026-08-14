@@ -53,8 +53,14 @@ function indexLabels(catalog: CatalogV1): LabelIndex {
     add(`angles.${a.id}`, a.label);
     add(`angles.${a.id}.hint`, a.hint);
   }
+  // Miss a collection here and its labels never merge: the sidecar keys become
+  // orphans, which is a warning rather than an error, and every locale silently
+  // falls back to English while the export still reports success.
+  for (const g of catalog.groups) add(`groups.${g.id}`, g.label);
+  for (const s of catalog.subgroups) add(`subgroups.${s.id}`, s.label);
   for (const p of catalog.parts) add(`parts.${p.id}`, p.label);
   for (const t of catalog.damageTypes) add(`damageTypes.${t.id}`, t.label);
+  for (const m of catalog.repairMethods) add(`repairMethods.${m.id}`, m.label);
   for (const c of catalog.kstCodes) add(`kstCodes.${c.code}`, c.label);
   for (const i of catalog.checklist) add(`checklist.${i.number}`, i.label);
   for (const p of catalog.thicknessPanels) add(`thicknessPanels.${p.id}`, p.label);
