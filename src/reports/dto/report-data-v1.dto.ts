@@ -155,6 +155,14 @@ export class ReportDamageDto {
   @IsOptional() @IsNumber() @Min(0) partsEur?: number;
   @IsOptional() @IsNumber() @Min(0) riHours?: number;
   @IsOptional() @IsNumber() @Min(0) paintHours?: number;
+  /**
+   * Adjacent-panel blend hours (Beilackierung), cost data v3 onwards.
+   *
+   * Sent as its own figure rather than folded into `paintHours` because BGH
+   * VI ZR 396/18 grants a blend only where the finish makes it necessary — an
+   * assessor has to be able to point at it and defend it separately.
+   */
+  @IsOptional() @IsNumber() @Min(0) blendHours?: number;
   @IsOptional() @IsNumber() @Min(0) straightHours?: number;
   @IsOptional() @IsNumber() @Min(0) otherHours?: number;
   @IsOptional() @IsNumber() @Min(0) labourEur?: number;
