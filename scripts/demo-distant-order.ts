@@ -4,6 +4,7 @@
  *   npx ts-node scripts/demo-distant-order.ts
  *   npx ts-node scripts/demo-distant-order.ts --km=140      # 100 | 110 | 140
  *   npx ts-node scripts/demo-distant-order.ts --inspector-radius=50 --solo
+ *   npx ts-node scripts/demo-distant-order.ts --setup-only   # you place the order
  *
  * DEVELOPMENT DATA ONLY. It writes users, resets their passwords to a printed
  * literal, moves an inspector's base location and places a paid order. Point it
@@ -91,6 +92,15 @@ async function main(): Promise<void> {
   }
   const inspectorRadiusKm = Number(arg('inspector-radius', '300'));
   const solo = process.argv.includes('--solo');
+  /*
+   * Prepare the two accounts and the inspector, and stop.
+   *
+   * For the version of this test where YOU place the order in the browser: the
+   * accounts, the base location, the radius and the APPROVED KYC application
+   * are the parts a person cannot reasonably set up by hand, and the order is
+   * the part worth doing by hand.
+   */
+  const setupOnly = process.argv.includes('--setup-only');
 
   const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error'] });
   const prisma = app.get(PrismaService);
@@ -181,6 +191,22 @@ async function main(): Promise<void> {
 
   const ceiling = await settings.getNumber('expertSearchRadiusKm');
   const cap = await settings.getNumber('orderCapKm');
+
+  if (setupOnly) {
+    console.log('');
+    console.log(`Platform ceiling ${await settings.getNumber('expertSearchRadiusKm')} km straight-line, cap ${await settings.getNumber('orderCapKm')} km road.`);
+    console.log(`Inspector radius ${inspectorRadiusKm} km, base Berlin Mitte (Torstraße 1).`);
+    console.log('');
+    console.log(`Customer   ${CUSTOMER_EMAIL} / ${PASSWORD}`);
+    console.log(`Inspector  ${INSPECTOR_EMAIL} / ${PASSWORD}`);
+    console.log('');
+    console.log('Order an inspection at one of these, all beyond the old 100 km cap:');
+    for (const [road, p] of Object.entries(PLACES)) {
+      console.log(`  ${p.label} — about ${road} km of road`);
+    }
+    await app.close();
+    return;
+  }
 
   // ------------------------------------------------------------------ a quote
   const scheduledAt = new Date(Date.now() + 48 * 3600_000).toISOString();
