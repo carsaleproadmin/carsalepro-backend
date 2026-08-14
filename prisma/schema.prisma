@@ -220,7 +220,18 @@ model InspectorProfile {
   contactTelegram String?                                @map("contact_telegram")
   baseAddress     String                                 @map("base_address")
   location        Unsupported("geography(Point, 4326)")?
-  searchRadiusKm  Int                                    @default(50) @map("search_radius_km")
+  /// How far this inspector accepts jobs, in kilometres, straight-line.
+  ///
+  /// Read by `GeoService.findNearestInspectors`, where it narrows the platform
+  /// ceiling `expertSearchRadiusKm` — the tighter of the two decides. Until
+  /// DEN-113 nothing read it at all: the field was editable, was shown in the
+  /// profile form, and changed nothing.
+  ///
+  /// The default follows the platform ceiling rather than sitting under it. A
+  /// new inspector who has not answered the question keeps the reach the
+  /// platform had before the field went live; somebody who does not want a
+  /// five-hour drive now has a control that works.
+  searchRadiusKm  Int                                    @default(300) @map("search_radius_km")
   available       Boolean                                @default(true)
   stripeAccountId String?                                @unique @map("stripe_account_id")
   stripeOnboarded Boolean                                @default(false) @map("stripe_onboarded")
