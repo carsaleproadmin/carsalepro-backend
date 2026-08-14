@@ -203,3 +203,78 @@ export function computePrice(input: PricingInput): PriceBreakdown {
     inspectorShareCents,
   };
 }
+
+/** The quantities an `order` row stores about its trip, as read from the DB. */
+export interface StoredFareRow {
+  /** `order.distance_km` — the BILLED distance, both directions, after the radius. */
+  billedDistanceKm: number;
+  /** `order.return_trip_factor`. 1 for a row written before the return trip. */
+  returnTripFactor: number;
+  /** `order.free_radius_km`. */
+  freeRadiusKm: number;
+  /** `order.duration_min` — BILLED minutes, the same basis as the distance. */
+  billedDurationMin: number | null;
+}
+
+/** What a stored order can honestly say about its trip. */
+export interface StoredFare {
+  /**
+   * The measured one-direction trip, or **null when the row cannot answer**.
+   * Never a reconstruction — see `describeStoredFare`.
+   */
+  distanceKm: number | null;
+  /** One direction, after the free radius came off. Always recoverable. */
+  chargeableDistanceKm: number;
+  /** What the per-km rate multiplied. */
+  billedDistanceKm: number;
+  returnTripFactor: number;
+  freeRadiusKm: number;
+  /** The measured one-direction travel time. Null when the row has no minutes. */
+  durationMin: number | null;
+  /** What the per-minute rate multiplied. */
+  billedDurationMin: number | null;
+}
+
+/**
+ * Read a stored order's trip back out of the three columns that hold it.
+ *
+ * **The measured distance is not always in the row, and this function says so
+ * rather than inventing one.** The column holds
+ * `billed = max(0, measured - free) x factor`, and `max(0, ...)` is not
+ * invertible: inside the free radius `billed` is 0 for a vehicle 1 km away and
+ * for one 9 km away alike. The first version added the radius back
+ * unconditionally, so every short order reported the free radius as its
+ * distance — an order 1 km from the inspector was quoted at 1 km and then
+ * displayed at 10 km on its own page, one minute later.
+ *
+ * `null` is therefore the honest answer for that case, and a caller must render
+ * nothing rather than a plausible number. The BILLED quantities are always
+ * exact, which is what the price rows should be reading anyway: they are the
+ * quantities the rates multiplied.
+ *
+ * The minutes are recoverable in every case — nothing is clamped on that side —
+ * so both bases exist for the time as well, and a page can present distance and
+ * travel time on the SAME basis instead of one of each.
+ */
+export function describeStoredFare(row: StoredFareRow): StoredFare {
+  // A stored 0 or a broken row must not divide the trip by zero. 1 is the
+  // pre-return-trip value and makes every derivation the identity.
+  const returnTripFactor = row.returnTripFactor > 0 ? row.returnTripFactor : 1;
+  const freeRadiusKm = safeNonNegative(row.freeRadiusKm);
+  const billedDistanceKm = safeNonNegative(row.billedDistanceKm);
+  // The same 0.1 km the fare was computed and stored at, so the derived figure
+  // does not print 22.4 for a trip stored as 24.8.
+  const chargeableDistanceKm = Math.round((billedDistanceKm / returnTripFactor) * 10) / 10;
+
+  return {
+    distanceKm:
+      chargeableDistanceKm > 0 ? Math.round((chargeableDistanceKm + freeRadiusKm) * 10) / 10 : null,
+    chargeableDistanceKm,
+    billedDistanceKm,
+    returnTripFactor,
+    freeRadiusKm,
+    durationMin:
+      row.billedDurationMin === null ? null : Math.round(row.billedDurationMin / returnTripFactor),
+    billedDurationMin: row.billedDurationMin,
+  };
+}
