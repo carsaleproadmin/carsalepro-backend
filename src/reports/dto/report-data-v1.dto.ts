@@ -100,6 +100,18 @@ export class ReportWheelDto {
 
   /** Tyre make as printed on the sidewall (Michelin, Continental, ...). */
   @IsOptional() @IsString() @MaxLength(48) tyreBrand?: string;
+
+  /**
+   * Tyre season, PER WHEEL since the 2026-08-14 app release.
+   *
+   * `ReportOperationalDto.tyreSeason` still carries the whole-vehicle value and
+   * is still populated by the app when all four wheels agree — a car can
+   * legitimately run winter tyres on the driven axle only, which the single
+   * value could not express.
+   */
+  @IsOptional()
+  @IsIn(['summer', 'winter', 'allseason'])
+  tyreSeason?: string;
 }
 
 export class ReportDamageDto {
@@ -108,15 +120,57 @@ export class ReportDamageDto {
 
   @IsOptional() @IsString() @MaxLength(64) partId?: string;
   @IsOptional() @IsString() @MaxLength(64) typeId?: string;
+
+  /** How the damage gets repaired — catalog `repairMethods` id (2026-08-14). */
+  @IsOptional() @IsString() @MaxLength(64) repairMethodId?: string;
+
   @IsIn(['T1', 'T2', 'T3']) tier!: string;
 
   /** Origin K/S/T quick-code, if the damage came from the quick catalog. */
   @IsOptional() @IsString() @MaxLength(8) kstCode?: string;
 
-  // Cost snapshot (plain EUR — see file header note).
+  /**
+   * The inspector typed the three fields instead of picking them.
+   *
+   * The id fields above are NOT cleared when this is set — the app keeps both
+   * sides so a mis-tap destroys nothing — so this flag is what says which side
+   * a reader should believe.
+   */
+  @IsOptional() @IsBoolean() manualEntry?: boolean;
+  @IsOptional() @IsString() @MaxLength(500) manualPart?: string;
+  @IsOptional() @IsString() @MaxLength(500) manualDamage?: string;
+  @IsOptional() @IsString() @MaxLength(500) manualRepair?: string;
+
+  /** Which price the replacement part was quoted at. */
+  @IsOptional()
+  @IsIn(['none', 'newAftermarket', 'newOem', 'used'])
+  partCondition?: string;
+
+  // Cost snapshot (plain EUR — see file header note). Two generations coexist
+  // and both are stored verbatim: `materialsEur`/`hours` come from the engine
+  // the app shipped before 2026-08-14, the rest from the one after it.
   @IsOptional() @IsNumber() @Min(0) materialsEur?: number;
   @IsOptional() @IsNumber() @Min(0) hours?: number;
   @IsOptional() @IsNumber() @Min(0) hourlyRate?: number;
+  @IsOptional() @IsNumber() @Min(0) partsEur?: number;
+  @IsOptional() @IsNumber() @Min(0) riHours?: number;
+  @IsOptional() @IsNumber() @Min(0) paintHours?: number;
+  @IsOptional() @IsNumber() @Min(0) straightHours?: number;
+  @IsOptional() @IsNumber() @Min(0) otherHours?: number;
+  @IsOptional() @IsNumber() @Min(0) labourEur?: number;
+  @IsOptional() @IsNumber() @Min(0) consumablesEur?: number;
+
+  /**
+   * The engine's own line total before any manual override.
+   *
+   * Prefer this over recomputing: the website re-implemented the line formula
+   * and read a field name that never existed on the wire, so its materials
+   * component was silently zero for a year.
+   */
+  @IsOptional() @IsNumber() @Min(0) estimateEur?: number;
+
+  @IsOptional() @IsNumber() @Min(0) vehicleClassFactor?: number;
+  @IsOptional() @IsInt() @Min(1) costDataVersion?: number;
   @IsOptional() @IsNumber() @Min(0) manualCostEur?: number;
 
   @IsOptional() @IsString() @MaxLength(1000) note?: string;
