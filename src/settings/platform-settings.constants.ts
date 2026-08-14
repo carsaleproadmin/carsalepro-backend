@@ -14,6 +14,9 @@ export const SETTING_KEYS = {
   orderPeakStartHour: 'orderPeakStartHour',
   orderPeakEndHour: 'orderPeakEndHour',
   orderDetourFactor: 'orderDetourFactor',
+  orderReturnTripFactor: 'orderReturnTripFactor',
+  orderFreeRadiusKm: 'orderFreeRadiusKm',
+  orderCapKm: 'orderCapKm',
   orderRoutingCacheHours: 'orderRoutingCacheHours',
   platformFeePercent: 'platformFeePercent',
   payPerViewPriceEur: 'payPerViewPriceEur',
@@ -39,17 +42,30 @@ export type SettingKey = keyof typeof SETTING_KEYS;
  * Seed defaults — doc 07 §4. All values are configurable from the admin panel.
  *
  * The order tariff is a ride-hailing-style model: base + per-km + per-minute,
- * scaled by surge/peak, floored at a minimum fare. Worked examples with the
- * defaults below:
- *   5 km / 10 min  → 39 + 3.00 + 3.50  = 45.50 → floored to 49.00
- *   20 km / 25 min → 39 + 12.00 + 8.75 = 59.75
- *   50 km / 45 min → 39 + 30.00 + 15.75 = 84.75
- * The previous flat model (50 + 1.50/km, straight-line) charged 57.50 / 80.00 /
- * 125.00 for the same trips, so this is cheaper across the board.
+ * scaled by surge/peak, floored at a minimum fare. Two things shape the
+ * distance before the rate touches it: the first 10 km carry no travel charge
+ * (`orderFreeRadiusKm`), and what remains is charged BOTH WAYS
+ * (`orderReturnTripFactor`). Worked examples, distances one direction:
+ *   5 km / 10 min  → 39 + 0.00 + 7.00  = 46.00 → floored to 49.00
+ *   20 km / 25 min → 39 + 6.00 + 17.50 = 62.50
+ *   50 km / 45 min → 39 + 24.00 + 31.50 = 94.50
+ * The kilometre charge is unchanged from the previous 0.60-one-way tariff; the
+ * minutes are what rose, because travel time is now paid in both directions.
  */
 export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   orderBaseFeeEur: 39,
-  orderRatePerKmEur: 0.6,
+  /**
+   * Per kilometre of the BILLED trip, which is the return trip (see
+   * `orderReturnTripFactor`). 0.30 is Germany's `Kilometerpauschale`, §9 Abs. 1
+   * Nr. 4a EStG — a rate defined on the kilometres driven in both directions,
+   * which is exactly what it is now applied to.
+   *
+   * It replaced an invented 0.60 charged on a one-direction trip. 0.30 x 2 is
+   * 0.60: the travel charge per kilometre TO the vehicle is unchanged. The two
+   * had to move together, and a later change to either must ask what the other
+   * is doing.
+   */
+  orderRatePerKmEur: 0.3,
   orderRatePerMinuteEur: 0.35,
   orderMinimumFareEur: 49,
   /** Manual admin lever. 1 = off. Applied on top of the peak multiplier. */
@@ -62,6 +78,51 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   orderPeakEndHour: 19,
   /** Great-circle → road estimate when the routing provider is unavailable. */
   orderDetourFactor: 1.3,
+  /**
+   * How many times the measured one-direction trip the customer pays for.
+   *
+   * 2: the inspector drives to the vehicle and back, and the customer pays for
+   * both legs.
+   *
+   * **It shipped together with `orderRatePerKmEur` moving 0.60 -> 0.30, and the
+   * two must keep moving together.** The old pair charged an invented 0.60 on a
+   * one-direction trip; the new pair charges a published 0.30 on the real
+   * distance driven. The product is the same, so the kilometre charge did not
+   * move — what changed is that it can now be checked against the tax code
+   * instead of being an internal figure. Either half alone changes every fare
+   * by two.
+   *
+   * The MINUTES follow the same factor, and `orderRatePerMinuteEur` was NOT
+   * halved to compensate (owner's decision, 2026-08-13): travel time really is
+   * spent in both directions, and the old rate paid for half of it. That is the
+   * one part of the fare that genuinely rises — about 13 % on a 20 km job and
+   * 27 % on a 100 km one. See DEN-108.
+   */
+  orderReturnTripFactor: 2,
+  /**
+   * Kilometres of the trip to the vehicle that carry no travel charge.
+   *
+   * Ten costs almost no revenue: the 49 EUR minimum fare already floors every
+   * trip under roughly ten kilometres, so below that a customer pays 49 EUR
+   * whether or not the kilometres were charged. What it buys is a sentence a
+   * customer understands — travel inside the city is included — instead of a
+   * 1.80 EUR line that reads as noise.
+   *
+   * Subtracted, never a threshold: at a threshold, km 10.1 would cost ten times
+   * km 10.0 and two neighbours would be quoted prices an order of magnitude
+   * apart.
+   */
+  orderFreeRadiusKm: 10,
+  /**
+   * Refuse to quote beyond this one-direction distance.
+   *
+   * Past 100 km the travel charge alone passes 60 EUR, no inspector accepts,
+   * and the order sits for the whole six-hour search window before the cron
+   * cancels it — with the customer's money held the entire time. Refusing at
+   * the quote turns that into a waitlist entry, which is a lead rather than a
+   * dead hold. 0 disables the cap.
+   */
+  orderCapKm: 100,
   orderRoutingCacheHours: 24,
   platformFeePercent: 20,
   payPerViewPriceEur: 14.99,
@@ -173,5 +234,14 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   // to be public: a countdown the client invents from a hardcoded constant
   // silently lies the day an operator retunes the window.
   'orderSearchWindowMinutes',
+  // Public because `orderRatePerKmEur` is public and the two are meaningless
+  // apart: a visitor who multiplies the published rate by the distance we show
+  // must arrive at the price we charge. It is a published tariff term, not an
+  // operator lever.
+  'orderReturnTripFactor',
+  // Both are published tariff terms: a visitor must be able to tell why a
+  // nearby inspection has no travel line, and how far we serve at all.
+  'orderFreeRadiusKm',
+  'orderCapKm',
 ];
 

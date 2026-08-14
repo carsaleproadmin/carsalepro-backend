@@ -44,6 +44,40 @@ export interface PageVisitTracker {
  * single page still in memory, and the footer loop runs exactly ONCE however
  * long the document is — one footer, on the last page, numbered "1 / 1".
  */
+export interface TextDrawTracker {
+  /** Vertical cursor position at which each string was drawn, in order. */
+  drawnAt(needle: string): number[];
+  restore(): void;
+}
+
+/**
+ * Record the `y` a renderer was at when it drew each string.
+ *
+ * The drawn glyphs are unreadable in the output (see above), but the CALL is
+ * observable, and the cursor position at call time is what says whether a block
+ * landed at the foot of a page or at the top of the next one. That is the only
+ * way to assert page-break behaviour without a PDF text extractor.
+ */
+export function trackTextDraws(): TextDrawTracker {
+  const calls: { text: string; y: number }[] = [];
+  type TextFn = (this: PDFKit.PDFDocument, ...args: unknown[]) => PDFKit.PDFDocument;
+  const original = PDFDocument.prototype.text as unknown as TextFn;
+  const spy = jest
+    .spyOn(PDFDocument.prototype, 'text')
+    .mockImplementation(function (this: PDFKit.PDFDocument, ...args: unknown[]) {
+      // Recorded BEFORE the call: afterwards the cursor has already moved past
+      // the string, and on a page break it reads as the top of the next page
+      // whether or not the break happened at this block.
+      if (typeof args[0] === 'string') calls.push({ text: args[0], y: this.y });
+      return original.apply(this, args);
+    } as never);
+
+  return {
+    drawnAt: (needle) => calls.filter((c) => c.text.includes(needle)).map((c) => c.y),
+    restore: () => spy.mockRestore(),
+  };
+}
+
 export function trackPageVisits(): PageVisitTracker {
   const spy = jest.spyOn(PDFDocument.prototype, 'switchToPage');
   return {

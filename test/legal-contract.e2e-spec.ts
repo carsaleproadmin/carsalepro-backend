@@ -45,12 +45,27 @@ describe('LegalSync / Order Contract (e2e)', () => {
     await ensureActiveTemplates();
   });
 
-  /** Seed-if-missing: guarantee an active template for each of the three keys. */
+  /**
+   * Guarantee an active template for each key, with the content from the code.
+   *
+   * A missing row is created. A row whose body is STALE gets a new version, and
+   * the version before it is deactivated. The staleness step is what keeps the
+   * suite honest against a long-lived development database: `prisma/seed.ts`
+   * does not overwrite an active version that holds real content, so a database
+   * seeded before an edit to `legal-contracts.content.ts` keeps serving the old
+   * agreement, and every assertion about the wording would test the old text.
+   */
   async function ensureActiveTemplates(): Promise<void> {
     const keys: ContractKey[] = ['contract_de', 'contract_eu', 'contract_en'];
     for (const key of keys) {
       const active = await prisma.legalTemplate.findFirst({ where: { key, active: true } });
-      if (active) continue;
+      if (active && active.bodyMd === CONTRACT_TEMPLATES[key].bodyMd) continue;
+      if (active) {
+        await prisma.legalTemplate.updateMany({
+          where: { key, active: true },
+          data: { active: false },
+        });
+      }
       const max = await prisma.legalTemplate.findFirst({
         where: { key },
         orderBy: { version: 'desc' },
@@ -232,20 +247,20 @@ describe('LegalSync / Order Contract (e2e)', () => {
   }
 
   // ============================================================
-  // 1–3. resolveTemplateKey mapping (unit-level via the service)
+  // 1–3. resolveTemplateKey — one agreement, in English, for every country
   // ============================================================
-  it('1. resolveTemplateKey maps DE → contract_de', () => {
-    expect(legal.resolveTemplateKey('DE')).toBe('contract_de');
-    expect(legal.resolveTemplateKey('de')).toBe('contract_de');
+  it('1. resolveTemplateKey gives contract_en for DE', () => {
+    expect(legal.resolveTemplateKey('DE')).toBe('contract_en');
+    expect(legal.resolveTemplateKey('de')).toBe('contract_en');
   });
 
-  it('2. resolveTemplateKey maps other EU member states (FR/IT/ES) → contract_eu', () => {
-    expect(legal.resolveTemplateKey('FR')).toBe('contract_eu');
-    expect(legal.resolveTemplateKey('IT')).toBe('contract_eu');
-    expect(legal.resolveTemplateKey('ES')).toBe('contract_eu');
+  it('2. resolveTemplateKey gives contract_en for other EU member states', () => {
+    expect(legal.resolveTemplateKey('FR')).toBe('contract_en');
+    expect(legal.resolveTemplateKey('IT')).toBe('contract_en');
+    expect(legal.resolveTemplateKey('ES')).toBe('contract_en');
   });
 
-  it('3. resolveTemplateKey maps non-EU (US/GB) → contract_en', () => {
+  it('3. resolveTemplateKey gives contract_en for non-EU and for an empty code', () => {
     expect(legal.resolveTemplateKey('US')).toBe('contract_en');
     expect(legal.resolveTemplateKey('GB')).toBe('contract_en');
     expect(legal.resolveTemplateKey('')).toBe('contract_en');
@@ -254,7 +269,7 @@ describe('LegalSync / Order Contract (e2e)', () => {
   // ============================================================
   // 4. Contract auto-created on ASSIGNED, version frozen, substituted
   // ============================================================
-  it('4. contract is auto-created when an order reaches ASSIGNED (DE → contract_de)', async () => {
+  it('4. contract is auto-created when an order reaches ASSIGNED (DE order → contract_en)', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Hans Müller', company: 'KFZ Müller GmbH' });
     const { orderId } = await createPaidOrder(customer);
@@ -267,13 +282,13 @@ describe('LegalSync / Order Contract (e2e)', () => {
 
     const contract = await prisma.orderContract.findUnique({ where: { id: order!.contractId! } });
     expect(contract).toBeTruthy();
-    expect(contract!.templateKey).toBe('contract_de');
+    expect(contract!.templateKey).toBe('contract_en');
     // The PDF now renders inline on the ASSIGNED transition.
     expect(contract!.pdfS3Key === null).toBe(!r2Configured());
 
     // templateVersion is frozen to the ACTIVE template's version.
     const activeTpl = await prisma.legalTemplate.findFirst({
-      where: { key: 'contract_de', active: true },
+      where: { key: 'contract_en', active: true },
       orderBy: { version: 'desc' },
     });
     expect(contract!.templateVersion).toBe(activeTpl!.version);
@@ -284,13 +299,15 @@ describe('LegalSync / Order Contract (e2e)', () => {
     const totalEur = `€${(order!.totalCents / 100).toFixed(2)}`;
     expect(html).toContain(totalEur); // formatted money from the order total
     expect(html).toContain('Hans Müller');
+    // The agreement is in English for every country (owner decision 2026-08-12).
+    expect(html).toContain('Governing law and place of jurisdiction');
     expect(html).not.toMatch(/\{\{.*?\}\}/);
   });
 
   // ============================================================
-  // 5. resolveTemplateKey reflected in stored contract for a FR order
+  // 5. A non-DE country also gets the English agreement
   // ============================================================
-  it('5. an order with countryCode FR produces a contract_eu contract on render', async () => {
+  it('5. an order with countryCode FR also produces a contract_en contract', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);
     const { orderId } = await createPaidOrder(customer);
@@ -301,7 +318,7 @@ describe('LegalSync / Order Contract (e2e)', () => {
 
     const order = await prisma.order.findUnique({ where: { id: orderId } });
     const contract = await prisma.orderContract.findUnique({ where: { id: order!.contractId! } });
-    expect(contract!.templateKey).toBe('contract_eu');
+    expect(contract!.templateKey).toBe('contract_en');
   });
 
   // ============================================================
@@ -343,11 +360,11 @@ describe('LegalSync / Order Contract (e2e)', () => {
       .set('Authorization', `Bearer ${customer.token}`)
       .expect(200);
     expect(res.body.orderId).toBe(orderId);
-    expect(res.body.templateKey).toBe('contract_de');
+    expect(res.body.templateKey).toBe('contract_en');
     // The PDF renders inline on ASSIGNED, so it is ready whenever R2 is.
     expect(res.body.pdfReady).toBe(r2Configured());
     expect(typeof res.body.templateVersion).toBe('number');
-    expect(res.body.locale).toBe('de');
+    expect(res.body.locale).toBe('en');
     expect(res.body.html).toContain('<!doctype html>');
     const order = await prisma.order.findUnique({ where: { id: orderId } });
     expect(res.body.html).toContain(order!.number);

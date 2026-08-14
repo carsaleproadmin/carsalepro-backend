@@ -54,6 +54,7 @@
     "helmet": "^8.0.0",
     "ioredis": "^5.11.1",
     "joi": "^17.13.3",
+    "libphonenumber-js": "^1.13.10",
     "pdfkit": "^0.15.2",
     "prisma": "6.19.3",
     "reflect-metadata": "^0.2.2",

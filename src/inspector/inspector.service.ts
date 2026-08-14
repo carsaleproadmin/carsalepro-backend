@@ -13,10 +13,22 @@ import { GeoService } from '../geo/geo.service';
 import { StripeService, classifyStripeError } from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateInspectorProfileDto } from './dto/inspector-profile.dto';
+import {
+  normalizeTelegramUsername,
+  resolveContact,
+  toE164,
+  type PartyContact,
+} from './inspector-contact';
 
 /** Mask an id for logs — never log a full user id. */
 function mask(id: string): string {
   return id.length <= 8 ? '****' : `${id.slice(0, 4)}…${id.slice(-4)}`;
+}
+
+/** An explicitly empty field means "clear it", which is not the same as omitting the key. */
+function blankToNull(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
 }
 
 /**
@@ -37,6 +49,30 @@ export interface InspectorProfileView {
   kycVerified: boolean;
   hasLocation: boolean;
   eligibleForOffers: boolean;
+  /**
+   * The channels AS STORED — what belongs in the edit form's fields.
+   *
+   * Deliberately alongside `contact` rather than instead of it: the two answer
+   * different questions. These four are what this inspector typed and may
+   * change; `contact` is what the customer ends up seeing, fallbacks applied, so
+   * `contactEmail: null` here and an account address there is the normal case,
+   * not a contradiction.
+   *
+   * Returning only the resolved form was a real defect. The website's profile
+   * form is controlled and initialises from these keys, so every field rendered
+   * EMPTY next to a preview showing the saved values, and saving sent all four
+   * back blank — which the service reads as "clear this".
+   */
+  contactPhone: string | null;
+  contactEmail: string | null;
+  contactWhatsapp: boolean;
+  contactTelegram: string | null;
+  /**
+   * What the customer will see once an order is assigned — resolved through the
+   * same helper the order card uses, fallbacks included, so the inspector is
+   * shown the actual disclosure and not the raw columns.
+   */
+  contact: PartyContact | null;
 }
 
 /** Result of POST /inspector/stripe-onboarding. */
@@ -95,6 +131,14 @@ export class InspectorService {
   ): Promise<InspectorProfileView> {
     const existing = await this.prisma.inspectorProfile.findUnique({ where: { userId } });
 
+    // Contacts are normalised HERE, not on read: the stored username is bare and
+    // the stored phone is E.164 where that was possible, so every reader gets the
+    // same value without repeating the rules. An empty string means "clear this",
+    // which `??` alone would store as an empty field.
+    const contactPhone = this.normalizeContactPhone(dto.contactPhone);
+    const contactEmail = blankToNull(dto.contactEmail);
+    const contactTelegram = this.normalizeContactTelegram(dto.contactTelegram);
+
     await this.prisma.inspectorProfile.upsert({
       where: { userId },
       create: {
@@ -104,6 +148,10 @@ export class InspectorService {
         baseAddress: dto.baseAddress ?? '',
         taxId: dto.taxId ?? null,
         vatId: dto.vatId ?? null,
+        contactPhone,
+        contactEmail,
+        contactWhatsapp: dto.contactWhatsapp ?? undefined,
+        contactTelegram,
         searchRadiusKm: dto.searchRadiusKm ?? undefined,
         available: dto.available ?? undefined,
       },
@@ -112,6 +160,11 @@ export class InspectorService {
         baseAddress: dto.baseAddress ?? existing?.baseAddress ?? '',
         taxId: dto.taxId ?? existing?.taxId ?? null,
         vatId: dto.vatId ?? existing?.vatId ?? null,
+        // An absent key keeps what is stored; an explicit empty string clears it.
+        contactPhone: dto.contactPhone === undefined ? undefined : contactPhone,
+        contactEmail: dto.contactEmail === undefined ? undefined : contactEmail,
+        contactWhatsapp: dto.contactWhatsapp ?? undefined,
+        contactTelegram: dto.contactTelegram === undefined ? undefined : contactTelegram,
         searchRadiusKm: dto.searchRadiusKm ?? undefined,
         available: dto.available ?? undefined,
       },
@@ -344,6 +397,45 @@ export class InspectorService {
     };
   }
 
+  /**
+   * Store a work phone in E.164 when it can be read that way, and verbatim when
+   * it cannot.
+   *
+   * A number without a country code is NOT completed from `User.countryCode` —
+   * that column defaults to "DE" on every account and means "nobody changed it".
+   * Guessing would hand the customer a WhatsApp link to a stranger, so such a
+   * number is kept as typed: `tel:` still dials it, and no WhatsApp link is
+   * offered. That is a deliberate outcome, not a validation failure.
+   */
+  private normalizeContactPhone(raw: string | undefined): string | null {
+    const trimmed = blankToNull(raw);
+    if (!trimmed) return null;
+    return toE164(trimmed) ?? trimmed;
+  }
+
+  /**
+   * Store a bare Telegram username.
+   *
+   * Unlike the phone, an unusable value is REFUSED rather than kept: a phone
+   * that cannot be parsed still works as a `tel:` link, whereas a malformed
+   * username has no use at all and would silently vanish from the profile the
+   * inspector believes they filled in.
+   */
+  private normalizeContactTelegram(raw: string | undefined): string | null {
+    const trimmed = blankToNull(raw);
+    if (!trimmed) return null;
+    const username = normalizeTelegramUsername(trimmed);
+    if (!username) {
+      throw new BadRequestException({
+        error: {
+          code: 'invalid_telegram_username',
+          message: 'Telegram username must be 5–32 characters of letters, digits or underscores.',
+        },
+      });
+    }
+    return username;
+  }
+
   private async toView(
     userId: string,
     profile: {
@@ -351,6 +443,10 @@ export class InspectorService {
       baseAddress: string | null;
       taxId: string | null;
       vatId: string | null;
+      contactPhone: string | null;
+      contactEmail: string | null;
+      contactWhatsapp: boolean;
+      contactTelegram: string | null;
       searchRadiusKm: number;
       available: boolean;
       stripeOnboarded: boolean;
@@ -358,7 +454,7 @@ export class InspectorService {
   ): Promise<InspectorProfileView> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { kycVerified: true },
+      select: { id: true, name: true, email: true, phone: true, deletedAt: true, kycVerified: true },
     });
     const hasLocation = await this.geo.inspectorHasLocation(userId);
     const kycVerified = user?.kycVerified ?? false;
@@ -375,6 +471,11 @@ export class InspectorService {
       kycVerified,
       hasLocation,
       eligibleForOffers: kycVerified && profile.stripeOnboarded && profile.available && hasLocation,
+      contactPhone: profile.contactPhone,
+      contactEmail: profile.contactEmail,
+      contactWhatsapp: profile.contactWhatsapp,
+      contactTelegram: profile.contactTelegram,
+      contact: resolveContact(user, profile),
     };
   }
 }

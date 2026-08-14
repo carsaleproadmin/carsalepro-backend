@@ -11,6 +11,8 @@ import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { GeoService, NearestInspector } from '../geo/geo.service';
 import { RouteEstimate, RoutingService } from '../geo/routing.service';
+import { DEFAULT_COUNTRY_CODE, GeocodingService } from '../geo/geocoding.service';
+import { resolveContact, type PartyContact } from '../inspector/inspector-contact';
 import { LegalContractService } from '../legal/legal-contract.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
@@ -29,7 +31,8 @@ import {
   QuoteOrderDto,
 } from './dto/order.dto';
 import { ATTACHABLE_REPORT_ORDER_STATUSES, canTransition } from './order-state-machine';
-import { PriceBreakdown, computePrice } from './order-pricing';
+import { PriceBreakdown, computePrice, describeStoredFare } from './order-pricing';
+import { RegionalOverrides, exceedsCap, resolveTariff } from './tariff-resolution';
 import { MONEY_RETRY_MAX_ATTEMPTS, planRetry } from './retry-schedule';
 import {
   countMissing,
@@ -56,15 +59,38 @@ export interface QuoteResult {
    * quote), so the UI knows to ask for one.
    */
   waitlisted?: boolean;
+  /**
+   * Only meaningful when `available` is false. 'no_coverage' means nobody is
+   * within the search radius; 'too_far' means the nearest inspector is beyond
+   * what this region serves. Optional in the type so the website can deploy in
+   * either order — it read a bare `available: false` before.
+   */
+  refusal?: 'no_coverage' | 'too_far';
   currency?: string;
   totalCents?: number;
   breakdown?: {
     baseFeeCents: number;
     distanceFeeCents: number;
+    /** One direction: how far the inspector is. */
     distanceKm: number;
+    /**
+     * What `distanceFeeCents` was computed from: `distanceKm ×
+     * returnTripFactor`. Optional in the type so the website can deploy in
+     * either order — while it is absent, `distanceKm` is the billed quantity,
+     * which is exactly true while the factor is 1.
+     */
+    billedDistanceKm?: number;
+    returnTripFactor?: number;
+    /** Kilometres that carried no travel charge. */
+    freeRadiusKm?: number;
+    /** One direction, after the free radius came off. */
+    chargeableDistanceKm?: number;
     /** 'road' when a routing provider answered, 'straight_line' when estimated. */
     distanceSource: 'road' | 'straight_line';
+    /** One direction, as measured. */
     durationMin: number;
+    /** What `timeFeeCents` was computed from. */
+    billedDurationMin?: number;
     timeFeeCents: number;
     subtotalCents: number;
     surgeMultiplier: number;
@@ -73,6 +99,15 @@ export interface QuoteResult {
     minimumFareCents: number;
     minimumFareTopUpCents: number;
     minimumFareApplied: boolean;
+    /**
+     * The split of `totalCents`. Both sides are quoted the same two numbers:
+     * the customer is shown what the platform keeps, the inspector what they
+     * earn, and `platformFeeCents + inspectorShareCents === totalCents` holds.
+     * Quoted before an inspector exists because the split is a function of the
+     * tariff, not of who takes the job.
+     */
+    platformFeeCents: number;
+    inspectorShareCents: number;
   };
   nearestKm?: number;
   candidates?: Array<{ displayName: string | null; company: string | null; distanceKm: number }>;
@@ -224,6 +259,10 @@ function canCancelAuthorization(stripe: unknown): stripe is AuthorizationCancell
 /** Full priced quote, including the cents fields needed to persist an order. */
 interface PricedQuote {
   available: boolean;
+  /** Why not, when `available` is false. */
+  refusal?: 'no_coverage' | 'too_far';
+  /** The country the tariff was resolved for. Never null: falls back to DE. */
+  countryCode: string;
   nearest?: NearestInspector;
   candidates: NearestInspector[];
   price: PriceBreakdown;
@@ -238,6 +277,7 @@ export class OrdersService {
     private readonly prisma: PrismaService,
     private readonly geo: GeoService,
     private readonly routing: RoutingService,
+    private readonly geocoding: GeocodingService,
     private readonly settings: SettingsService,
     private readonly stripe: StripeService,
     private readonly payments: PaymentsService,
@@ -248,6 +288,47 @@ export class OrdersService {
   // ============================================================
   // Pricing
   // ============================================================
+
+  /**
+   * The band row and the country row that apply to a country, as plain numbers.
+   *
+   * Prisma `Decimal` columns are converted here and nowhere else, so the pure
+   * resolver never sees a database type. A country with no row, or a country
+   * whose row points at no band, is not an error: both levels stay silent and
+   * the global tariff answers.
+   */
+  private async loadRegionalOverrides(
+    countryCode: string,
+  ): Promise<{ zone: RegionalOverrides | null; country: RegionalOverrides | null }> {
+    const row = await this.prisma.countryTariff.findUnique({
+      where: { countryCode },
+      include: { zone: true },
+    });
+    if (!row) return { zone: null, country: null };
+
+    const toOverrides = (r: {
+      baseFeeCents: number | null;
+      perKmCents: number | null;
+      ratePerMinuteCents: number | null;
+      minimumFareCents: number | null;
+      freeRadiusKm: Prisma.Decimal | null;
+      capKm: Prisma.Decimal | null;
+      returnTripFactor: Prisma.Decimal | null;
+    }): RegionalOverrides => ({
+      baseFeeCents: r.baseFeeCents,
+      perKmCents: r.perKmCents,
+      ratePerMinuteCents: r.ratePerMinuteCents,
+      minimumFareCents: r.minimumFareCents,
+      freeRadiusKm: r.freeRadiusKm === null ? null : Number(r.freeRadiusKm),
+      capKm: r.capKm === null ? null : Number(r.capKm),
+      returnTripFactor: r.returnTripFactor === null ? null : Number(r.returnTripFactor),
+    });
+
+    return {
+      zone: row.zone ? toOverrides(row.zone) : null,
+      country: toOverrides(row),
+    };
+  }
 
   /**
    * Single source of truth for pricing.
@@ -282,6 +363,9 @@ export class OrdersService {
       peakStartHour,
       peakEndHour,
       detourFactor,
+      returnTripFactor,
+      freeRadiusKm,
+      capKm,
       cacheHours,
     ] = await Promise.all([
       this.settings.getCents('orderBaseFeeEur'),
@@ -295,10 +379,13 @@ export class OrdersService {
       this.settings.getNumber('orderPeakStartHour'),
       this.settings.getNumber('orderPeakEndHour'),
       this.settings.getNumber('orderDetourFactor'),
+      this.settings.getNumber('orderReturnTripFactor'),
+      this.settings.getNumber('orderFreeRadiusKm'),
+      this.settings.getNumber('orderCapKm'),
       this.settings.getNumber('orderRoutingCacheHours'),
     ]);
 
-    const tariff = {
+    const globalTariff = {
       baseFeeCents,
       ratePerKmCents,
       ratePerMinuteCents,
@@ -308,7 +395,21 @@ export class OrdersService {
       peakMultiplier,
       peakStartHour,
       peakEndHour,
+      returnTripFactor,
+      freeRadiusKm,
     };
+
+    // The region of the INSPECTION ADDRESS decides the tariff. Resolved here
+    // rather than only at order creation so a quote and the order it turns into
+    // cannot disagree: the customer must be charged what they were shown.
+    // A geocode costs a provider request on a cache miss and nothing after —
+    // the cache key is a ~1 km cell held for 30 days.
+    const countryCode = (await this.geocoding.countryCodeFor({ lat, lng })) ?? DEFAULT_COUNTRY_CODE;
+    const region = await this.loadRegionalOverrides(countryCode);
+    const resolved = resolveTariff(globalTariff, freeRadiusKm, region.zone, region.country);
+    const tariff = resolved.tariff;
+    // A region may set its own cap; the global setting is the fallback.
+    const effectiveCapKm = resolved.limits.capKm ?? (capKm > 0 ? capKm : null);
 
     const candidates = await this.geo.findNearestInspectors({
       lat,
@@ -321,6 +422,8 @@ export class OrdersService {
     if (candidates.length === 0) {
       return {
         available: false,
+        refusal: 'no_coverage',
+        countryCode,
         candidates: [],
         routingSource: 'haversine',
         price: computePrice({ distanceKm: 0, durationMin: 0, scheduledAt, tariff }),
@@ -335,8 +438,25 @@ export class OrdersService {
       cacheHours,
     );
 
+    // The cap refuses HERE, before a price exists. Quoting a 300 km trip and
+    // letting the customer pay produces an order no inspector accepts, which
+    // then holds their money for the whole six-hour search window before the
+    // cron cancels it. Measured one direction, on the same basis the operator
+    // typed the number in.
+    if (exceedsCap(route.distanceKm, effectiveCapKm)) {
+      return {
+        available: false,
+        refusal: 'too_far',
+        countryCode,
+        candidates: [],
+        routingSource: route.source,
+        price: computePrice({ distanceKm: 0, durationMin: 0, scheduledAt, tariff }),
+      };
+    }
+
     return {
       available: true,
+      countryCode,
       nearest,
       candidates,
       routingSource: route.source,
@@ -362,8 +482,11 @@ export class OrdersService {
     const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
 
     if (!priced.available) {
+      // A waitlist entry is recorded for BOTH refusals: "too far" is a lead in
+      // exactly the same sense as "no coverage" — someone wants an inspection
+      // at a place we do not serve yet — and the row carries the location.
       const waitlisted = userId ? await this.addToWaitlist(userId, dto.lat, dto.lng) : false;
-      return { available: false, waitlisted };
+      return { available: false, waitlisted, refusal: priced.refusal ?? 'no_coverage' };
     }
 
     const p = priced.price;
@@ -374,9 +497,18 @@ export class OrdersService {
       breakdown: {
         baseFeeCents: p.baseFeeCents,
         distanceFeeCents: p.distanceFeeCents,
+        // Both distances travel to the client. `distanceKm` answers "how far is
+        // the inspector"; `billedDistanceKm` is the quantity the rate was
+        // applied to, so a customer checking our arithmetic reaches our number
+        // and not half of it.
         distanceKm: p.distanceKm,
+        freeRadiusKm: p.freeRadiusKm,
+        chargeableDistanceKm: p.chargeableDistanceKm,
+        billedDistanceKm: p.billedDistanceKm,
+        returnTripFactor: p.returnTripFactor,
         distanceSource: priced.routingSource === 'mapbox' ? 'road' : 'straight_line',
         durationMin: p.durationMin,
+        billedDurationMin: p.billedDurationMin,
         timeFeeCents: p.timeFeeCents,
         subtotalCents: p.subtotalCents,
         surgeMultiplier: p.surgeMultiplier,
@@ -385,6 +517,8 @@ export class OrdersService {
         minimumFareCents: p.minimumFareCents,
         minimumFareTopUpCents: p.minimumFareTopUpCents,
         minimumFareApplied: p.minimumFareApplied,
+        platformFeeCents: p.platformFeeCents,
+        inspectorShareCents: p.inspectorShareCents,
       },
       // Straight-line distance to each candidate — this is a "who is near you"
       // list, not a priced figure, so it stays on the cheap measure.
@@ -425,16 +559,31 @@ export class OrdersService {
     // that dispatch could never fill.
     const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
     if (!priced.available) {
-      throw new ConflictException({
-        error: { code: 'no_coverage', message: 'No inspector available in your area' },
-      });
+      // Two codes, because the two refusals need different words from the UI:
+      // "we are not there yet" invites a waitlist signup, "that is too far" is
+      // about this particular vehicle and may be answered by another address.
+      throw new ConflictException(
+        priced.refusal === 'too_far'
+          ? {
+              error: {
+                code: 'distance_cap_exceeded',
+                message: 'The vehicle is beyond the distance we serve from the nearest inspector',
+              },
+            }
+          : { error: { code: 'no_coverage', message: 'No inspector available in your area' } },
+      );
     }
 
     const number = await this.generateOrderNumber();
 
+    // The country the price was resolved for, straight from the quote — asking
+    // the geocoder a second time could answer differently and store a country
+    // the fare was not calculated with.
+    const countryCode = priced.countryCode;
+
     // Order.location is NOT NULL geography(Unsupported) — insert via raw SQL so
     // the geography is set inline at insert time.
-    const orderId = await this.insertOrder(number, userId, dto, priced);
+    const orderId = await this.insertOrder(number, userId, dto, priced, countryCode);
 
     const payment = await this.prisma.payment.create({
       data: {
@@ -623,19 +772,26 @@ export class OrdersService {
     customerId: string,
     dto: CreateOrderDto,
     priced: PricedQuote,
+    countryCode: string,
   ): Promise<string> {
     // The order row is inserted with raw SQL (PostGIS geography), so Prisma's
     // `@default(cuid())` never runs and we mint the id here. The column is a
     // plain text PK, so any unique string works.
     const id = randomUUID();
     const p = priced.price;
-    const distanceKm = new Prisma.Decimal(p.distanceKm);
+    // The BILLED distance, not the measured one: this column is what the
+    // invoice and the contract quote, so it must be the quantity the per-km
+    // rate multiplied. `return_trip_factor` beside it recovers the measured
+    // distance for anyone who needs it.
+    const distanceKm = new Prisma.Decimal(p.billedDistanceKm);
+    const returnTripFactor = new Prisma.Decimal(p.returnTripFactor.toFixed(2));
+    const freeRadiusKm = new Prisma.Decimal(p.freeRadiusKm.toFixed(2));
     const surgeMultiplier = new Prisma.Decimal(p.surgeMultiplier.toFixed(2));
     await this.prisma.$executeRaw`
       INSERT INTO "order" (
         id, number, customer_id, status, vin, make, model, listing_url, address,
         location, scheduled_at, country_code,
-        base_fee_cents, distance_km, distance_fee_cents, duration_min,
+        base_fee_cents, distance_km, return_trip_factor, free_radius_km, distance_fee_cents, duration_min,
         time_fee_cents, surge_multiplier, minimum_fare_applied, routing_source,
         total_cents, platform_fee_cents, inspector_share_cents, currency, "createdAt"
       ) VALUES (
@@ -643,8 +799,8 @@ export class OrdersService {
         ${dto.vin?.toUpperCase() ?? null}, ${dto.make}, ${dto.model},
         ${dto.listingUrl ?? null}, ${dto.address},
         ST_SetSRID(ST_MakePoint(${dto.lng}, ${dto.lat}), 4326)::geography,
-        ${new Date(dto.scheduledAt)}, 'DE',
-        ${p.baseFeeCents}, ${distanceKm}, ${p.distanceFeeCents}, ${p.durationMin},
+        ${new Date(dto.scheduledAt)}, ${countryCode},
+        ${p.baseFeeCents}, ${distanceKm}, ${returnTripFactor}, ${freeRadiusKm}, ${p.distanceFeeCents}, ${p.billedDurationMin},
         ${p.timeFeeCents}, ${surgeMultiplier}, ${p.minimumFareApplied}, ${priced.routingSource},
         ${p.totalCents}, ${p.platformFeeCents}, ${p.inspectorShareCents},
         'EUR', ${new Date()}
@@ -713,7 +869,15 @@ export class OrdersService {
     const timeoutMinutes = await this.settings.getNumber('offerTimeoutMinutes');
     const expiresAt = new Date(Date.now() + timeoutMinutes * 60_000);
     await this.prisma.orderOffer.create({
-      data: { orderId, inspectorId: nearest.userId, status: 'PENDING', expiresAt },
+      data: {
+        orderId,
+        inspectorId: nearest.userId,
+        status: 'PENDING',
+        expiresAt,
+        // How far THIS inspector is, which is not what the order was priced on
+        // once dispatch has walked past the first candidate.
+        straightLineKm: new Prisma.Decimal(nearest.distanceKm.toFixed(2)),
+      },
     });
     await this.writeEvent(orderId, 'system', 'offer_sent', null, null, {
       inspectorId: nearest.userId,
@@ -1325,36 +1489,82 @@ export class OrdersService {
       orderBy: { createdAt: 'asc' },
     });
 
-    const assignedStatuses: OrderStatus[] = [
-      OrderStatus.ASSIGNED,
-      OrderStatus.EN_ROUTE,
-      OrderStatus.IN_PROGRESS,
-      OrderStatus.SUBMITTED,
-      OrderStatus.APPROVED,
-      OrderStatus.COMPLETED,
-      OrderStatus.DISPUTED,
-    ];
+    /*
+     * ⚠ DISCLOSURE IS ONE-WAY AND STARTS AT THE FINISH LINE.
+     *
+     * Both halves of this changed on 2026-08-11, by the owner's decision, and
+     * neither is an implementation detail that may drift back:
+     *
+     *  1. The inspector's channels reach the customer only at COMPLETED. While
+     *     the job is running the platform carries the conversation; the point of
+     *     the card is the period AFTER the report, when the customer wants to
+     *     ask the person who looked at the car. Disclosing at assignment let the
+     *     two parties step out of the platform before it had delivered anything.
+     *  2. The customer's channels are never disclosed to the inspector at all.
+     *
+     * COMPLETED is reached by a successful PAYOUT, not by the inspection — an
+     * order whose payout parks (an inspector without Stripe onboarding) stays
+     * APPROVED, and its customer sees no contacts. That is the accepted cost of
+     * "only when it is finished"; `releasePayout` parks rather than fails, and
+     * the admin finance queue is where such an order gets unstuck.
+     */
+    /*
+     * COMPLETED and nothing else.
+     *
+     * DISPUTED is deliberately NOT here (owner's decision, reverted 2026-08-11
+     * after being tried): a dispute is handled by the platform, and handing the
+     * two sides each other's channels mid-conflict moves the argument somewhere
+     * nobody can see or arbitrate. The admin holds both sides for exactly that
+     * reason — see the admin branch below.
+     */
+    const disclosedToCustomer = order.status === OrderStatus.COMPLETED;
 
-    // Inspector contact is only exposed once the order is at least ASSIGNED.
-    let inspectorContact: { userId: string; name: string | null; phone: string | null; companyName: string | null } | null =
-      null;
-    if (order.inspectorId && assignedStatuses.includes(order.status)) {
-      const insp = await this.prisma.user.findUnique({
-        where: { id: order.inspectorId },
-        select: { id: true, name: true, phone: true },
+    /*
+     * The status gate binds the CUSTOMER, never the admin: an admin who could
+     * only see the parties of a finished order would be blind on the cases they
+     * exist for. Both directions are admin-readable in every status, and neither
+     * is customer- or inspector-readable outside the rule above.
+     */
+    let inspectorContact: PartyContact | null = null;
+    if (order.inspectorId && ((isCustomer && disclosedToCustomer) || isAdmin)) {
+      const [insp, profile] = await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: order.inspectorId },
+          select: { id: true, name: true, email: true, phone: true, deletedAt: true },
+        }),
+        this.prisma.inspectorProfile.findUnique({
+          where: { userId: order.inspectorId },
+          select: {
+            companyName: true,
+            contactPhone: true,
+            contactEmail: true,
+            contactWhatsapp: true,
+            contactTelegram: true,
+          },
+        }),
+      ]);
+      inspectorContact = resolveContact(insp, profile);
+    }
+
+    /*
+     * The customer's channels go to an ADMIN and to nobody else.
+     *
+     * Not even to the assigned inspector, and not at any status: an inspector
+     * who has the customer's phone number can arrange the next job — and every
+     * one after it — directly, which takes the platform out of the transaction
+     * it is responsible for. The address and the scheduled time are already on
+     * the order, so the work itself needs no personal channel.
+     *
+     * The admin keeps it because a dispute cannot be resolved without reaching
+     * both sides.
+     */
+    let customerContact: PartyContact | null = null;
+    if (isAdmin) {
+      const customer = await this.prisma.user.findUnique({
+        where: { id: order.customerId },
+        select: { id: true, name: true, email: true, phone: true, deletedAt: true },
       });
-      const profile = await this.prisma.inspectorProfile.findUnique({
-        where: { userId: order.inspectorId },
-        select: { companyName: true },
-      });
-      if (insp) {
-        inspectorContact = {
-          userId: insp.id,
-          name: insp.name,
-          phone: insp.phone,
-          companyName: profile?.companyName ?? null,
-        };
-      }
+      customerContact = resolveContact(customer);
     }
 
     // The report row is read in EVERY status, because `reportRequirement` below
@@ -1380,6 +1590,13 @@ export class OrdersService {
       this.settings.getNumber('minReportQualityScore'),
     ]);
 
+    const money = describeStoredFare({
+      billedDistanceKm: Number(order.distanceKm),
+      returnTripFactor: Number(order.returnTripFactor),
+      freeRadiusKm: Number(order.freeRadiusKm),
+      billedDurationMin: order.durationMin,
+    });
+
     return {
       id: order.id,
       number: order.number,
@@ -1389,9 +1606,14 @@ export class OrdersService {
       scheduledAt: order.scheduledAt.toISOString(),
       money: {
         baseFeeCents: order.baseFeeCents,
-        distanceKm: Number(order.distanceKm),
+        distanceKm: money.distanceKm,
+        chargeableDistanceKm: money.chargeableDistanceKm,
+        billedDistanceKm: money.billedDistanceKm,
+        returnTripFactor: money.returnTripFactor,
+        freeRadiusKm: money.freeRadiusKm,
         distanceFeeCents: order.distanceFeeCents,
-        durationMin: order.durationMin,
+        durationMin: money.durationMin,
+        billedDurationMin: money.billedDurationMin,
         timeFeeCents: order.timeFeeCents,
         surgeMultiplier: Number(order.surgeMultiplier),
         minimumFareApplied: order.minimumFareApplied,
@@ -1402,6 +1624,7 @@ export class OrdersService {
         currency: order.currency,
       },
       inspectorContact,
+      customerContact,
       report,
       // Where the money is. Under manual capture the order status alone no
       // longer answers that: PAID means "committed", and held-versus-taken is a
@@ -3131,6 +3354,12 @@ export class OrdersService {
       address: o.address,
       scheduledAt: o.scheduledAt.toISOString(),
       totalCents: o.totalCents,
+      // The split rides on the row because the inspector's list is the FIRST
+      // place a job is priced for them, and `totalCents` there is the
+      // customer's number — it overstates what they earn by the whole
+      // commission. Sent to both sides; each renders the figure that is theirs.
+      platformFeeCents: o.platformFeeCents,
+      inspectorShareCents: o.inspectorShareCents,
       currency: o.currency,
       createdAt: o.createdAt.toISOString(),
     };
@@ -3167,10 +3396,37 @@ export interface OrderDetail {
   scheduledAt: string;
   money: {
     baseFeeCents: number;
-    distanceKm: number;
+    /**
+     * The measured one-direction trip.
+     *
+     * **Null when the row cannot answer** — a vehicle inside the free radius
+     * bills 0 kilometres whatever its distance, so the measurement is not in
+     * the row and `describeStoredFare` refuses to invent one. Render nothing
+     * for null; the fee rows should read the billed quantities anyway.
+     */
+    distanceKm: number | null;
+    /** What the per-km rate was applied to. Optional so the website can lag. */
+    billedDistanceKm?: number;
+    /** One direction, after the free radius came off. */
+    chargeableDistanceKm?: number;
+    returnTripFactor?: number;
+    freeRadiusKm?: number;
     distanceFeeCents: number;
-    /** Null for orders placed before the ride-hailing tariff. */
+    /**
+     * The measured one-direction travel time. Null for orders placed before the
+     * ride-hailing tariff.
+     */
     durationMin: number | null;
+    /**
+     * What the per-minute rate was applied to — both directions, the figure the
+     * column actually stores. Optional so the website can lag.
+     *
+     * It exists because `durationMin` and `distanceKm` must describe the same
+     * trip: the detail used to report the distance one-way and the minutes
+     * both ways, and a page showing "38 km" beside "114 min" reads as a
+     * traffic jam rather than a return trip.
+     */
+    billedDurationMin?: number | null;
     timeFeeCents: number;
     surgeMultiplier: number;
     minimumFareApplied: boolean;
@@ -3181,12 +3437,18 @@ export interface OrderDetail {
     inspectorShareCents: number;
     currency: string;
   };
-  inspectorContact: {
-    userId: string;
-    name: string | null;
-    phone: string | null;
-    companyName: string | null;
-  } | null;
+  /**
+   * The inspector's channels. Non-null for the customer only once the order is
+   * COMPLETED, and for an admin in every status — see the disclosure rule in
+   * `getDetail`, which is where the reasoning lives.
+   */
+  inspectorContact: PartyContact | null;
+  /**
+   * The customer's channels. Non-null for an **admin and nobody else** — not
+   * for the assigned inspector, at any status. Optional in the type so the
+   * website can deploy in either order.
+   */
+  customerContact?: PartyContact | null;
   report: { id: string; code: string; qualityScore: number | null } | null;
   /**
    * Where the customer's money is. Optional in the type (never absent in
