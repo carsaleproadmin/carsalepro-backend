@@ -119,16 +119,28 @@ describe('Catalog (e2e)', () => {
     expect(res.body.kstCodes.length).toBe(68);
     expect(Array.isArray(res.body.checklist)).toBe(true);
     expect(res.body.checklist.length).toBe(98);
-    // The client's three registers replaced the old lists on 2026-08-14.
-    // Exact, for the same reason as the angles: these counts drive what an
-    // inspector can record and what the cost engine can price.
-    expect(res.body.damageTypes.length).toBe(127);
+    // The client's three registers replaced the old lists on 2026-08-14, and
+    // his "General" list added 40 damage types and 27 repair methods on
+    // 2026-08-16. Exact, for the same reason as the angles: these counts drive
+    // what an inspector can record and what the cost engine can price.
+    expect(res.body.damageTypes.length).toBe(167);
     expect(Array.isArray(res.body.parts)).toBe(true);
     expect(res.body.parts.length).toBe(410);
     expect(Array.isArray(res.body.repairMethods)).toBe(true);
-    expect(res.body.repairMethods.length).toBe(205);
-    expect(res.body.groups.length).toBe(7);
+    expect(res.body.repairMethods.length).toBe(232);
+    expect(res.body.groups.length).toBe(8);
     expect(res.body.subgroups.length).toBe(67);
+    // "General" opens first in every picker, and it holds no parts: a group
+    // with no options in a register is not rendered at all, which is what
+    // leaves the parts picker unchanged.
+    const general = res.body.groups.find(
+      (g: { id: string }) => g.id === 'g_general',
+    );
+    expect(general).toBeDefined();
+    expect(general.order).toBe(1);
+    expect(
+      res.body.parts.filter((p: { groupId: string }) => p.groupId === 'g_general'),
+    ).toHaveLength(0);
     // Every entry of the three registers must land in a real group, or it is
     // unreachable in the app's pickers — which is silent, not an error.
     const groupIds = new Set<string>(

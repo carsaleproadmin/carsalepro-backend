@@ -803,8 +803,18 @@ const ANGLES: AngleDef[] = [
  */
 const GROUPS: CatalogGroupDef[] = [
   {
-    id: 'g_body_exterior',
+    id: 'g_general',
     order: 1,
+    label: {
+      de: 'Allgemein',
+      en: 'General',
+      ru: 'Общие',
+      uk: 'Загальні',
+    },
+  },
+  {
+    id: 'g_body_exterior',
+    order: 2,
     label: {
       de: 'Karosserieteile und Außenbereich',
       en: 'Body panels and exterior',
@@ -814,7 +824,7 @@ const GROUPS: CatalogGroupDef[] = [
   },
   {
     id: 'g_interior_dash',
-    order: 2,
+    order: 3,
     label: {
       de: 'Innenraum und Instrumententafel',
       en: 'Interior and instrument panel',
@@ -824,7 +834,7 @@ const GROUPS: CatalogGroupDef[] = [
   },
   {
     id: 'g_underbody',
-    order: 3,
+    order: 4,
     label: {
       de: 'Fahrzeugunterboden',
       en: 'Vehicle underbody',
@@ -834,7 +844,7 @@ const GROUPS: CatalogGroupDef[] = [
   },
   {
     id: 'g_engine_diag',
-    order: 4,
+    order: 5,
     label: {
       de: 'Motordiagnose (Motorraum) und Fehlercodes',
       en: 'Engine diagnosis (engine bay) and fault codes',
@@ -844,7 +854,7 @@ const GROUPS: CatalogGroupDef[] = [
   },
   {
     id: 'g_fuel_intake_exhaust_ignition',
-    order: 5,
+    order: 6,
     label: {
       de: 'Kraftstoff-, Ansaug-, Abgas- und Zündanlage',
       en: 'Fuel, intake, exhaust and ignition systems',
@@ -854,7 +864,7 @@ const GROUPS: CatalogGroupDef[] = [
   },
   {
     id: 'g_cooling',
-    order: 6,
+    order: 7,
     label: {
       de: 'Kühlsystem',
       en: 'Cooling system',
@@ -864,7 +874,7 @@ const GROUPS: CatalogGroupDef[] = [
   },
   {
     id: 'g_chassis_steering_brakes',
-    order: 7,
+    order: 8,
     label: {
       de: 'Fahrwerk, Federung, Lenkung und Bremsen',
       en: 'Chassis, suspension, steering and brakes',
@@ -6586,6 +6596,446 @@ const PARTS: PartDef[] = [
 
 const DAMAGE_TYPES: DamageTypeDef[] = [
   {
+    id: 'gen_swelling',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Aufwölbung',
+      en: 'Bulging',
+      ru: 'Вздутие',
+      uk: 'Здуття',
+    },
+  },
+  {
+    id: 'gen_blisters',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Blasenbildung',
+      en: 'Blistering',
+      ru: 'Волдыри',
+      uk: 'Пухирі',
+    },
+  },
+  {
+    id: 'gen_bad_smell',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Unangenehmer Geruch',
+      en: 'Bad odour',
+      ru: 'Вонь',
+      uk: 'Неприємний запах',
+    },
+  },
+  {
+    id: 'gen_pushed_out',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Nach außen gedrückt',
+      en: 'Pushed outwards',
+      ru: 'Выдавлено наружу',
+      uk: 'Видавлено назовні',
+    },
+  },
+  {
+    id: 'gen_dent',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Delle',
+      en: 'Dent',
+      ru: 'Вмятина',
+      uk: 'Вм’ятина',
+    },
+  },
+  {
+    id: 'gen_dent_and_scratched',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Delle und Kratzer',
+      en: 'Dent and scratches',
+      ru: 'Вмятина и поцарапано',
+      uk: 'Вм’ятина і подряпини',
+    },
+  },
+  {
+    id: 'gen_deformation',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Verformung',
+      en: 'Deformation',
+      ru: 'Деформация',
+      uk: 'Деформація',
+    },
+  },
+  {
+    id: 'gen_hole',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Loch',
+      en: 'Hole',
+      ru: 'Дыра',
+      uk: 'Отвір',
+    },
+  },
+  {
+    id: 'gen_soiling',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Verschmutzung',
+      en: 'Soiling',
+      ru: 'Загрязнение',
+      uk: 'Забруднення',
+    },
+  },
+  {
+    id: 'gen_sticking',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Schwergängig',
+      en: 'Stiff to operate',
+      ru: 'Заедает',
+      uk: 'Заїдає',
+    },
+  },
+  {
+    id: 'gen_wear',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Verschleiß',
+      en: 'Wear from use',
+      ru: 'Износ',
+      uk: 'Знос',
+    },
+  },
+  {
+    id: 'gen_abrasion',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Abrieb',
+      en: 'Abrasion',
+      ru: 'Истирание',
+      uk: 'Стирання',
+    },
+  },
+  {
+    id: 'gen_corrosion',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Korrosion',
+      en: 'Corrosion',
+      ru: 'Коррозия',
+      uk: 'Корозія',
+    },
+  },
+  {
+    id: 'gen_not_working',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Funktioniert nicht',
+      en: 'Does not work',
+      ru: 'Не работает',
+      uk: 'Не працює',
+    },
+  },
+  {
+    id: 'gen_non_original_part',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Kein Originalteil',
+      en: 'Non-original part',
+      ru: 'Неоригинальная запчасть',
+      uk: 'Неоригінальна запчастина',
+    },
+  },
+  {
+    id: 'gen_differs_from_factory',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Weicht von der Werksausstattung ab',
+      en: 'Differs from factory specification',
+      ru: 'Отличается от заводской комплектации',
+      uk: 'Відрізняється від заводської комплектації',
+    },
+  },
+  {
+    id: 'gen_delamination',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Ablösung',
+      en: 'Delamination',
+      ru: 'Отслоение',
+      uk: 'Відшарування',
+    },
+  },
+  {
+    id: 'gen_adhesive_residue',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Klebstoffreste',
+      en: 'Adhesive residue',
+      ru: 'Остатки клея',
+      uk: 'Залишки клею',
+    },
+  },
+  {
+    id: 'gen_missing',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Teil fehlt',
+      en: 'Part missing',
+      ru: 'Отсутствие в наличии',
+      uk: 'Деталь відсутня',
+    },
+  },
+  {
+    id: 'gen_hail_damage',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Hagelschaden',
+      en: 'Hail damage',
+      ru: 'Повреждение градом',
+      uk: 'Пошкодження градом',
+    },
+  },
+  {
+    id: 'gen_accident_damage',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Unfallschaden',
+      en: 'Accident damage',
+      ru: 'Повреждение от аварий',
+      uk: 'Пошкодження від аварії',
+    },
+  },
+  {
+    id: 'gen_animal_damage',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Schaden durch Tiere',
+      en: 'Damage by animals',
+      ru: 'Повреждено животными',
+      uk: 'Пошкодження тваринами',
+    },
+  },
+  {
+    id: 'gen_stickers_or_lettering',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Aufkleber oder Beschriftung',
+      en: 'Stickers or lettering',
+      ru: 'Покрытый наклейками или надписями',
+      uk: 'Наклейки або написи',
+    },
+  },
+  {
+    id: 'gen_cuts',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Schnitte im Material',
+      en: 'Cuts in the material',
+      ru: 'Порезы',
+      uk: 'Порізи матеріалу',
+    },
+  },
+  {
+    id: 'gen_puncture',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Durchschlag',
+      en: 'Puncture',
+      ru: 'Пробой',
+      uk: 'Пробій',
+    },
+  },
+  {
+    id: 'gen_burn_hole',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Brandloch',
+      en: 'Burn hole',
+      ru: 'Прожог',
+      uk: 'Пропалина',
+    },
+  },
+  {
+    id: 'gen_stains',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Flecken',
+      en: 'Stains',
+      ru: 'Пятна',
+      uk: 'Плями',
+    },
+  },
+  {
+    id: 'gen_shattered',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Zerbrochen',
+      en: 'Shattered',
+      ru: 'Разбито',
+      uk: 'Розбито',
+    },
+  },
+  {
+    id: 'gen_tear',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Einriss',
+      en: 'Torn',
+      ru: 'Разрыв',
+      uk: 'Розрив',
+    },
+  },
+  {
+    id: 'gen_unprofessional_repair',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Unsachgemäße Reparatur',
+      en: 'Unprofessional repair',
+      ru: 'Ремонт выполнен непрофессионально',
+      uk: 'Непрофесійний ремонт',
+    },
+  },
+  {
+    id: 'gen_chip',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Absplitterung',
+      en: 'Chipped material',
+      ru: 'Скол',
+      uk: 'Скол',
+    },
+  },
+  {
+    id: 'gen_squeak',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Quietschen',
+      en: 'Squeaking',
+      ru: 'Скрип',
+      uk: 'Скрип',
+    },
+  },
+  {
+    id: 'gen_broken',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Gebrochen',
+      en: 'Broken',
+      ru: 'Сломано',
+      uk: 'Зламано',
+    },
+  },
+  {
+    id: 'gen_knocking',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Klopfgeräusch',
+      en: 'Knocking noise',
+      ru: 'Стук',
+      uk: 'Стук',
+    },
+  },
+  {
+    id: 'gen_fluid_leak',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Flüssigkeitsaustritt',
+      en: 'Fluid leak',
+      ru: 'Течь',
+      uk: 'Витік рідини',
+    },
+  },
+  {
+    id: 'gen_crack',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Riss',
+      en: 'Crack',
+      ru: 'Трещина',
+      uk: 'Тріщина',
+    },
+  },
+  {
+    id: 'gen_leakage',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Gas- oder Luftaustritt',
+      en: 'Gas or air leak',
+      ru: 'Утечка',
+      uk: 'Витік газу або повітря',
+    },
+  },
+  {
+    id: 'gen_chemical_contamination',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Chemische Verunreinigung',
+      en: 'Chemical contamination',
+      ru: 'Химическое загрязнение',
+      uk: 'Хімічне забруднення',
+    },
+  },
+  {
+    id: 'gen_scratch',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Kratzer',
+      en: 'Scratch',
+      ru: 'Царапина',
+      uk: 'Подряпина',
+    },
+  },
+  {
+    id: 'gen_noise',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Geräusch',
+      en: 'Noise',
+      ru: 'Шум',
+      uk: 'Шум',
+    },
+  },
+  {
     id: 'paint_scratch_surface',
     groupId: 'g_body_exterior',
     subgroupId: 'd_paint',
@@ -10331,6 +10781,303 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
 // ---------------------------------------------------------------------------
 
 const REPAIR_METHODS: RepairMethodDef[] = [
+  {
+    id: 'gm_anticorrosion_treatment',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Korrosionsschutzbehandlung',
+      en: 'Anti-corrosion treatment',
+      ru: 'Антикоррозионная обработка',
+      uk: 'Антикорозійна обробка',
+    },
+  },
+  {
+    id: 'gm_balancing',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Auswuchten',
+      en: 'Dynamic balancing',
+      ru: 'Балансировка',
+      uk: 'Балансування',
+    },
+  },
+  {
+    id: 'gm_cutting_out',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Ausschneiden',
+      en: 'Cutting out',
+      ru: 'Вырезание',
+      uk: 'Вирізання',
+    },
+  },
+  {
+    id: 'gm_replacement',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Austausch',
+      en: 'Replacement',
+      ru: 'Замена',
+      uk: 'Заміна',
+    },
+  },
+  {
+    id: 'gm_computer_diagnostics',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Computerdiagnose',
+      en: 'Computer diagnostics',
+      ru: 'Компьютерная диагностика',
+      uk: 'Комп’ютерна діагностика',
+    },
+  },
+  {
+    id: 'gm_workshop_consultation',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Beratung in der Fachwerkstatt',
+      en: 'Workshop consultation',
+      ru: 'Консультация на станции техобслуживания',
+      uk: 'Консультація на станції техобслуговування',
+    },
+  },
+  {
+    id: 'gm_cleaning',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Reinigung',
+      en: 'Cleaning',
+      ru: 'Очистка',
+      uk: 'Очищення',
+    },
+  },
+  {
+    id: 'gm_bonding',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Verkleben',
+      en: 'Adhesive bonding',
+      ru: 'Поклейка',
+      uk: 'Склеювання',
+    },
+  },
+  {
+    id: 'gm_painting',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Lackierung',
+      en: 'Painting',
+      ru: 'Покраска',
+      uk: 'Фарбування',
+    },
+  },
+  {
+    id: 'gm_polishing',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Polieren',
+      en: 'Polishing',
+      ru: 'Полировка',
+      uk: 'Полірування',
+    },
+  },
+  {
+    id: 'gm_blow_out',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Ausblasen mit Druckluft',
+      en: 'Purging with compressed air',
+      ru: 'Продувка',
+      uk: 'Продування стисненим повітрям',
+    },
+  },
+  {
+    id: 'gm_machining',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Abdrehen auf der Drehmaschine',
+      en: 'Resurfacing on a lathe',
+      ru: 'Проточка',
+      uk: 'Проточування на токарному верстаті',
+    },
+  },
+  {
+    id: 'gm_wheel_alignment',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Achsvermessung',
+      en: 'Wheel alignment',
+      ru: 'Развал-схождение',
+      uk: 'Розвал-сходження',
+    },
+  },
+  {
+    id: 'gm_repair',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Instandsetzung',
+      en: 'Repair',
+      ru: 'Ремонт',
+      uk: 'Ремонт',
+    },
+  },
+  {
+    id: 'gm_repair_and_paint',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Instandsetzung und Lackierung',
+      en: 'Repair and painting',
+      ru: 'Ремонт и покраска',
+      uk: 'Ремонт і фарбування',
+    },
+  },
+  {
+    id: 'gm_panel_beating',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Ausbeulen',
+      en: 'Panel beating',
+      ru: 'Рихтовка',
+      uk: 'Рихтування',
+    },
+  },
+  {
+    id: 'gm_panel_beating_and_paint',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Ausbeulen und Lackierung',
+      en: 'Panel beating and painting',
+      ru: 'Рихтовка и покраска',
+      uk: 'Рихтування і фарбування',
+    },
+  },
+  {
+    id: 'gm_welding',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Schweißen',
+      en: 'Welding',
+      ru: 'Сварка',
+      uk: 'Зварювання',
+    },
+  },
+  {
+    id: 'gm_spot_repair',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Spot-Reparatur',
+      en: 'Spot repair',
+      ru: 'Точечный ремонт',
+      uk: 'Точковий ремонт',
+    },
+  },
+  {
+    id: 'gm_removal',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Entfernung',
+      en: 'Removal',
+      ru: 'Удаление',
+      uk: 'Видалення',
+    },
+  },
+  {
+    id: 'gm_dent_removal',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Beulenentfernung',
+      en: 'Dent removal',
+      ru: 'Удаление вмятин',
+      uk: 'Усунення вм’ятин',
+    },
+  },
+  {
+    id: 'gm_odour_removal',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Geruchsbeseitigung',
+      en: 'Odour removal',
+      ru: 'Удаление запахов',
+      uk: 'Усунення запахів',
+    },
+  },
+  {
+    id: 'gm_stain_removal',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Fleckenentfernung',
+      en: 'Stain removal',
+      ru: 'Удаление пятен',
+      uk: 'Виведення плям',
+    },
+  },
+  {
+    id: 'gm_contamination_removal',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Beseitigung von Verunreinigungen',
+      en: 'Removal of contamination',
+      ru: 'Устранение загрязнений',
+      uk: 'Усунення забруднень',
+    },
+  },
+  {
+    id: 'gm_fault_rectification',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Fehlerbehebung',
+      en: 'Fault correction',
+      ru: 'Устранение неполадок',
+      uk: 'Усунення несправностей',
+    },
+  },
+  {
+    id: 'gm_leak_sealing',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Abdichten des Flüssigkeitsaustritts',
+      en: 'Sealing of a fluid leak',
+      ru: 'Устранение течи',
+      uk: 'Усунення витоку рідини',
+    },
+  },
+  {
+    id: 'gm_dry_cleaning',
+    groupId: 'g_general',
+    subgroupId: null,
+    label: {
+      de: 'Chemische Reinigung',
+      en: 'Chemical deep cleaning',
+      ru: 'Химчистка',
+      uk: 'Хімчистка',
+    },
+  },
   {
     id: 'paint_local_up_to_30pct',
     groupId: 'g_body_exterior',
