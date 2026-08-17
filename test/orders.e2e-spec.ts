@@ -653,6 +653,66 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(res.body.breakdown.distanceFeeCents).toBe(0);
   });
 
+  /*
+   * The order page of a short job must not invent a distance.
+   *
+   * Inside the free radius the row bills zero kilometres whatever the trip was,
+   * so the measurement is not recoverable — and the detail used to add the
+   * radius back regardless. A customer who was quoted 1 km opened the order one
+   * minute later and read 10 km, on the page that itemises what they paid.
+   * Null is the only honest answer, and the billed figures carry the fee.
+   */
+  it('3d4. a short order reports no measured distance rather than the free radius', async () => {
+    const customer = await makeCustomer();
+    // ~1.1 km north: well inside the 10 km radius, and not zero.
+    await makeInspector(ORDER_LAT + 0.01, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+
+    const m = detail.body.money;
+    expect(m.freeRadiusKm).toBe(10);
+    expect(m.billedDistanceKm).toBe(0);
+    expect(m.distanceFeeCents).toBe(0);
+    expect(m.distanceKm).toBeNull();
+  });
+
+  /*
+   * One page, one basis. `duration_min` stores the BILLED minutes, the same
+   * quantity `distance_km` stores — but the detail derived the distance back to
+   * one direction and left the minutes alone, so an order 38 km away was shown
+   * as "38 km" beside "114 min". That reads as a traffic jam, not a return
+   * trip, and no arithmetic on the page recovers either fee.
+   */
+  it('3d5. the detail reports the distance and the minutes on the same basis', async () => {
+    const customer = await makeCustomer();
+    // ~22 km north — outside the free radius, so both measurements survive.
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+
+    const m = detail.body.money;
+    expect(m.returnTripFactor).toBe(2);
+    // Measured beside measured, billed beside billed.
+    expect(m.billedDistanceKm).toBeCloseTo((m.distanceKm - m.freeRadiusKm) * 2, 1);
+    expect(m.billedDurationMin).toBe(m.durationMin * 2);
+    // And the fee is charged on the billed quantities, which is what the page
+    // must put in the row labels for the column to add up.
+    expect(m.distanceFeeCents).toBe(
+      Math.round(m.billedDistanceKm * PLATFORM_SETTING_DEFAULTS.orderRatePerKmEur * 100),
+    );
+    expect(m.timeFeeCents).toBe(
+      Math.round(m.billedDurationMin * PLATFORM_SETTING_DEFAULTS.orderRatePerMinuteEur * 100),
+    );
+  });
+
   // The cap must refuse where the money is not yet committed. An order created
   // beyond it authorizes the customer's card and then waits the whole search
   // window for a cron to cancel it, because no inspector takes such a job.
@@ -908,6 +968,61 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     for (const row of rows.filter((r) => r.sourceCurrency !== 'EUR')) {
       expect(row.fxRate).toBeTruthy();
       expect(row.fxDate).toBeTruthy();
+    }
+  });
+
+  /*
+   * A regional free radius must reach the PRICE, not only the response.
+   *
+   * `resolveTariff` returned the resolved radius in `limits` and left the
+   * global value on the tariff — and the fare reads the tariff. So the row was
+   * loaded, `sources.freeRadiusKm` said 'zone', the quote echoed the global 10,
+   * and the fee did not move by a cent. The cap worked, because the caller
+   * reads THAT one out of `limits` by hand, which is exactly why nobody saw it.
+   *
+   * The test asserts the fee, never the echoed field: an assertion on
+   * `breakdown.freeRadiusKm` alone would have passed throughout.
+   */
+  it('3e12. a band free radius changes what the customer pays', async () => {
+    const customer = await makeCustomer();
+    // ~29 km of road north (22 km straight, times the detour factor): charged
+    // under the global 10 km radius, free under 40.
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
+    const zone = await prisma.pricingZone.findUnique({ where: { key: 'pl_60_75' } });
+    const previous = zone!.freeRadiusKm;
+    const spy = jest.spyOn(app.get(GeocodingService), 'countryCodeFor').mockResolvedValue('PL');
+
+    try {
+      const quote = async () =>
+        (
+          await request(app.getHttpServer())
+            .post('/api/v1/orders/quote')
+            .set('Authorization', `Bearer ${customer.token}`)
+            .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+            .expect(200)
+        ).body;
+
+      const charged = await quote();
+      expect(charged.breakdown.distanceFeeCents).toBeGreaterThan(0);
+
+      // No cache to bust: the band rows are read from the database on every
+      // quote, which is what makes an operator's edit take effect at once.
+      await prisma.pricingZone.update({
+        where: { key: 'pl_60_75' },
+        data: { freeRadiusKm: 40 },
+      });
+
+      const free = await quote();
+      expect(free.breakdown.freeRadiusKm).toBe(40);
+      expect(free.breakdown.chargeableDistanceKm).toBe(0);
+      expect(free.breakdown.distanceFeeCents).toBe(0);
+      expect(free.totalCents).toBeLessThan(charged.totalCents);
+    } finally {
+      await prisma.pricingZone.update({
+        where: { key: 'pl_60_75' },
+        data: { freeRadiusKm: previous },
+      });
+      spy.mockRestore();
     }
   });
 
