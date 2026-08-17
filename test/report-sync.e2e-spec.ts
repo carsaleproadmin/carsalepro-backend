@@ -291,7 +291,8 @@ describe('Report sync v2 (e2e)', () => {
     });
 
     it('rejects more photo metas than the cap allows', async () => {
-      const photos = Array.from({ length: 301 }, (_, i) => ({ kind: 'extra', position: i }));
+      // 601: one past the cap raised from 300 on 2026-08-17.
+      const photos = Array.from({ length: 601 }, (_, i) => ({ kind: 'extra', position: i }));
       await post(uniqueDeviceId(), {
         code: UUID_CODE,
         reportSchemaVersion: 1,
@@ -434,6 +435,92 @@ describe('Report sync v2 (e2e)', () => {
       const row = await prisma.report.findUnique({ where: { id: created.body.reportId } });
       const stored = row?.reportData as { thickness?: { medianUm?: number } };
       expect(stored.thickness?.medianUm).toBe(122);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The raised caps of 2026-08-17.
+  //
+  // The client could not save a report with many photographs. Every cap here is
+  // a RAISE, so an older app is unaffected in both directions and a newer app
+  // against an older API is the only failure mode — which the app now names
+  // instead of reporting as a rejected report.
+  // ---------------------------------------------------------------------------
+  describe('payload caps', () => {
+    const photoMetas = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        kind: 'exterior-extra',
+        position: i,
+        capturedAt: '2026-08-17T08:00:00.000Z',
+      }));
+
+    it('accepts 600 photo entries and 400 damages', async () => {
+      // 300 and 200 before. A hail car with a full walk-around reached both.
+      const res = await post(uniqueDeviceId(), {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: {
+          ...validReportData,
+          photos: photoMetas(600),
+          damages: Array.from({ length: 400 }, (_, i) => ({
+            id: `d${i}`,
+            partId: 'hood',
+            typeId: 'dent',
+            tier: 'T1',
+            hourlyRate: 174,
+          })),
+        },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it('still refuses one photo entry past the cap', async () => {
+      const res = await post(uniqueDeviceId(), {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: { ...validReportData, photos: photoMetas(601) },
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error ?? res.body.message?.error).toBe('invalid_report_data');
+    });
+
+    it('accepts a payload above the OLD 1 MiB cap', async () => {
+      // The number that actually bound. 600 photo entries plus 400 priced
+      // damages is about 600 KB, so the old ceiling was only four times the
+      // worst real report.
+      const filler = 'x'.repeat(900);
+      const res = await post(uniqueDeviceId(), {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: {
+          ...validReportData,
+          damages: Array.from({ length: 400 }, (_, i) => ({
+            id: `d${i}`,
+            partId: 'hood',
+            typeId: 'dent',
+            tier: 'T1',
+            hourlyRate: 174,
+            note: filler,
+          })),
+        },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it('refuses a payload past 4 MiB by NAME, and burns no quota', async () => {
+      // The app reads this code and answers "install the newest version",
+      // because every backend cap ships before the app that can exceed it.
+      const did = uniqueDeviceId();
+      const res = await post(did, {
+        code: UUID_CODE,
+        reportSchemaVersion: 1,
+        reportData: { ...validReportData, filler: 'x'.repeat(5 * 1024 * 1024) },
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error ?? res.body.message?.error).toBe('report_data_too_large');
+
+      const quota = await prisma.deviceQuota.findUnique({ where: { deviceId: did } });
+      expect(quota?.freeReportsUsed ?? 0).toBe(0);
     });
   });
 });

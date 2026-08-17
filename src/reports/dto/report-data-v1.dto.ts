@@ -207,7 +207,10 @@ export class ReportThicknessPanelDto {
  */
 export class ReportThicknessDto {
   @IsArray()
-  @ArrayMaxSize(60)
+  // 60 -> 120 on 2026-08-17. Thirteen guided stations plus the `extra_` ones an
+  // inspector adds on a hail car reached the old ceiling, and a payload the
+  // server refuses is a report that will not save.
+  @ArrayMaxSize(120)
   @ValidateNested({ each: true })
   @Type(() => ReportThicknessPanelDto)
   panels!: ReportThicknessPanelDto[];
@@ -232,6 +235,8 @@ export class ReportSignoffDto {
 
   @IsOptional() @IsString() @MaxLength(16) huValidUntil?: string;
   @IsOptional() @IsBoolean() obdPerformed?: boolean;
+  /** Make and model of the diagnostic tool (mobile v16, 2026-08-17). */
+  @IsOptional() @IsString() @MaxLength(120) obdDevice?: string;
   @IsOptional() @IsString() @MaxLength(2000) obdResult?: string;
   @IsOptional() @IsInt() @Min(1) @Max(5) rating?: number;
 
@@ -302,7 +307,8 @@ export class ReportDataV1Dto {
    */
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(200)
+  // 200 -> 400 on 2026-08-17. A hail car is the real case.
+  @ArrayMaxSize(400)
   @ValidateNested({ each: true })
   @Type(() => ReportDamageDto)
   damages?: ReportDamageDto[];
@@ -337,7 +343,10 @@ export class ReportDataV1Dto {
    */
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(300)
+  // 300 -> 600 on 2026-08-17, with the payload cap raised to 4 MiB to match.
+  // The client reported reports of 30, 50 and 100 photographs; the ceiling must
+  // sit far enough above the work that nobody meets it.
+  @ArrayMaxSize(600)
   @ValidateNested({ each: true })
   @Type(() => ReportPhotoMetaDto)
   photos?: ReportPhotoMetaDto[];

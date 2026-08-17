@@ -32,7 +32,7 @@ export async function createTestApp(
     rawBody: true,
     bodyParser: false,
   });
-  app.useBodyParser('json', { limit: '2mb' });
+  app.useBodyParser('json', { limit: '6mb' });
   app.useBodyParser('urlencoded', { extended: true, limit: '1mb' });
   app.useGlobalPipes(
     new ValidationPipe({

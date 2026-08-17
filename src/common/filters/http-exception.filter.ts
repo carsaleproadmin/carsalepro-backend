@@ -57,8 +57,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
-    const status =
-      exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+    // `body-parser` throws a plain `Error` with `status` and `type` set, not an
+    // `HttpException`, so a request body over the limit used to answer 500 —
+    // "the server has a problem" for something the CLIENT sent. The mobile app
+    // reads a 413 as "this build is newer than this API" and says so; a 500
+    // sends the inspector looking at their own report.
+    const bodyParserStatus = asBodyParserError(exception);
+    const status = bodyParserStatus
+        ? bodyParserStatus
+        : exception instanceof HttpException
+          ? exception.getStatus()
+          : HttpStatus.INTERNAL_SERVER_ERROR;
 
     let message: string | string[] = 'Internal server error';
     let errorName: string | Record<string, unknown> = 'InternalServerError';
@@ -160,4 +169,22 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     response.status(status).json(body);
   }
+}
+
+/**
+ * The HTTP status of a `body-parser` failure, or null.
+ *
+ * `body-parser` predates Nest and throws its own error shape: a plain `Error`
+ * carrying `status`, `statusCode` and `type` (`entity.too.large`,
+ * `entity.parse.failed`). Nest does not recognise it, so without this every
+ * oversize or malformed body was reported as an internal server error.
+ */
+function asBodyParserError(exception: unknown): number | null {
+  if (exception instanceof HttpException || typeof exception !== 'object' || exception === null) {
+    return null;
+  }
+  const e = exception as { type?: unknown; status?: unknown; statusCode?: unknown };
+  if (typeof e.type !== 'string' || !e.type.startsWith('entity.')) return null;
+  const status = typeof e.status === 'number' ? e.status : e.statusCode;
+  return typeof status === 'number' && status >= 400 && status < 500 ? status : null;
 }
