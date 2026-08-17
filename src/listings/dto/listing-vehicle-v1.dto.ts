@@ -103,7 +103,21 @@ export class ListingSelfDeclarationDto {
   @IsBoolean()
   importedVehicle?: boolean;
 
-  @ApiPropertyOptional({ example: ['non_smoker', 'garage_kept'], type: [String] })
+  /**
+   * An OPEN vocabulary with more than one writer, which is why it is validated
+   * as plain strings and not as an enum.
+   *
+   * The mobile app writes the inspector's condition indicators — five
+   * mutually exclusive groups, camelCase tokens, at most one per group
+   * (`carsalepro-mobile/lib/core/inspection/condition_indicators.dart`). The
+   * website's seller editor writes its own `seller_*` namespace into the same
+   * array. Each writer preserves the other's entries, because the report deep
+   * merge REPLACES an array wholesale.
+   *
+   * The example was `non_smoker` / `garage_kept` until 2026-08-18 and no
+   * client has ever sent those: the tokens are camelCase.
+   */
+  @ApiPropertyOptional({ example: ['nonSmoker', 'garageKept'], type: [String] })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(50)
