@@ -1,5 +1,14 @@
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Length,
+  Max,
+  Min,
+} from 'class-validator';
 
 const toInt = ({ value }: { value: unknown }) =>
   value === undefined || value === '' ? undefined : Number(value);
@@ -16,6 +25,13 @@ export class ListingQueryDto {
   @IsOptional() @IsString() make?: string;
   @IsOptional() @IsString() model?: string;
   @IsOptional() @IsString() city?: string;
+
+  /** ISO 3166-1 alpha-2, upper case. Matched exactly. */
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  country?: string;
   @IsOptional() @IsString() bodyType?: string;
   @IsOptional() @IsString() driveType?: string;
 
