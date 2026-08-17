@@ -336,8 +336,8 @@ export class ReportDataV1Dto {
   recipients?: ReportRecipientDto[];
 
   /**
-   * Cap 300: a thorough report now carries ~8 exterior + unlimited exterior
-   * extras + 12 interior + 13 thickness stations + 2 calibration shots + 4
+   * Cap 300: a thorough report now carries 17 exterior + unlimited exterior
+   * extras + 17 interior + 13 thickness stations + 2 calibration shots + 4
    * wheels + odometer/VIN/zero-proof + several photos per damage (~100–120
    * slots typical). 150 was within reach and a 400 here blocks Finish.
    */

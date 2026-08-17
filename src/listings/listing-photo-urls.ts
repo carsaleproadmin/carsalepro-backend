@@ -11,12 +11,21 @@ import { angleForKind, comparePhotoKinds } from '../catalog/catalog-photo-order'
  * and the showroom shows this many at most, so mirroring more would double the
  * storage of pictures nobody ever requests.
  *
- * Raised 20 -> 32 on 2026-08-10. The number is derived, not chosen: the manual
- * seller editor builds its guided slots straight from the catalog, and that is
- * now 17 exterior angles plus 12 interior ones = 29. At 20 the editor would
- * have offered nine slots the API answers with `photo_limit_reached`.
+ * Raised 20 -> 32 on 2026-08-10, and 32 -> 40 on 2026-08-17. The number is
+ * derived, not chosen: the manual seller editor builds its guided slots straight
+ * from the catalog, and that is 17 exterior angles plus the client's ordered 17
+ * interior ones = 34. At 20 the editor offered nine slots the API answered with
+ * `photo_limit_reached`, and at 32 the cabin expansion would have re-opened the
+ * same gap by five.
+ *
+ * **Any change to this number must widen `erasePublicPhotoObjects` too.** The
+ * mirrored subset is "the first MAX_LISTING_PHOTOS entries in manifest order", so
+ * moving the cap strands objects mirrored under the old one — a permanent,
+ * CDN-cached public photograph of a car whose owner asked to be erased. That
+ * function derives its keys from the WHOLE manifest for exactly this reason, so
+ * raising the cap needs no edit there; lowering it would.
  */
-export const MAX_LISTING_PHOTOS = 32;
+export const MAX_LISTING_PHOTOS = 40;
 
 /**
  * Where a photo's bytes live, and therefore how its URL is produced.

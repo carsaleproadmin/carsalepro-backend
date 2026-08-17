@@ -159,10 +159,12 @@ describe('manifestPhotoRefs', () => {
     ]);
   });
 
-  it('caps at 32, which is the 17 exterior + 12 interior guided slots plus room', () => {
+  it('caps at 40, which is the 17 exterior + 17 interior guided slots plus room', () => {
     // Derived, not chosen: the manual seller editor builds its slots from the
-    // catalog, so a smaller cap would advertise slots the API refuses.
-    expect(MAX_LISTING_PHOTOS).toBe(32);
-    expect(MAX_LISTING_PHOTOS).toBeGreaterThanOrEqual(17 + 12);
+    // catalog, so a smaller cap would advertise slots the API refuses. The cabin
+    // went from 12 slots to the client's ordered 17 on 2026-08-17, which is what
+    // took 32 below the guided count.
+    expect(MAX_LISTING_PHOTOS).toBe(40);
+    expect(MAX_LISTING_PHOTOS).toBeGreaterThanOrEqual(17 + 17);
   });
 });

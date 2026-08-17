@@ -57,10 +57,15 @@ export interface AngleDef {
    * Short capture instruction rendered under the angle label, as the third line
    * of the mobile capture screen's instruction box.
    *
-   * Three families, and the difference between them IS the instruction:
-   * the diagonals say to turn the near front wheel outward, the straight views
-   * say wheels square, and the boot/bonnet angles say what to open or lift.
-   * Every required exterior angle carries one.
+   * FIVE families, and the difference between them IS the instruction:
+   * the FRONT diagonals say to turn the near front wheel outward, every other
+   * flank view says wheels square, the boot/bonnet angles say what to open or
+   * lift, five cabin angles say to sit on the rear seat, and one says to
+   * photograph the keys even with no book.
+   *
+   * Every required exterior angle carries one. Six of the seventeen interior
+   * angles do — the other eleven are framed by their example thumbnail alone,
+   * which is the whole guidance a door card or a pedal box needs.
    */
   hint?: LocalizedLabel;
 }
@@ -269,14 +274,24 @@ const ANGLES: AngleDef[] = [
   //    matching setting change — old reports stay closable by construction.
   //  - `CATALOG_VERSION` deliberately stays '1'; see the note on that constant.
   //
-  // ALL required exterior angles carry a `hint`, and the hints fall into three
+  // ALL required exterior angles carry a `hint`, and the hints fall into
   // families that carry different guidance on purpose — that difference IS the
-  // instruction: diagonals say to turn the near front wheel outward, straight
-  // views say wheels square, and the boot/bonnet angles say what to open or
-  // lift. Four of the original eight shipped without any hint until 2026-08-05,
-  // so the capture screen showed no wheel guidance on half the walk-around
-  // (QA scenario 10); `catalog.i18n.spec.ts` and the mobile `catalog_test.dart`
-  // both pin the families so that cannot recur.
+  // instruction. Four of the original eight shipped without any hint until
+  // 2026-08-05, so the capture screen showed no wheel guidance on half the
+  // walk-around (QA scenario 10); `catalog.i18n.spec.ts` and the mobile
+  // `catalog_test.dart` both pin the families so that cannot recur.
+  //
+  // Only the two FRONT diagonals ask for the wheel to be turned out, and that
+  // boundary moved on 2026-08-17 at the client's request. On a rear three-quarter
+  // view the near front wheel is at the far end of the car and reads as a few
+  // pixels: turning it out shows nothing and spoils the stance. So
+  // `diag_rear_left` and `diag_rear_right` now carry the STRAIGHT family's text,
+  // byte-identical to `left`/`right`/`front`/`rear` — deliberately the same
+  // string, so `extract.mjs` emits no new translation unit and all 31 sidecars
+  // reuse a value they already hold. The client reported it against
+  // «Диагональ сзади-справа»; the mirror angle had the same defect and was
+  // corrected with it, because one flank telling the inspector the opposite of
+  // the other is worse than either instruction alone.
   //
   // The diagonal hint deliberately does NOT name a side ("near front wheel",
   // not "left front wheel"): on a diagonal the near wheel is the one closest to
@@ -328,11 +343,12 @@ const ANGLES: AngleDef[] = [
       ru: 'Диагональ сзади-слева',
       uk: 'Діагональ ззаду-зліва',
     },
+    // A REAR three-quarter view squares the wheels — see the family note above.
     hint: {
-      de: 'Schlagen Sie das Vorderrad nach außen ein.',
-      en: 'Turn the near front wheel outward.',
-      ru: 'Поверните переднее колесо наружу.',
-      uk: 'Поверніть переднє колесо назовні.',
+      de: 'Stellen Sie die Räder gerade.',
+      en: 'Keep the wheels straight.',
+      ru: 'Поставьте колёса прямо.',
+      uk: 'Поставте колеса прямо.',
     },
   },
   {
@@ -598,88 +614,74 @@ const ANGLES: AngleDef[] = [
       ru: 'Диагональ сзади-справа',
       uk: 'Діагональ ззаду-справа',
     },
+    // The angle the client reported on 2026-08-17 — see the family note above.
     hint: {
-      de: 'Schlagen Sie das Vorderrad nach außen ein.',
-      en: 'Turn the near front wheel outward.',
-      ru: 'Поверните переднее колесо наружу.',
-      uk: 'Поверніть переднє колесо назовні.',
+      de: 'Stellen Sie die Räder gerade.',
+      en: 'Keep the wheels straight.',
+      ru: 'Поставьте колёса прямо.',
+      uk: 'Поставте колеса прямо.',
     },
   },
+  // ---- Cabin: the seventeen angles the client dictated on 2026-08-17 --------
+  //
+  // Reference frames: `images/internal_ordered_numbered/1..17.jpg`, one numbered
+  // photograph per slot, and the ORDER is the deliverable — the backend e2e
+  // asserts it as a sequence and never as a set, exactly as it does for the
+  // exterior walk. It replaced a twelve-slot list this project had written. The
+  // walk is now door by door down the left flank (cabin, its door card, rear
+  // cabin, its door card), then the console worked through from the rear seat,
+  // then the cluster and the papers, then the same door-by-door walk down the
+  // right flank, and the luggage area closes it.
+  //
+  // THREE ids are reused rather than minted, because an angle id is persisted
+  // (mobile photo kinds `interior-<id>`, cloud slot keys) and renaming one
+  // orphans every shot already taken with it:
+  //  - `interior_front` and `interior_rear` become the LEFT views. Both were
+  //    unsided before, so every photograph under them still shows what its slot
+  //    now says.
+  //  - `interior_dashboard` keeps its id AND its label. Its reference frame is
+  //    the WHOLE dashboard, so calling it a centre console would make its own
+  //    example wrong; the console the client asked for by name is
+  //    `interior_head_unit` below.
+  //
+  // `interior_seats` and `interior_overview` were RETIRED here, at the client's
+  // request — neither is in his seventeen. A photograph taken under either still
+  // prints, because the mobile PDF builder appends photos whose angle id has left
+  // the catalog and `retiredAngleIds` keeps their caption, but the slot is gone
+  // from the editor so it can no longer be retaken. `CATALOG_VERSION` stays '1',
+  // so an installed build keeps its own bundle and meets this list only after an
+  // app update.
+  //
+  // Interior angles stay `required: false`: they carry no quality weight and are
+  // absent from `report-completeness.ts`, so seventeen of them cost nothing
+  // commercially. They DO raise the guided slot count from 29 to 34, which is
+  // why `MAX_LISTING_PHOTOS` moved with them — a cap below the number of
+  // photographs the app guides an inspector to take would strand the tail of
+  // every gallery.
+  //
+  // SIX carry a hint, which is new for this group. Five of them share ONE
+  // authored text under five keys — the same "identical on purpose" pattern as
+  // `trunk_left`/`trunk_right` — carrying the client's footnote: «Сидя на заднем
+  // сидении сделайте фото Руля, центральной консоли, Ручки коробки передач,
+  // центральной части подлокотника, магнитофон». It says where to STAND rather
+  // than what to do to the car, and it says "take", never "shoot": `shot` came
+  // back as a gunshot in nine locales and both repos' tests refuse the word.
   {
     id: 'interior_front',
     group: 'interior',
     order: 18,
     required: false,
     label: {
-      de: 'Innenraum vorne',
-      en: 'Interior front',
-      ru: 'Салон спереди',
-      uk: 'Салон спереду',
-    },
-  },
-  {
-    id: 'interior_rear',
-    group: 'interior',
-    order: 19,
-    required: false,
-    label: { de: 'Innenraum hinten', en: 'Interior rear', ru: 'Салон сзади', uk: 'Салон ззаду' },
-  },
-  {
-    id: 'interior_dashboard',
-    group: 'interior',
-    order: 20,
-    required: false,
-    label: {
-      de: 'Armaturenbrett',
-      en: 'Dashboard',
-      ru: 'Приборная панель',
-      uk: 'Приладова панель',
-    },
-  },
-  {
-    id: 'interior_boot',
-    group: 'interior',
-    order: 21,
-    required: false,
-    label: { de: 'Kofferraum', en: 'Boot / trunk', ru: 'Багажник', uk: 'Багажник' },
-  },
-  {
-    id: 'interior_seats',
-    group: 'interior',
-    order: 22,
-    required: false,
-    label: { de: 'Sitze', en: 'Seats', ru: 'Сиденья', uk: 'Сидіння' },
-  },
-  {
-    id: 'interior_steering_wheel',
-    group: 'interior',
-    order: 23,
-    required: false,
-    label: { de: 'Lenkrad', en: 'Steering wheel', ru: 'Руль', uk: 'Кермо' },
-  },
-  {
-    id: 'interior_pedals',
-    group: 'interior',
-    order: 24,
-    required: false,
-    label: { de: 'Pedalerie', en: 'Pedals', ru: 'Педали', uk: 'Педалі' },
-  },
-  {
-    id: 'interior_overview',
-    group: 'interior',
-    order: 25,
-    required: false,
-    label: {
-      de: 'Innenraum Gesamtübersicht',
-      en: 'Cabin overview',
-      ru: 'Салон — общий вид',
-      uk: 'Салон — загальний вигляд',
+      de: 'Innenraum vorne links',
+      en: 'Cabin, front left',
+      ru: 'Салон спереди слева',
+      uk: 'Салон спереду зліва',
     },
   },
   {
     id: 'interior_door_trim_fl',
     group: 'interior',
-    order: 26,
+    order: 19,
     required: false,
     label: {
       de: 'Türverkleidung vorne links',
@@ -689,21 +691,21 @@ const ANGLES: AngleDef[] = [
     },
   },
   {
-    id: 'interior_door_trim_fr',
+    id: 'interior_rear',
     group: 'interior',
-    order: 27,
+    order: 20,
     required: false,
     label: {
-      de: 'Türverkleidung vorne rechts',
-      en: 'Front right door trim',
-      ru: 'Обшивка двери передняя правая',
-      uk: 'Обшивка дверей передня права',
+      de: 'Innenraum hinten links',
+      en: 'Cabin, rear left',
+      ru: 'Салон сзади слева',
+      uk: 'Салон ззаду зліва',
     },
   },
   {
     id: 'interior_door_trim_rl',
     group: 'interior',
-    order: 28,
+    order: 21,
     required: false,
     label: {
       de: 'Türverkleidung hinten links',
@@ -713,9 +715,178 @@ const ANGLES: AngleDef[] = [
     },
   },
   {
-    id: 'interior_door_trim_rr',
+    id: 'interior_rear_armrest',
+    group: 'interior',
+    order: 22,
+    required: false,
+    label: {
+      de: 'Armlehne und Lüftung hinten',
+      en: 'Rear armrest and vents',
+      ru: 'Подлокотник и вентиляция',
+      uk: 'Підлокітник і вентиляція',
+    },
+    hint: {
+      de: 'Von der Rückbank aufnehmen.',
+      en: 'Take it from the rear seat.',
+      ru: 'Снимите с заднего сиденья.',
+      uk: 'Знімайте із заднього сидіння.',
+    },
+  },
+  {
+    id: 'interior_dashboard',
+    group: 'interior',
+    order: 23,
+    required: false,
+    label: {
+      de: 'Armaturenbrett',
+      en: 'Dashboard',
+      ru: 'Приборная панель',
+      uk: 'Приладова панель',
+    },
+    hint: {
+      de: 'Von der Rückbank aufnehmen.',
+      en: 'Take it from the rear seat.',
+      ru: 'Снимите с заднего сиденья.',
+      uk: 'Знімайте із заднього сидіння.',
+    },
+  },
+  {
+    id: 'interior_steering_wheel',
+    group: 'interior',
+    order: 24,
+    required: false,
+    label: { de: 'Lenkrad', en: 'Steering wheel', ru: 'Руль', uk: 'Кермо' },
+    hint: {
+      de: 'Von der Rückbank aufnehmen.',
+      en: 'Take it from the rear seat.',
+      ru: 'Снимите с заднего сиденья.',
+      uk: 'Знімайте із заднього сидіння.',
+    },
+  },
+  {
+    id: 'interior_head_unit',
+    group: 'interior',
+    order: 25,
+    required: false,
+    // NOT "head unit" in English: it is the pivot for 31 locales and came back
+    // as a body part. "Radio" is unambiguous everywhere.
+    label: {
+      de: 'Radio und Klimabedienteil',
+      en: 'Radio and climate control',
+      ru: 'Магнитола и климат-контроль',
+      uk: 'Магнітола і клімат-контроль',
+    },
+    hint: {
+      de: 'Von der Rückbank aufnehmen.',
+      en: 'Take it from the rear seat.',
+      ru: 'Снимите с заднего сиденья.',
+      uk: 'Знімайте із заднього сидіння.',
+    },
+  },
+  {
+    id: 'interior_gear_selector',
+    group: 'interior',
+    order: 26,
+    required: false,
+    label: {
+      de: 'Wählhebel',
+      en: 'Gear selector',
+      ru: 'Селектор передач',
+      uk: 'Селектор передач',
+    },
+    hint: {
+      de: 'Von der Rückbank aufnehmen.',
+      en: 'Take it from the rear seat.',
+      ru: 'Снимите с заднего сиденья.',
+      uk: 'Знімайте із заднього сидіння.',
+    },
+  },
+  {
+    id: 'interior_pedals',
+    group: 'interior',
+    order: 27,
+    required: false,
+    label: { de: 'Pedalerie', en: 'Pedals', ru: 'Педали', uk: 'Педалі' },
+  },
+  {
+    id: 'interior_instrument_cluster',
+    group: 'interior',
+    order: 28,
+    required: false,
+    // "engine on" belongs in the label because it is the state the photograph
+    // must show, not an action to take before it — a cold cluster hides every
+    // fault lamp. The client's own caption reads «Щиток приборов двигатель
+    // заведён».
+    label: {
+      de: 'Kombiinstrument, Motor an',
+      en: 'Instrument cluster, engine on',
+      ru: 'Щиток приборов, мотор запущен',
+      uk: 'Щиток приладів, двигун запущено',
+    },
+  },
+  {
+    id: 'interior_documents_keys',
     group: 'interior',
     order: 29,
+    required: false,
+    // "Documents", not "service book": the reference frame holds two owner's
+    // manuals and one key, and a great many cars carry no service book at all.
+    label: {
+      de: 'Unterlagen und Schlüssel',
+      en: 'Documents and keys',
+      ru: 'Документы и ключи',
+      uk: 'Документи та ключі',
+    },
+    // The client's own qualifier, «нет книги значит только ключи». It earns a
+    // hint because it changes what the inspector does: without it, a car with no
+    // service book leaves the slot empty.
+    hint: {
+      de: 'Auch ohne Serviceheft die Schlüssel fotografieren.',
+      en: 'Photograph the keys even if there is no book.',
+      ru: 'Если книги нет, снимите только ключи.',
+      uk: 'Якщо книги немає, зніміть лише ключі.',
+    },
+  },
+  {
+    id: 'interior_front_right',
+    group: 'interior',
+    order: 30,
+    required: false,
+    label: {
+      de: 'Innenraum vorne rechts',
+      en: 'Cabin, front right',
+      ru: 'Салон спереди справа',
+      uk: 'Салон спереду справа',
+    },
+  },
+  {
+    id: 'interior_door_trim_fr',
+    group: 'interior',
+    order: 31,
+    required: false,
+    label: {
+      de: 'Türverkleidung vorne rechts',
+      en: 'Front right door trim',
+      ru: 'Обшивка двери передняя правая',
+      uk: 'Обшивка дверей передня права',
+    },
+  },
+  {
+    id: 'interior_rear_right',
+    group: 'interior',
+    order: 32,
+    required: false,
+    label: {
+      de: 'Innenraum hinten rechts',
+      en: 'Cabin, rear right',
+      ru: 'Салон сзади справа',
+      uk: 'Салон ззаду справа',
+    },
+  },
+  {
+    id: 'interior_door_trim_rr',
+    group: 'interior',
+    order: 33,
     required: false,
     label: {
       de: 'Türverkleidung hinten rechts',
@@ -725,9 +896,27 @@ const ANGLES: AngleDef[] = [
     },
   },
   {
+    id: 'interior_boot',
+    group: 'interior',
+    order: 34,
+    required: false,
+    // "Luggage area", not "Boot / trunk". Two defects in one string: `boot` is
+    // the word the pivot renders as FOOTWEAR (the exterior angles already say
+    // "luggage area" for that reason), and a slash pair of English synonyms came
+    // back as the same word twice in eight locales («Bagażnik / bagażnik»,
+    // «Kofferbak / kofferbak»), untranslated in Turkish and half-translated in
+    // Czech.
+    label: {
+      de: 'Kofferraum',
+      en: 'Luggage area',
+      ru: 'Багажник',
+      uk: 'Багажник',
+    },
+  },
+  {
     id: 'wheel_fl',
     group: 'wheel',
-    order: 30,
+    order: 35,
     required: false,
     label: {
       de: 'Rad vorne links',
@@ -739,7 +928,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_fr',
     group: 'wheel',
-    order: 31,
+    order: 36,
     required: false,
     label: {
       de: 'Rad vorne rechts',
@@ -751,7 +940,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_rl',
     group: 'wheel',
-    order: 32,
+    order: 37,
     required: false,
     label: {
       de: 'Rad hinten links',
@@ -763,7 +952,7 @@ const ANGLES: AngleDef[] = [
   {
     id: 'wheel_rr',
     group: 'wheel',
-    order: 33,
+    order: 38,
     required: false,
     label: {
       de: 'Rad hinten rechts',
@@ -775,14 +964,14 @@ const ANGLES: AngleDef[] = [
   {
     id: 'odometer',
     group: 'misc',
-    order: 34,
+    order: 39,
     required: false,
     label: { de: 'Kilometerstand', en: 'Odometer', ru: 'Одометр', uk: 'Одометр' },
   },
   {
     id: 'vin_plate',
     group: 'misc',
-    order: 35,
+    order: 40,
     required: false,
     label: { de: 'FIN-Schild', en: 'VIN plate', ru: 'Табличка VIN', uk: 'Табличка VIN' },
   },
