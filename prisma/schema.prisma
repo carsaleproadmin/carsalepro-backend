@@ -220,7 +220,18 @@ model InspectorProfile {
   contactTelegram String?                                @map("contact_telegram")
   baseAddress     String                                 @map("base_address")
   location        Unsupported("geography(Point, 4326)")?
-  searchRadiusKm  Int                                    @default(50) @map("search_radius_km")
+  /// How far this inspector accepts jobs, in kilometres, straight-line.
+  ///
+  /// Read by `GeoService.findNearestInspectors`, where it narrows the platform
+  /// ceiling `expertSearchRadiusKm` — the tighter of the two decides. Until
+  /// DEN-113 nothing read it at all: the field was editable, was shown in the
+  /// profile form, and changed nothing.
+  ///
+  /// The default follows the platform ceiling rather than sitting under it. A
+  /// new inspector who has not answered the question keeps the reach the
+  /// platform had before the field went live; somebody who does not want a
+  /// five-hour drive now has a control that works.
+  searchRadiusKm  Int                                    @default(300) @map("search_radius_km")
   available       Boolean                                @default(true)
   stripeAccountId String?                                @unique @map("stripe_account_id")
   stripeOnboarded Boolean                                @default(false) @map("stripe_onboarded")
@@ -735,6 +746,12 @@ model Listing {
   package                String        @default("standard") // standard | gold
   priceCents             Int           @map("price_cents")
   city                   String
+  /// ISO 3166-1 alpha-2, upper case. The showroom is worldwide, so the search
+  /// starts with the country — and a city name alone cannot answer it (there is
+  /// a Frankfurt in Germany and a Frankfort in Kentucky). Nullable because every
+  /// listing written before this column exists has no country to claim, and a
+  /// guessed one filters a real car out of a real search.
+  countryCode            String?       @map("country_code") @db.VarChar(2)
   plz                    String?
   description            String?
   contactPhone           String?       @map("contact_phone")
@@ -776,6 +793,7 @@ model Listing {
   @@index([status, package, publishedAt])
   @@index([sellerId])
   @@index([make, model, year])
+  @@index([countryCode, city])
   @@map("listing")
 }
 

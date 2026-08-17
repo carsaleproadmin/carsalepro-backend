@@ -26,6 +26,12 @@ export interface NearestInspector {
 export interface NearestInspectorQuery {
   lat: number;
   lng: number;
+  /**
+   * The PLATFORM ceiling (`expertSearchRadiusKm`), not the final reach: each
+   * inspector's own `searchRadiusKm` narrows it further, and the tighter of the
+   * two decides. Raising this alone widens nobody's radius past what they
+   * accepted (DEN-113).
+   */
   radiusKm: number;
   limit: number;
   /** Inspector userIds already offered or declined for this order. */
@@ -124,10 +130,25 @@ export class GeoService {
         AND ip.available = true
         AND ip.location IS NOT NULL
         ${exclusion}
+        -- DEN-113. TWO radii, and the tighter one wins.
+        --
+        -- expertSearchRadiusKm is the platform ceiling: how far the business
+        -- is willing to send anyone. inspector_profile.search_radius_km is
+        -- how far THIS inspector is willing to drive, and until now nothing
+        -- read it — the field was editable, was shown in the profile form, and
+        -- decided nothing. At a 50 km ceiling that was a small lie. At 300 it
+        -- means offering somebody a five-hour drive they never agreed to, one
+        -- candidate at a time, against a six-hour search window.
+        --
+        -- LEAST rather than a second ST_DWithin, so the geography index is
+        -- consulted once. COALESCE falls back to the PLATFORM radius: the
+        -- column is NOT NULL today, and if that ever changes, "this inspector
+        -- has stated nothing" must mean the old behaviour, not a radius of
+        -- zero that removes them from every search without a word.
         AND ST_DWithin(
           ip.location,
           ST_SetSRID(ST_MakePoint(${q.lng}, ${q.lat}), 4326)::geography,
-          ${radiusM}
+          LEAST(${radiusM}, COALESCE(ip.search_radius_km * 1000, ${radiusM}))
         )
       ORDER BY ip.location <-> ST_SetSRID(ST_MakePoint(${q.lng}, ${q.lat}), 4326)::geography
       LIMIT ${q.limit}
