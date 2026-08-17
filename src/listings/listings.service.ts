@@ -151,6 +151,7 @@ export class ListingsService {
         package: 'standard',
         priceCents: dto.priceCents ?? 0,
         city: dto.city ?? '',
+        countryCode: dto.countryCode ?? null,
         plz: dto.plz ?? null,
         description: dto.description ?? null,
         contactPhone: dto.contactPhone ?? null,
@@ -226,6 +227,7 @@ export class ListingsService {
       data: {
         ...(dto.priceCents !== undefined ? { priceCents: dto.priceCents } : {}),
         ...(dto.city !== undefined ? { city: dto.city } : {}),
+        ...(dto.countryCode !== undefined ? { countryCode: dto.countryCode } : {}),
         ...(dto.plz !== undefined ? { plz: dto.plz } : {}),
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.contactPhone !== undefined ? { contactPhone: dto.contactPhone } : {}),
@@ -636,6 +638,7 @@ export class ListingsService {
       package: l.package,
       priceCents: l.priceCents,
       city: l.city,
+      countryCode: l.countryCode,
       plz: l.plz,
       description: l.description,
       // Read from the listing's own columns: for a manual listing there is no

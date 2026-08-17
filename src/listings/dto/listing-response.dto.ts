@@ -38,6 +38,13 @@ export class MyListingItemDto {
   @ApiProperty({ example: 'Berlin' })
   city!: string;
 
+  @ApiProperty({
+    example: 'DE',
+    nullable: true,
+    description: 'ISO 3166-1 alpha-2. Null for a listing filed before the field existed.',
+  })
+  countryCode!: string | null;
+
   @ApiProperty({ example: '10115', nullable: true })
   plz!: string | null;
 
