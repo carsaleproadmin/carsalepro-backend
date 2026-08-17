@@ -131,6 +131,11 @@ describe('Catalog (e2e)', () => {
       version: string;
       angles: Angle[];
       parts: Part[];
+      // The register labels are read by the pivot-word guard: a part or a damage
+      // type is printed in the report a buyer reads, so an ambiguous English
+      // string there is the same correctness bug as one on an angle.
+      damageTypes: Array<{ id: string; label: Label }>;
+      repairMethods: Array<{ id: string; label: Label }>;
       thicknessPanels: ThicknessPanel[];
     };
   };
@@ -402,32 +407,95 @@ describe('Catalog (e2e)', () => {
     /**
      * English is the PIVOT for the 26 machine-translated locales, so an
      * ambiguous English word is a correctness bug rather than a style one.
-     * Every word below shipped once during this cycle and came back wrong in a
-     * double-digit number of languages: "boot" as footwear (cs "kopačka",
-     * pl "but", ja "ブーツ"), "shot" as a gunshot (pl "strzał", da "bredskud"),
-     * and — when they stand alone — "bay" as a coastal bay in all 26 and "hood"
-     * as a garment hood (el "κουκούλα", pl "kaptur"). The compounds
-     * "engine bay" and "engine hood" translate correctly everywhere.
+     * Every word below shipped once and came back wrong in a double-digit number
+     * of languages: "boot" as footwear (cs "kopačka", pl "but", ja "ブーツ"),
+     * "shot" as a gunshot (pl "strzał", da "bredskud"), and — when they stand
+     * alone — "bay" as a coastal bay in all 26 and "hood" as a garment hood
+     * (el "κουκούλα", pl "kaptur").
+     *
+     * The 2026-08-17 additions, each found in shipped output:
+     *  - "shoot" — the same gunshot as "shot", and refusing one inflection and
+     *    not the other is not a guard. `hood_underside.hint` read "Shoot it from
+     *    below." and meant FIRE A WEAPON in at least eleven locales.
+     *  - "gaiter" — a legging. The rubber cover on a CV joint came back as a spat
+     *    (fa), a walker (sv), a garland (it), a squid (pt) and a GUIDED MISSILE
+     *    (zh). The register says "bellows" now.
+     *  - "undercarriage" — aircraft landing gear (zh 起落架, ja 降着装置,
+     *    ko 착륙장치, pt "trem de pouso"). It says "underbody".
+     *  - "pinch" — to pin something (pl "przypiąć", ko "핀으로 눌러").
+     *  - "play" unless qualified — a GAME in Georgian. Seven suspension and
+     *    interior entries say "free play".
+     *  - "plate" unless qualified — the LICENCE plate (da "VIN-nummerplade",
+     *    zh VIN车牌, it "Targa", es "Matrícula"). The VIN one is a "data plate".
+     *  - "gauge" unless qualified — the railway track gauge (zh 轨距, ko 궤간).
      */
-    it('no English angle string uses a word the translation pivot mangles', async () => {
+    const BANNED_OUTRIGHT = [
+      'boot',
+      'shot',
+      'shoot',
+      'shooting',
+      'gaiter',
+      'undercarriage',
+      'pinch',
+    ];
+    /** Safe only behind a qualifier, and the qualifier differs per word. */
+    const QUALIFIERS: Record<string, string[]> = {
+      bay: ['engine'],
+      hood: ['engine'],
+      play: ['free'],
+      // `number plate` and `scuff plate` are correct: there it IS that plate.
+      plate: ['data', 'underbody', 'number', 'scuff'],
+      gauge: ['thickness', 'paint'],
+    };
+
+    it('no English catalog string uses a word the translation pivot mangles', async () => {
       const catalog = await getCatalog();
-      // Widened from `exterior` to EVERY angle on 2026-08-17, together with the
-      // seven new cabin labels. It had been exterior-only, and `interior_boot`
-      // was reading "Boot / trunk" — the very word this test refuses, plus a
-      // slash pair of synonyms that came back as the same word twice in eight
-      // locales, untranslated in Turkish and half-translated in Czech. It is
-      // "Luggage area" now, matching the exterior angles.
-      for (const angle of catalog.angles) {
-        const en = `${angle.label.en ?? ''} ${angle.hint?.en ?? ''}`.toLowerCase();
+      // Widened on 2026-08-17 from the exterior angles to EVERY angle AND every
+      // register label. It had been exterior-only, and `interior_boot` was
+      // reading "Boot / trunk" — the very word this test refuses — while the
+      // registers carried a guided missile and a squid. A part or a damage type is
+      // printed in the report a buyer reads, so it is in scope.
+      const subjects: Array<[string, string]> = [
+        ...catalog.angles.map(
+          (a) =>
+            [`angle ${a.id}`, `${a.label.en ?? ''} ${a.hint?.en ?? ''}`] as [string, string],
+        ),
+        ...catalog.parts.map((p) => [`part ${p.id}`, p.label.en ?? ''] as [string, string]),
+        ...catalog.damageTypes.map(
+          (d) => [`damageType ${d.id}`, d.label.en ?? ''] as [string, string],
+        ),
+        ...catalog.repairMethods.map(
+          (m) => [`repairMethod ${m.id}`, m.label.en ?? ''] as [string, string],
+        ),
+      ];
+
+      for (const [subject, value] of subjects) {
+        const en = value.toLowerCase();
         const words = en.split(/[^a-z]+/);
-        expect(words).not.toContain('boot');
-        expect(words).not.toContain('shot');
-        for (const word of ['bay', 'hood']) {
-          for (const match of en.matchAll(new RegExp(`(\\w+) ${word}`, 'g'))) {
-            expect(match[1]).toBe('engine');
+        for (const word of BANNED_OUTRIGHT) {
+          expect({ subject, word, banned: words.includes(word) }).toEqual({
+            subject,
+            word,
+            banned: false,
+          });
+        }
+        for (const [word, allowed] of Object.entries(QUALIFIERS)) {
+          if (!words.includes(word)) continue;
+          // A hyphen qualifies as well as a space: the register writes
+          // "Number-plate light", which a space-only match calls a BARE "plate".
+          const matches = [...en.matchAll(new RegExp(`([a-z]+)[ -]${word}`, 'g'))];
+          expect({ subject, word, qualified: matches.length > 0 }).toEqual({
+            subject,
+            word,
+            qualified: true,
+          });
+          for (const match of matches) {
+            expect({ subject, word, qualifier: match[1] }).toEqual({
+              subject,
+              word,
+              qualifier: expect.stringMatching(new RegExp(`^(${allowed.join('|')})$`)),
+            });
           }
-          // A bare occurrence with nothing before it would slip past the loop.
-          expect(en.startsWith(`${word} `)).toBe(false);
         }
       }
     });
