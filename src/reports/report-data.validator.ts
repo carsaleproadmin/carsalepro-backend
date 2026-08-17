@@ -3,8 +3,16 @@ import { plainToInstance } from 'class-transformer';
 import { validateSync, ValidationError } from 'class-validator';
 import { ReportDataV1Dto } from './dto/report-data-v1.dto';
 
-/** Serialized payload cap — a full 98-item report with damages is ~50–150 KB. */
-const MAX_REPORT_DATA_BYTES = 1024 * 1024;
+/**
+ * Serialized payload cap.
+ *
+ * A full report with damages is ~50-150 KB, and 600 photo entries plus 400
+ * priced damages is about 600 KB. Raised 1 MiB -> 4 MiB on 2026-08-17: the old
+ * ceiling was only four times the worst real report, and a payload the server
+ * refuses is a report the inspector cannot save. The body-parser limit in
+ * `main.ts` must stay strictly above this.
+ */
+const MAX_REPORT_DATA_BYTES = 4 * 1024 * 1024;
 
 /**
  * Queryable columns synced from a validated payload onto the Report row.

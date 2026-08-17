@@ -112,7 +112,13 @@ export class ReportsController {
   }
 
   @Post(':id/photos/upload')
-  @Throttle({ default: { limit: 40, ttl: 60_000 } })
+  // 40 -> 120 per minute on 2026-08-17. This is NOT a concurrency grant: the
+  // app uploads photographs strictly sequentially (`sync_service.dart`), one
+  // request at a time. At 40 a 100-photo report hit 429 on the 41st photograph
+  // and the row sat `pending` until the next Finish press or app resume, so the
+  // cloud copy never completed. Still bounded by 15 MB per file, one file per
+  // request, per-device keying and the two-transform image semaphore.
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),

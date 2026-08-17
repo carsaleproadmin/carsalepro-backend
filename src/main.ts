@@ -20,7 +20,11 @@ async function bootstrap(): Promise<void> {
     rawBody: true,
     bodyParser: false,
   });
-  app.useBodyParser('json', { limit: '2mb' });
+  // Strictly above MAX_REPORT_DATA_BYTES (4 MiB) in report-data.validator.ts,
+  // so an oversize report is refused with a named 400 rather than a raw 413.
+  // Photographs and the PDF never travel in this body: photos are multipart and
+  // the PDF goes to a presigned URL.
+  app.useBodyParser('json', { limit: '6mb' });
   app.useBodyParser('urlencoded', { extended: true, limit: '1mb' });
 
   const config = app.get(ConfigService<AppConfig, true>);

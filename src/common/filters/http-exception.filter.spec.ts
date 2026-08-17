@@ -114,4 +114,41 @@ describe('AllExceptionsFilter', () => {
     expect(body.error).toEqual({ code: 'internal_error', message: 'Internal server error' });
     expect(JSON.stringify(body)).not.toContain('hunter2');
   });
+
+  // `body-parser` predates Nest and throws a plain `Error` with `status` and
+  // `type` set. Nest did not recognise it, so a request body over the limit
+  // answered 500 — "the server has a problem" for something the client sent.
+  // The mobile app reads a 413 as "this build is newer than this API" and says
+  // so; a 500 sends the inspector looking at their own report.
+  it('answers 413 for a body over the parser limit, not 500', () => {
+    const tooLarge = Object.assign(new Error('request entity too large'), {
+      type: 'entity.too.large',
+      status: 413,
+      statusCode: 413,
+      expected: 9_000_000,
+      limit: 6_291_456,
+    });
+
+    const { status, body } = render(tooLarge);
+
+    expect(status).toBe(413);
+    // Still masked: a 4xx from the parser carries no detail worth leaking, and
+    // the status IS the message.
+    expect(JSON.stringify(body)).not.toContain('9000000');
+  });
+
+  it('answers 400 for a body that is not valid JSON', () => {
+    const badJson = Object.assign(new Error('Unexpected token } in JSON'), {
+      type: 'entity.parse.failed',
+      status: 400,
+      statusCode: 400,
+    });
+
+    expect(render(badJson).status).toBe(400);
+  });
+
+  it('does not mistake an ordinary error for a parser error', () => {
+    const other = Object.assign(new Error('boom'), { status: 400 });
+    expect(render(other).status).toBe(500);
+  });
 });
