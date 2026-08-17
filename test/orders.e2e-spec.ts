@@ -133,7 +133,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   async function makeInspector(
     lat: number,
     lng: number,
-    opts: { name?: string; company?: string } = {},
+    opts: { name?: string; company?: string; searchRadiusKm?: number } = {},
   ): Promise<Registered> {
     const u = await registerUser(app, 'insp');
     createdUserIds.add(u.userId);
@@ -146,7 +146,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         userId: u.userId,
         companyName: opts.company ?? 'KFZ Test GmbH',
         baseAddress: 'Teststraße 1, Berlin',
-        searchRadiusKm: 50,
+        // The inspector's OWN reach, honoured since DEN-113. It defaults wide
+        // here so a spec that says nothing about radii is testing the platform
+        // ceiling, which is what most of them mean.
+        searchRadiusKm: opts.searchRadiusKm ?? 300,
         available: true,
         stripeOnboarded: true,
       },
@@ -261,7 +264,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   // ============================================================
   it('2. quote with no inspector in range returns available:false + creates a WaitlistEntry', async () => {
     const customer = await makeCustomer();
-    // Inspector far away (Munich, ~500km) — outside the 50km radius.
+    // Inspector far away (Munich, ~500km) — outside the platform ceiling.
     await makeInspector(48.137, 11.575);
 
     const res = await request(app.getHttpServer())
@@ -312,6 +315,37 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(res.body.waitlisted).toBe(false);
     const after = await prisma.waitlistEntry.findMany({ select: { id: true } });
     expect(after.filter((e) => !before.has(e.id))).toEqual([]);
+  });
+
+  // ============================================================
+  // 2e. DEN-113 — the inspector's own radius narrows the platform ceiling
+  // ============================================================
+  it("2e. an inspector inside the platform ceiling but outside their OWN radius is not a candidate", async () => {
+    const customer = await makeCustomer();
+    createdWaitlistEmails.add(customer.email);
+    // ~78 km north: well inside the 300 km ceiling, well outside a 50 km reach.
+    await makeInspector(ORDER_LAT + 0.7, ORDER_LNG, { searchRadiusKm: 50 });
+
+    const refused = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    // Not "too far" — the platform serves this distance. Nobody accepts it.
+    expect(refused.body.available).toBe(false);
+    expect(refused.body.refusal).toBe('no_coverage');
+
+    // The SAME inspector, at the same place, once they say they drive it.
+    await prisma.inspectorProfile.updateMany({ data: { searchRadiusKm: 100 } });
+
+    const offered = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    expect(offered.body.available).toBe(true);
   });
 
   // ============================================================
@@ -751,7 +785,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       // A distinct code from no_coverage: the UI says different things.
       expect(create.body.error.code).toBe('distance_cap_exceeded');
       // And the shipped cap is the owner's 100 km, not whatever is in the file.
-      expect(PLATFORM_SETTING_DEFAULTS.orderCapKm).toBe(100);
+      expect(PLATFORM_SETTING_DEFAULTS.orderCapKm).toBe(300);
     } finally {
       await tight.restore();
       tariff = await pinTariff(app);

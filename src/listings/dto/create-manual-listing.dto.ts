@@ -1,10 +1,11 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsEmail,
   IsInt,
   IsOptional,
   IsString,
+  Length,
   MaxLength,
   Min,
   ValidateNested,
@@ -30,6 +31,17 @@ export class CreateManualListingDto {
   @IsString()
   @MaxLength(120)
   city?: string;
+
+  @ApiPropertyOptional({
+    example: 'DE',
+    description:
+      'ISO 3166-1 alpha-2 country of the vehicle, upper case. The showroom search starts with it.',
+  })
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  countryCode?: string;
 
   @ApiPropertyOptional({ example: '10115' })
   @IsOptional()
