@@ -897,7 +897,7 @@ describe('Listings (e2e)', () => {
       expect(listed.body.items).toHaveLength(2);
       // Read from the constant: the seller UI renders this number as its "n of
       // max" hint, and the cap is derived from the catalog's guided slot count
-      // (17 exterior + 12 interior), so it moves when the catalog does.
+      // (17 exterior + 17 interior), so it moves when the catalog does.
       expect(listed.body.max).toBe(MAX_LISTING_PHOTOS);
       expect(listed.body.items[0].id).toBe(first.body.id);
 
@@ -971,15 +971,16 @@ describe('Listings (e2e)', () => {
 
     it('19b. the cap leaves room for every guided slot the editor offers', async () => {
       // The manual editor builds its slots straight from the catalog: 17
-      // exterior angles plus 12 interior ones. A cap below that would advertise
+      // exterior angles plus 17 interior ones. A cap below that would advertise
       // slots the API answers with `photo_limit_reached`, which is how a seller
-      // discovers the mismatch.
+      // discovers the mismatch — and it is exactly what the cabin expansion of
+      // 2026-08-17 would have done at the old cap of 32.
       const res = await request(app.getHttpServer()).get('/catalog').expect(200);
       const angles = res.body.angles as { group: string }[];
       const guided =
         angles.filter((a) => a.group === 'exterior').length +
         angles.filter((a) => a.group === 'interior').length;
-      expect(guided).toBe(29);
+      expect(guided).toBe(34);
       expect(MAX_LISTING_PHOTOS).toBeGreaterThanOrEqual(guided);
     });
 

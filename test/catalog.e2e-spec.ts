@@ -31,22 +31,43 @@ const REQUIRED_EXTERIOR_ORDER = [
 ];
 
 /**
- * Every required exterior angle carries a hint, and the hints fall into THREE
- * families that say different things — that difference is the instruction.
- * On a diagonal the near front wheel is turned outward so the rim reads; on a
- * straight view the wheels are square; on a boot or bonnet angle nothing is
- * visible until something is opened or lifted. QA scenario 10 checks exactly
- * that, which is why the four straight angles that once shipped with no hint at
- * all are no longer allowed to be empty — and why the nine added in August are
- * not allowed to inherit a wheel-position hint that makes no sense for them.
+ * The hints fall into FAMILIES that say different things — that difference is
+ * the instruction. On a FRONT diagonal the near front wheel is turned outward so
+ * the rim reads; on every other flank view the wheels are square; on a boot or
+ * bonnet angle nothing is visible until something is opened or lifted; five
+ * cabin angles are shot from the rear seat, because the console cannot be framed
+ * from the driver's door. QA scenario 10 checks exactly that, which is why the
+ * four straight angles that once shipped with no hint at all are no longer
+ * allowed to be empty — and why the nine added in August are not allowed to
+ * inherit a wheel-position hint that makes no sense for them.
+ *
+ * The diagonal/straight BOUNDARY moved on 2026-08-17. Both REAR diagonals now
+ * square the wheels: on a rear three-quarter view the near front wheel is at the
+ * far end of the car, so turning it out shows nothing and spoils the stance. The
+ * client reported it against the rear-right angle and the rear-left had the same
+ * defect. The two now hold the straight family's text BYTE-IDENTICALLY, on
+ * purpose — that is what stops the change creating a translation unit in each of
+ * the 31 sidecars.
  */
-const DIAGONAL_ANGLES = [
-  'diag_front_left',
-  'diag_front_right',
-  'diag_rear_right',
+const OUTWARD_WHEEL_ANGLES = ['diag_front_left', 'diag_front_right'];
+const WHEELS_SQUARE_ANGLES = [
+  'left',
+  'right',
+  'front',
+  'rear',
   'diag_rear_left',
+  'diag_rear_right',
 ];
-const STRAIGHT_ANGLES = ['left', 'right', 'front', 'rear'];
+/** One authored text under five keys — the client's footnote of 2026-08-17. */
+const REAR_SEAT_ANGLES = [
+  'interior_rear_armrest',
+  'interior_dashboard',
+  'interior_steering_wheel',
+  'interior_head_unit',
+  'interior_gear_selector',
+];
+/** The only other hinted interior angle: «нет книги значит только ключи». */
+const DOCUMENTS_ANGLES = ['interior_documents_keys'];
 /** The luggage-compartment and engine-bay angles added on 2026-08-10. */
 const OPENING_ANGLES = [
   'trunk_open',
@@ -59,7 +80,13 @@ const OPENING_ANGLES = [
   'engine_bay_left',
   'engine_bay_right',
 ];
-const HINTED_ANGLES = [...DIAGONAL_ANGLES, ...STRAIGHT_ANGLES, ...OPENING_ANGLES];
+const HINTED_ANGLES = [
+  ...OUTWARD_WHEEL_ANGLES,
+  ...WHEELS_SQUARE_ANGLES,
+  ...OPENING_ANGLES,
+  ...REAR_SEAT_ANGLES,
+  ...DOCUMENTS_ANGLES,
+];
 
 interface Label {
   de?: string;
@@ -113,8 +140,9 @@ describe('Catalog (e2e)', () => {
     expect(res.body.version).toBeDefined();
     expect(Array.isArray(res.body.angles)).toBe(true);
     // Exact, not a floor: a count that can only go up catches nothing, and this
-    // one has moved twice (26 -> 35 on 2026-08-10).
-    expect(res.body.angles.length).toBe(35);
+    // one has moved three times (26 -> 35 on 2026-08-10, 35 -> 40 on 2026-08-17
+    // when the cabin went from 12 slots to the client's ordered 17).
+    expect(res.body.angles.length).toBe(40);
     expect(Array.isArray(res.body.kstCodes)).toBe(true);
     expect(res.body.kstCodes.length).toBe(68);
     expect(Array.isArray(res.body.checklist)).toBe(true);
@@ -275,10 +303,16 @@ describe('Catalog (e2e)', () => {
       }
     });
 
-    it('exposes a four-locale hint on every required exterior angle', async () => {
+    it('exposes a four-locale hint on every angle that declares a family', async () => {
       const catalog = await getCatalog();
       const hinted = catalog.angles.filter((a) => a.hint);
+      // Every hint belongs to a declared family and nothing else carries one.
+      // An angle that acquires a hint outside a family would show guidance that
+      // does not apply to it, which is worse than showing none: wheels, paint
+      // stations, the odometer, the VIN plate and eleven of the seventeen cabin
+      // angles are framed by their example thumbnail alone.
       expect(hinted.map((a) => a.id).sort()).toEqual([...HINTED_ANGLES].sort());
+      expect(hinted).toHaveLength(23);
       for (const angle of hinted) {
         expect(angle.hint?.de).toBeTruthy();
         expect(angle.hint?.en).toBeTruthy();
@@ -287,46 +321,82 @@ describe('Catalog (e2e)', () => {
       }
     });
 
-    it('gives diagonals and straight views different wheel guidance', async () => {
+    it('only the FRONT diagonals ask for the wheel to be turned out', async () => {
       const catalog = await getCatalog();
       const hintOf = (id: string) => catalog.angles.find((a) => a.id === id)?.hint;
 
-      // Diagonals: turn the near front wheel out. Straight views: wheels square.
+      // Front diagonals: turn the near front wheel out. Every other flank view,
+      // the two rear diagonals included since 2026-08-17: wheels square.
       // Asserted per locale, because a half-translated hint is what QA sees.
-      for (const id of DIAGONAL_ANGLES) {
+      for (const id of OUTWARD_WHEEL_ANGLES) {
         expect(hintOf(id)?.de).toContain('Vorderrad');
         expect(hintOf(id)?.en?.toLowerCase()).toContain('outward');
         expect(hintOf(id)?.ru).toContain('наружу');
         expect(hintOf(id)?.uk).toContain('назовні');
       }
-      for (const id of STRAIGHT_ANGLES) {
+      for (const id of WHEELS_SQUARE_ANGLES) {
         expect(hintOf(id)?.de).toContain('gerade');
         expect(hintOf(id)?.en?.toLowerCase()).toContain('straight');
         expect(hintOf(id)?.ru).toContain('прямо');
         expect(hintOf(id)?.uk).toContain('прямо');
       }
 
-      // The three sets must not collide — the whole point of scenario 10 is
-      // that an inspector can tell from the instruction which shot they are on.
-      const diagonalTexts = new Set(DIAGONAL_ANGLES.map((id) => hintOf(id)?.en));
-      const straightTexts = new Set(STRAIGHT_ANGLES.map((id) => hintOf(id)?.en));
-      const openingTexts = new Set(OPENING_ANGLES.map((id) => hintOf(id)?.en));
-      for (const text of diagonalTexts) {
-        expect(straightTexts.has(text)).toBe(false);
-        expect(openingTexts.has(text)).toBe(false);
+      // The rear pair must hold the straight text BYTE-IDENTICALLY, in all four
+      // hand-authored locales. Same string means `extract.mjs` emits no new
+      // translation unit and every sidecar reuses a value it already holds; a
+      // reworded near-duplicate would silently cost 31 hand translations.
+      for (const id of ['diag_rear_left', 'diag_rear_right']) {
+        expect(hintOf(id)).toEqual(hintOf('left'));
       }
-      for (const text of straightTexts) {
-        expect(openingTexts.has(text)).toBe(false);
+    });
+
+    it('the families do not collide, so a hint names the shot it is on', async () => {
+      const catalog = await getCatalog();
+      const hintOf = (id: string) => catalog.angles.find((a) => a.id === id)?.hint;
+      const textsOf = (ids: string[]) => new Set(ids.map((id) => hintOf(id)?.en));
+
+      // The whole point of scenario 10: an inspector can tell from the
+      // instruction which kind of shot they are on. `WHEELS_SQUARE_ANGLES` and
+      // the rear diagonals SHARE a text on purpose, which is why the comparison
+      // is between families and never between angles.
+      const families = [
+        textsOf(OUTWARD_WHEEL_ANGLES),
+        textsOf(WHEELS_SQUARE_ANGLES),
+        textsOf(OPENING_ANGLES),
+        textsOf(REAR_SEAT_ANGLES),
+        textsOf(DOCUMENTS_ANGLES),
+      ];
+      for (let i = 0; i < families.length; i += 1) {
+        for (let j = i + 1; j < families.length; j += 1) {
+          for (const text of families[i]) {
+            expect(families[j].has(text)).toBe(false);
+          }
+        }
       }
     });
 
     it('the boot and bonnet angles say what to open, never where to steer', async () => {
       const catalog = await getCatalog();
       const hintOf = (id: string) => catalog.angles.find((a) => a.id === id)?.hint;
-      for (const id of OPENING_ANGLES) {
+      for (const id of [...OPENING_ANGLES, ...REAR_SEAT_ANGLES, ...DOCUMENTS_ANGLES]) {
         expect(hintOf(id)?.en?.toLowerCase()).not.toContain('wheel');
         expect(hintOf(id)?.de).not.toContain('Vorderrad');
       }
+    });
+
+    it('the five rear-seat angles carry ONE text under five keys', async () => {
+      const catalog = await getCatalog();
+      const hintOf = (id: string) => catalog.angles.find((a) => a.id === id)?.hint;
+      for (const locale of ['de', 'en', 'ru', 'uk'] as const) {
+        const texts = new Set(REAR_SEAT_ANGLES.map((id) => hintOf(id)?.[locale]));
+        expect(texts.size).toBe(1);
+        expect([...texts][0]).toBeTruthy();
+      }
+      // Where to STAND, not what to do to the car — and never "shoot": `shot`
+      // came back as a gunshot in nine locales.
+      const en = hintOf('interior_head_unit')?.en?.toLowerCase() ?? '';
+      expect(en).toContain('rear seat');
+      expect(en).not.toContain('shot');
     });
 
     /**
@@ -339,9 +409,15 @@ describe('Catalog (e2e)', () => {
      * as a garment hood (el "κουκούλα", pl "kaptur"). The compounds
      * "engine bay" and "engine hood" translate correctly everywhere.
      */
-    it('no English exterior string uses a word the translation pivot mangles', async () => {
+    it('no English angle string uses a word the translation pivot mangles', async () => {
       const catalog = await getCatalog();
-      for (const angle of catalog.angles.filter((a) => a.group === 'exterior')) {
+      // Widened from `exterior` to EVERY angle on 2026-08-17, together with the
+      // seven new cabin labels. It had been exterior-only, and `interior_boot`
+      // was reading "Boot / trunk" — the very word this test refuses, plus a
+      // slash pair of synonyms that came back as the same word twice in eight
+      // locales, untranslated in Turkish and half-translated in Czech. It is
+      // "Luggage area" now, matching the exterior angles.
+      for (const angle of catalog.angles) {
         const en = `${angle.label.en ?? ''} ${angle.hint?.en ?? ''}`.toLowerCase();
         const words = en.split(/[^a-z]+/);
         expect(words).not.toContain('boot');
@@ -358,28 +434,42 @@ describe('Catalog (e2e)', () => {
   });
 
   describe('interior angles', () => {
-    it('has 12 interior angles, all optional, with four-locale labels on the new ones', async () => {
+    it('has 17 interior angles in the order the client dictated, all optional', async () => {
       const catalog = await getCatalog();
       const interior = catalog.angles
         .filter((a) => a.group === 'interior')
         .sort((a, b) => a.order - b.order);
-      expect(interior.length).toBe(12);
+      expect(interior.length).toBe(17);
       expect(interior.every((a) => a.required === false)).toBe(true);
+      // A SEQUENCE and never a set: the order is the client deliverable of
+      // 2026-08-17 (`images/internal_ordered_numbered/1..17.jpg`) — down the
+      // left flank door by door, through the console from the rear seat, the
+      // cluster and the papers, then the right flank, then the luggage area.
       expect(interior.map((a) => a.id)).toEqual([
         'interior_front',
-        'interior_rear',
-        'interior_dashboard',
-        'interior_boot',
-        'interior_seats',
-        'interior_steering_wheel',
-        'interior_pedals',
-        'interior_overview',
         'interior_door_trim_fl',
-        'interior_door_trim_fr',
+        'interior_rear',
         'interior_door_trim_rl',
+        'interior_rear_armrest',
+        'interior_dashboard',
+        'interior_steering_wheel',
+        'interior_head_unit',
+        'interior_gear_selector',
+        'interior_pedals',
+        'interior_instrument_cluster',
+        'interior_documents_keys',
+        'interior_front_right',
+        'interior_door_trim_fr',
+        'interior_rear_right',
         'interior_door_trim_rr',
+        'interior_boot',
       ]);
-      for (const angle of interior.slice(5)) {
+      // The two retired on 2026-08-17. Their ids are persisted as photo kinds,
+      // so a draft can still hold one; nothing may re-mint them here.
+      const ids = catalog.angles.map((a) => a.id);
+      expect(ids).not.toContain('interior_seats');
+      expect(ids).not.toContain('interior_overview');
+      for (const angle of interior) {
         expect(angle.label.de).toBeTruthy();
         expect(angle.label.en).toBeTruthy();
         expect(angle.label.ru).toBeTruthy();

@@ -884,7 +884,7 @@ export class ListingsService {
     // Derived from the WHOLE manifest, not from the mirrored subset.
     //
     // The subset is "the first MAX_LISTING_PHOTOS entries in manifest order",
-    // and both halves of that have moved: the cap went 20 -> 32, and the order
+    // and both halves of that have moved: the cap went 20 -> 32 -> 40, and the order
     // is now the catalog walk-around rather than `kind ASC`. Anything mirrored
     // under the old rule and no longer in the new top-N would be skipped here —
     // leaving a permanent, unsigned, CDN-cached public photograph of a car
