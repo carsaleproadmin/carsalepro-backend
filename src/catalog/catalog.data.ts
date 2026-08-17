@@ -356,7 +356,7 @@ const ANGLES: AngleDef[] = [
     group: 'exterior',
     order: 4,
     required: true,
-    label: { de: 'Rückansicht', en: 'Rear view', ru: 'Задняя часть', uk: 'Задня частина' },
+    label: { de: 'Rückansicht', en: 'Rear of the vehicle', ru: 'Задняя часть', uk: 'Задня частина' },
     hint: {
       de: 'Stellen Sie die Räder gerade.',
       en: 'Keep the wheels straight.',
@@ -423,7 +423,7 @@ const ANGLES: AngleDef[] = [
     },
     hint: {
       de: 'Innenwand und Verkleidung zeigen.',
-      en: 'Show the inner wall and trim.',
+      en: 'Show the inner wall and the side panel.',
       ru: 'Покажите стенку и обшивку.',
       uk: 'Покажіть стінку й обшивку.',
     },
@@ -441,7 +441,7 @@ const ANGLES: AngleDef[] = [
     },
     hint: {
       de: 'Innenwand und Verkleidung zeigen.',
-      en: 'Show the inner wall and trim.',
+      en: 'Show the inner wall and the side panel.',
       ru: 'Покажите стенку и обшивку.',
       uk: 'Покажіть стінку й обшивку.',
     },
@@ -469,7 +469,7 @@ const ANGLES: AngleDef[] = [
     group: 'exterior',
     order: 9,
     required: true,
-    label: { de: 'Vorderansicht', en: 'Front view', ru: 'Вид спереди', uk: 'Вид спереду' },
+    label: { de: 'Vorderansicht', en: 'Front of the vehicle', ru: 'Вид спереди', uk: 'Вид спереду' },
     hint: {
       de: 'Stellen Sie die Räder gerade.',
       en: 'Keep the wheels straight.',
@@ -531,7 +531,7 @@ const ANGLES: AngleDef[] = [
     },
     hint: {
       de: 'Haubenunterseite zeigen.',
-      en: 'Shoot it from below.',
+      en: 'Take it from below.',
       ru: 'Снимите капот с изнанки.',
       uk: 'Зніміть капот зсередини.',
     },
@@ -973,7 +973,7 @@ const ANGLES: AngleDef[] = [
     group: 'misc',
     order: 40,
     required: false,
-    label: { de: 'FIN-Schild', en: 'VIN plate', ru: 'Табличка VIN', uk: 'Табличка VIN' },
+    label: { de: 'FIN-Schild', en: 'VIN data plate', ru: 'Табличка VIN', uk: 'Табличка VIN' },
   },
 ];
 
@@ -3508,7 +3508,7 @@ const PARTS: PartDef[] = [
     subgroupId: 'p_console',
     label: {
       de: 'Schalthebelmanschette',
-      en: 'Gear lever gaiter',
+      en: 'Gear lever bellows',
       ru: 'Чехол рычага КПП',
       uk: 'Чохол важеля КПП',
     },
@@ -4360,7 +4360,7 @@ const PARTS: PartDef[] = [
     subgroupId: 'p_luggage',
     label: {
       de: 'Hutablage / Laderaumrollo',
-      en: 'Parcel shelf / Roller cover',
+      en: 'Parcel shelf / Retractable luggage cover',
       ru: 'Полка багажника / Шторка выдвижная',
       uk: 'Полиця багажника / Шторка висувна',
     },
@@ -4408,7 +4408,7 @@ const PARTS: PartDef[] = [
     subgroupId: 'p_shields',
     label: {
       de: 'Motorschutz (Unterfahrschutz)',
-      en: 'Engine oil pan guard (skid plate)',
+      en: 'Engine oil pan guard (underbody plate)',
       ru: 'Защита двигателя нижняя (картер)',
       uk: 'Захист картера двигуна',
     },
@@ -4420,7 +4420,7 @@ const PARTS: PartDef[] = [
     subgroupId: 'p_shields',
     label: {
       de: 'Getriebeschutz (Unterfahrschutz)',
-      en: 'Gearbox guard (skid plate)',
+      en: 'Gearbox guard (underbody plate)',
       ru: 'Защита коробки передач нижняя',
       uk: 'Захист коробки передач',
     },
@@ -6160,7 +6160,7 @@ const PARTS: PartDef[] = [
     subgroupId: 'p_steering',
     label: {
       de: 'Faltenbalg Lenkgetriebe links',
-      en: 'Steering rack gaiter, left',
+      en: 'Steering rack bellows, left',
       ru: 'Пыльник рулевой рейки левый',
       uk: 'Пильовик кермової рейки лівий',
     },
@@ -6172,7 +6172,7 @@ const PARTS: PartDef[] = [
     subgroupId: 'p_steering',
     label: {
       de: 'Faltenbalg Lenkgetriebe rechts',
-      en: 'Steering rack gaiter, right',
+      en: 'Steering rack bellows, right',
       ru: 'Пыльник рулевой рейки правый',
       uk: 'Пильовик кермової рейки правий',
     },
@@ -7714,7 +7714,7 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
     subgroupId: 'd_interior_mech',
     label: {
       de: 'Spiel / Knarzen eines Innenraumteils (Klappergeräusche)',
-      en: 'Play / creaking of an interior part (rattles)',
+      en: 'Free play / creaking of an interior part (rattles)',
       ru: 'Люфт / Скрип элемента салона (сверчки)',
       uk: 'Люфт / скрип елемента салону (тріскотіння)',
     },
@@ -8110,7 +8110,7 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
     subgroupId: null,
     label: {
       de: 'Spiel der Turbinenwelle / Verschleiß der CHRA-Kartusche',
-      en: 'Play in the turbo shaft / worn CHRA cartridge',
+      en: 'Free play in the turbo shaft / worn CHRA cartridge',
       ru: 'Люфт вала турбины / Износ картриджа',
       uk: 'Люфт вала турбіни / зношення картриджа',
     },
@@ -8341,7 +8341,7 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
     subgroupId: 'd_suspension',
     label: {
       de: 'Klopfen / Spiel am Stoßdämpfer',
-      en: 'Knocking / play in the shock absorber',
+      en: 'Knocking / free play in the shock absorber',
       ru: 'Стук / Люфт амортизатора',
       uk: 'Стук / люфт амортизатора',
     },
@@ -8374,7 +8374,7 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
     subgroupId: 'd_suspension',
     label: {
       de: 'Spiel / Klopfen im Kugelgelenk (Traggelenk)',
-      en: 'Play / knocking in the ball joint',
+      en: 'Free play / knocking in the ball joint',
       ru: 'Люфт / Стук шаровой опоры',
       uk: 'Люфт / стук шарової опори',
     },
@@ -8385,7 +8385,7 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
     subgroupId: 'd_suspension',
     label: {
       de: 'Verschleiß / Spiel der Stabilisatorkoppelstangen',
-      en: 'Worn / play in the stabilizer links (end links)',
+      en: 'Worn / free play in the stabilizer links (end links)',
       ru: 'Износ / Люфт стоек (косточек) стабилизатора',
       uk: 'Зношення / люфт стійок (тяг) стабілізатора',
     },
@@ -8407,7 +8407,7 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
     subgroupId: 'd_suspension',
     label: {
       de: 'Spiel / Brummen des Radlagers',
-      en: 'Play / humming from the wheel bearing',
+      en: 'Free play / humming from the wheel bearing',
       ru: 'Люфт / Гул ступичного подшипника',
       uk: 'Люфт / гул маточинного підшипника',
     },
@@ -8440,7 +8440,7 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
     subgroupId: 'd_steering_driveline',
     label: {
       de: 'Spiel in den Spurstangen / Spurstangenköpfen',
-      en: 'Play in the tie rods / tie rod ends',
+      en: 'Free play in the tie rods / tie rod ends',
       ru: 'Люфт рулевых тяг / Наконечников',
       uk: 'Люфт рульових тяг / наконечників',
     },
@@ -8451,7 +8451,7 @@ const DAMAGE_TYPES: DamageTypeDef[] = [
     subgroupId: 'd_steering_driveline',
     label: {
       de: 'Beschädigte (eingerissene) Antriebswellenmanschette',
-      en: 'Damaged (torn) CV joint gaiter',
+      en: 'Damaged (torn) CV joint bellows',
       ru: 'Повреждение (порван) пыльника ШРУСа',
       uk: 'Ушкодження (розрив) пильовика ШРУСа',
     },
@@ -10098,7 +10098,7 @@ const CHECKLIST: ChecklistItemDef[] = [
     partId: 'oil_pan_guard',
     label: {
       de: 'Riss / Verformung des Unterfahrschutzes (Ölwanne)',
-      en: 'Crack / deformation of the skid plate (oil pan guard)',
+      en: 'Crack / deformation of the underbody plate (oil pan guard)',
       ru: 'Трещина / деформация защиты картера',
       uk: 'Тріщина / деформація захисту картера',
     },
@@ -10438,7 +10438,7 @@ const CHECKLIST: ChecklistItemDef[] = [
     partId: null,
     label: {
       de: 'Rost / Riefen an Achsmanschetten, Bremskolben',
-      en: 'Rust / scoring on CV boots, brake pistons',
+      en: 'Rust / scoring on CV bellows, brake pistons',
       ru: 'Ржавчина / задиры на пыльниках ШРУС, тормозных поршнях',
       uk: 'Іржа / задири на пильниках ШРКШ, гальмівних поршнях',
     },
@@ -13231,7 +13231,7 @@ const REPAIR_METHODS: RepairMethodDef[] = [
     subgroupId: 'r_steering',
     label: {
       de: 'Erneuern der Lenkgetriebe-Manschetten',
-      en: 'Replace the steering rack boots',
+      en: 'Replace the steering rack bellows',
       ru: 'Замена пыльников рулевой рейки',
       uk: 'Заміна пильовиків рульової рейки',
     },
@@ -13297,7 +13297,7 @@ const REPAIR_METHODS: RepairMethodDef[] = [
     subgroupId: 'r_driveline',
     label: {
       de: 'Erneuern der Gleichlaufgelenkmanschette mit Neubefettung',
-      en: 'Replace the CV joint gaiter and repack the grease',
+      en: 'Replace the CV joint bellows and repack the grease',
       ru: 'Замена пыльника ШРУСа с закладыванием смазки',
       uk: 'Заміна пильовика ШРУСа із закладанням змазки',
     },
