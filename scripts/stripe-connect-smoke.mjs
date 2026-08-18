@@ -86,12 +86,17 @@ async function main() {
 
   // 2. Express account + onboarding link --------------------------------------
   // Mirrors StripeService.createConnectedAccount / createAccountLink.
+  //
+  // The country comes from STRIPE_CONNECT_DEFAULT_COUNTRY, as it does in the
+  // service, so pointing the smoke test at another country is one env var — that
+  // is how you find out whether this platform may create accounts there before
+  // an inspector finds out for you. `business_type` is deliberately ABSENT: the
+  // service omits it unless the inspector named one, and Express then asks.
   try {
     const express = await stripe.accounts.create({
       type: 'express',
-      country: 'DE',
+      country: (process.env.STRIPE_CONNECT_DEFAULT_COUNTRY || 'DE').trim().toUpperCase(),
       capabilities: { transfers: { requested: true } },
-      business_type: 'individual',
     });
     created.accounts.push(express.id);
     const link = await stripe.accountLinks.create({

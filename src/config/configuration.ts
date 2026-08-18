@@ -153,6 +153,8 @@ export interface AppConfig {
     webhookSecret: string;
     connectRefreshUrl: string;
     connectReturnUrl: string;
+    /** ISO 3166-1 alpha-2, upper case. Where a connected account lands by default. */
+    connectDefaultCountry: string;
   };
   mapbox: {
     token: string;
@@ -266,6 +268,13 @@ export default (): AppConfig => ({
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? '',
     connectRefreshUrl: process.env.STRIPE_CONNECT_REFRESH_URL ?? '',
     connectReturnUrl: process.env.STRIPE_CONNECT_RETURN_URL ?? '',
+    /*
+     * Normalised HERE and not only in Joi: `@nestjs/config` writes a validated
+     * value back into `process.env` only for keys that were ABSENT, so a
+     * deployment that sets `de` keeps `de` here while Joi's `.uppercase()`
+     * reports success. Stripe rejects a lower-case country code.
+     */
+    connectDefaultCountry: (process.env.STRIPE_CONNECT_DEFAULT_COUNTRY ?? 'DE').trim().toUpperCase(),
   },
   mapbox: {
     token: process.env.MAPBOX_TOKEN ?? '',

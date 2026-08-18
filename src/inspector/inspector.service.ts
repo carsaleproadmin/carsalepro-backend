@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   HttpException,
   Injectable,
   Logger,
@@ -10,8 +11,18 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { AppConfig } from '../config/configuration';
 import { GeoService } from '../geo/geo.service';
-import { StripeService, classifyStripeError } from '../payments/stripe.service';
+import {
+  StripeService,
+  classifyStripeError,
+  isStripeBusinessType,
+  type StripeBusinessType,
+} from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  resolveConnectAccountParams,
+  type ConnectAccountParams,
+  type ConnectAccountRequest,
+} from './connect-account-params';
 import { UpdateInspectorProfileDto } from './dto/inspector-profile.dto';
 import {
   normalizeTelegramUsername,
@@ -46,6 +57,9 @@ export interface InspectorProfileView {
   searchRadiusKm: number;
   available: boolean;
   stripeOnboarded: boolean;
+  /** Payout-account country (ISO 3166-1 alpha-2) and legal form; null until chosen. */
+  stripeCountry: string | null;
+  stripeBusinessType: StripeBusinessType | null;
   kycVerified: boolean;
   hasLocation: boolean;
   eligibleForOffers: boolean;
@@ -79,6 +93,15 @@ export interface InspectorProfileView {
 export interface StripeOnboardingResponse {
   accountLinkUrl: string;
   mock?: boolean;
+  /**
+   * The country the payout account was created in (or will be), ISO 3166-1
+   * alpha-2. Echoed because it is the one parameter that cannot be changed
+   * afterwards, so an inspector is owed the chance to see it before submitting
+   * documents to Stripe.
+   */
+  country: string;
+  /** Null means Stripe will ask during onboarding. */
+  businessType: StripeBusinessType | null;
 }
 
 /** Result of GET /inspector/onboarding-status. */
@@ -86,6 +109,14 @@ export interface OnboardingStatusResponse {
   stripeOnboarded: boolean;
   hasAccount: boolean;
   eligibleForOffers: boolean;
+  /**
+   * Where the payout account lives and what legal form it declares. Both null
+   * before onboarding has been started once; `stripeCountry` is fixed from the
+   * moment `hasAccount` is true, which is what the UI needs in order to show it
+   * as settled rather than as an editable field.
+   */
+  stripeCountry: string | null;
+  stripeBusinessType: StripeBusinessType | null;
 }
 
 /** Result of GET /inspector/earnings. */
@@ -105,6 +136,8 @@ export class InspectorService {
   private readonly logger = new Logger(InspectorService.name);
   private readonly connectRefreshUrl: string;
   private readonly connectReturnUrl: string;
+  /** Where a connected account lands when nobody has named a country. */
+  private readonly connectDefaultCountry: string;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -115,6 +148,7 @@ export class InspectorService {
     const stripeCfg = config.get('stripe', { infer: true });
     this.connectRefreshUrl = stripeCfg.connectRefreshUrl;
     this.connectReturnUrl = stripeCfg.connectReturnUrl;
+    this.connectDefaultCountry = stripeCfg.connectDefaultCountry;
   }
 
   /** The caller's profile, or `{ exists: false }` when none has been created. */
@@ -203,8 +237,17 @@ export class InspectorService {
    * an InspectorProfile exists (creates a minimal one if missing). In MOCK mode
    * (no Stripe key / NODE_ENV=test) it short-circuits: marks the profile onboarded
    * with a fake account id and returns the configured return URL.
+   *
+   * `input` carries the two facts that used to be hardcoded — the account's
+   * country and its legal form. Both are optional, and an empty body means "use
+   * what you already know about me", which is exactly how the website called this
+   * route before either existed. See `resolveConnectAccountParams` for the
+   * precedence and for why the country cannot be changed later.
    */
-  async startStripeOnboarding(userId: string): Promise<StripeOnboardingResponse> {
+  async startStripeOnboarding(
+    userId: string,
+    input: ConnectAccountRequest = {},
+  ): Promise<StripeOnboardingResponse> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { email: true },
@@ -221,14 +264,28 @@ export class InspectorService {
       });
     }
 
+    const params = this.resolveAccountParams(input, profile);
+
     // MOCK mode: no Stripe — mark onboarded with a fake account id immediately.
+    // The two choices are still STORED, so the dev/test path answers the same
+    // questions as production and the country lock is exercised without a key.
     if (!this.stripe.configured) {
       const accountId = profile.stripeAccountId ?? `acct_mock_${userId}`;
       await this.prisma.inspectorProfile.update({
         where: { userId },
-        data: { stripeAccountId: accountId, stripeOnboarded: true },
+        data: {
+          stripeAccountId: accountId,
+          stripeOnboarded: true,
+          stripeCountry: params.country,
+          stripeBusinessType: params.businessType,
+        },
       });
-      return { accountLinkUrl: this.connectReturnUrl, mock: true };
+      return {
+        accountLinkUrl: this.connectReturnUrl,
+        mock: true,
+        country: params.country,
+        businessType: params.businessType,
+      };
     }
 
     // Real Stripe. Every failure below used to escape as a raw 500: the
@@ -236,10 +293,62 @@ export class InspectorService {
     // why — most often because Connect was simply not enabled on the platform
     // account (F-15). Each condition now has its own code the UI can act on.
     try {
-      return await this.createConnectOnboardingLink(userId, profile.stripeAccountId, user.email);
+      return await this.createConnectOnboardingLink(
+        userId,
+        profile.stripeAccountId,
+        user.email,
+        params,
+      );
     } catch (err) {
-      throw this.toConnectOnboardingException(err, userId);
+      throw this.toConnectOnboardingException(err, userId, params);
     }
+  }
+
+  /**
+   * Country + legal form for this attempt, or a refusal.
+   *
+   * The country lock answers **409**, not 400: nothing about the request is
+   * malformed, and the state it conflicts with — an account Stripe will not
+   * relocate — is the whole reason it cannot be honoured. The stored country is
+   * named in the message, because "you cannot change it" without saying what it
+   * currently is leaves the inspector nothing to act on.
+   */
+  private resolveAccountParams(
+    input: ConnectAccountRequest,
+    profile: { stripeAccountId: string | null; stripeCountry: string | null; stripeBusinessType: string | null },
+  ): ConnectAccountParams {
+    const resolution = resolveConnectAccountParams(
+      input,
+      {
+        accountId: profile.stripeAccountId,
+        country: profile.stripeCountry,
+        businessType: profile.stripeBusinessType,
+      },
+      this.connectDefaultCountry,
+    );
+    if (resolution.ok) return resolution.params;
+
+    if (resolution.code === 'country_locked') {
+      throw new ConflictException({
+        error: {
+          code: 'connect_country_locked',
+          message:
+            `Your payout account is registered in ${resolution.stored} and Stripe cannot move it ` +
+            `to ${resolution.requested}. Contact support to have the account replaced.`,
+          storedCountry: resolution.stored,
+          requestedCountry: resolution.requested,
+        },
+      });
+    }
+    throw new BadRequestException({
+      error: {
+        code: resolution.code === 'country_invalid' ? 'invalid_country' : 'invalid_business_type',
+        message:
+          resolution.code === 'country_invalid'
+            ? 'Country must be a two-letter ISO 3166-1 alpha-2 code, for example DE or PL.'
+            : 'Business type must be individual, company, non_profit or government_entity.',
+      },
+    });
   }
 
   /**
@@ -256,15 +365,29 @@ export class InspectorService {
     userId: string,
     storedAccountId: string | null,
     email: string,
+    params: ConnectAccountParams,
   ): Promise<StripeOnboardingResponse> {
     let accountId = storedAccountId;
     if (!accountId) {
-      const account = await this.stripe.createConnectedAccount(email);
+      const account = await this.stripe.createConnectedAccount({
+        email,
+        country: params.country,
+        businessType: params.businessType,
+      });
       accountId = account.id;
       await this.prisma.inspectorProfile.update({
         where: { userId },
-        data: { stripeAccountId: accountId },
+        data: {
+          stripeAccountId: accountId,
+          // Written in the SAME statement as the id, because these three facts
+          // only mean anything together: a stored country next to a different
+          // account is worse than no country at all — it is what the lock trusts.
+          stripeCountry: params.country,
+          stripeBusinessType: params.businessType,
+        },
       });
+    } else if (params.businessTypeChanged && params.businessType) {
+      await this.applyBusinessTypeChange(userId, accountId, params.businessType);
     }
 
     try {
@@ -273,7 +396,11 @@ export class InspectorService {
         this.connectRefreshUrl,
         this.connectReturnUrl,
       );
-      return { accountLinkUrl: link.url };
+      return {
+        accountLinkUrl: link.url,
+        country: params.country,
+        businessType: params.businessType,
+      };
     } catch (err) {
       if (!storedAccountId || classifyStripeError(err).code !== 'resource_missing') throw err;
 
@@ -285,17 +412,63 @@ export class InspectorService {
         where: { userId },
         data: { stripeAccountId: null, stripeOnboarded: false },
       });
-      const fresh = await this.stripe.createConnectedAccount(email);
+      // The replacement is created in the SAME country as the one being replaced
+      // (`params.country` is the country of record, not the request), so a
+      // self-heal cannot quietly relocate an inspector.
+      const fresh = await this.stripe.createConnectedAccount({
+        email,
+        country: params.country,
+        businessType: params.businessType,
+      });
       await this.prisma.inspectorProfile.update({
         where: { userId },
-        data: { stripeAccountId: fresh.id },
+        data: {
+          stripeAccountId: fresh.id,
+          stripeCountry: params.country,
+          stripeBusinessType: params.businessType,
+        },
       });
       const link = await this.stripe.createAccountLink(
         fresh.id,
         this.connectRefreshUrl,
         this.connectReturnUrl,
       );
-      return { accountLinkUrl: link.url };
+      return {
+        accountLinkUrl: link.url,
+        country: params.country,
+        businessType: params.businessType,
+      };
+    }
+  }
+
+  /**
+   * Tell Stripe the legal form changed, then record it.
+   *
+   * Stripe refuses the change once the declaration has been verified, and that
+   * refusal must NOT abort onboarding: the inspector's account still exists and
+   * the link they asked for is still the right answer. So the failure is logged,
+   * the stored value is left alone — it keeps describing the account as it
+   * actually is — and the caller continues. Writing our column anyway would give
+   * the profile a legal form the account does not carry, which is the kind of
+   * disagreement nobody discovers until a payout is held.
+   */
+  private async applyBusinessTypeChange(
+    userId: string,
+    accountId: string,
+    businessType: StripeBusinessType,
+  ): Promise<void> {
+    try {
+      await this.stripe.updateConnectedAccountBusinessType(accountId, businessType);
+      await this.prisma.inspectorProfile.update({
+        where: { userId },
+        data: { stripeBusinessType: businessType },
+      });
+    } catch (err) {
+      const failure = classifyStripeError(err);
+      this.logger.warn(
+        `Stripe refused a business_type change to ${businessType} for inspector=${mask(userId)}: ` +
+          `${failure.code} — ${failure.message}`,
+      );
     }
   }
 
@@ -304,11 +477,16 @@ export class InspectorService {
    * exception filter passes through untouched (including at 5xx, because the
    * body carries a `code`).
    */
-  private toConnectOnboardingException(err: unknown, userId: string): HttpException {
+  private toConnectOnboardingException(
+    err: unknown,
+    userId: string,
+    params?: ConnectAccountParams,
+  ): HttpException {
     const failure = classifyStripeError(err);
     this.logger.error(
-      `Stripe Connect onboarding failed for inspector=${mask(userId)}: ` +
-        `${failure.code} — ${failure.message}`,
+      `Stripe Connect onboarding failed for inspector=${mask(userId)}` +
+        (params ? ` (country=${params.country}, businessType=${params.businessType ?? 'unset'})` : '') +
+        `: ${failure.code} — ${failure.message}`,
     );
 
     // Connect not enabled on the platform account. Stripe reports this as a
@@ -331,12 +509,32 @@ export class InspectorService {
         },
       });
     }
-    if (failure.code === 'account_invalid' || /capabilit|country/i.test(failure.message)) {
+    /*
+     * The COUNTRY is its own answer, and it used to share one with capabilities.
+     * Since 2026-08-19 the inspector chooses it, so this is the one Stripe
+     * rejection they can act on themselves — and only if the message names the
+     * country back. Stripe words it several ways ("Invalid country",
+     * "not able to create accounts in …", cross-border payouts not enabled),
+     * which is why the match is on the word rather than on a code: there is no
+     * distinct code to match.
+     */
+    if (/countr/i.test(failure.message)) {
+      return new BadRequestException({
+        error: {
+          code: 'connect_country_unsupported',
+          message: params?.country
+            ? `Stripe cannot create a payout account in ${params.country} for this platform. ` +
+              'Choose the country your business is registered in, or contact support.'
+            : 'Stripe cannot create a payout account in that country for this platform. Contact support.',
+          country: params?.country ?? null,
+        },
+      });
+    }
+    if (failure.code === 'account_invalid' || /capabilit/i.test(failure.message)) {
       return new BadRequestException({
         error: {
           code: 'connect_account_rejected',
-          message:
-            'Stripe rejected this payout account (unsupported country or capability). Contact support.',
+          message: 'Stripe rejected this payout account (unsupported capability). Contact support.',
         },
       });
     }
@@ -370,6 +568,10 @@ export class InspectorService {
       stripeOnboarded,
       hasAccount,
       eligibleForOffers: kycVerified && stripeOnboarded,
+      stripeCountry: profile?.stripeCountry ?? null,
+      stripeBusinessType: isStripeBusinessType(profile?.stripeBusinessType)
+        ? profile.stripeBusinessType
+        : null,
     };
   }
 
@@ -450,6 +652,8 @@ export class InspectorService {
       searchRadiusKm: number;
       available: boolean;
       stripeOnboarded: boolean;
+      stripeCountry: string | null;
+      stripeBusinessType: string | null;
     },
   ): Promise<InspectorProfileView> {
     const user = await this.prisma.user.findUnique({
@@ -468,6 +672,13 @@ export class InspectorService {
       searchRadiusKm: profile.searchRadiusKm,
       available: profile.available,
       stripeOnboarded: profile.stripeOnboarded,
+      stripeCountry: profile.stripeCountry,
+      // Read through the guard rather than cast: the column is a plain string,
+      // so a value Stripe has retired (or a hand-edited row) must not be handed
+      // to a client as a member of the enum.
+      stripeBusinessType: isStripeBusinessType(profile.stripeBusinessType)
+        ? profile.stripeBusinessType
+        : null,
       kycVerified,
       hasLocation,
       eligibleForOffers: kycVerified && profile.stripeOnboarded && profile.available && hasLocation,
