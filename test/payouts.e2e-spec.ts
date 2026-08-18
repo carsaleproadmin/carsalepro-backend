@@ -233,6 +233,71 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
   });
 
   // ============================================================
+  // 2b. The country and legal form are stored in MOCK mode too
+  // ============================================================
+  /*
+   * Mock mode is what runs in development and in the whole e2e suite, so it has
+   * to answer the same questions production does. Storing the two choices here is
+   * also what makes the country lock testable without a Stripe key — and the lock
+   * is the one rule that cannot be undone once an account exists.
+   */
+  it('2b. stripe-onboarding (mock) stores the chosen country + business type and locks the country', async () => {
+    const u = await registerUser(app, 'insp');
+    createdUserIds.add(u.userId);
+
+    const first = await request(app.getHttpServer())
+      .post('/api/v1/inspector/stripe-onboarding')
+      .set('Authorization', `Bearer ${u.token}`)
+      .send({ country: 'pl', businessType: 'company' })
+      .expect(200);
+
+    expect(first.body.country).toBe('PL');
+    expect(first.body.businessType).toBe('company');
+    const profile = await prisma.inspectorProfile.findUnique({ where: { userId: u.userId } });
+    expect(profile!.stripeCountry).toBe('PL');
+    expect(profile!.stripeBusinessType).toBe('company');
+
+    const relocation = await request(app.getHttpServer())
+      .post('/api/v1/inspector/stripe-onboarding')
+      .set('Authorization', `Bearer ${u.token}`)
+      .send({ country: 'FR' })
+      .expect(409);
+    expect(relocation.body.error.code).toBe('connect_country_locked');
+    expect(relocation.body.error.storedCountry).toBe('PL');
+  });
+
+  it('2c. an empty body still onboards, in the platform country, with no business type', async () => {
+    const u = await registerUser(app, 'insp');
+    createdUserIds.add(u.userId);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/inspector/stripe-onboarding')
+      .set('Authorization', `Bearer ${u.token}`)
+      .expect(200);
+
+    // The website called this route with no body before either field existed, so
+    // this is the compatibility case, not a curiosity.
+    expect(res.body.country).toBe('DE');
+    expect(res.body.businessType).toBeNull();
+  });
+
+  it('2d. refuses a malformed country and an unknown business type', async () => {
+    const u = await registerUser(app, 'insp');
+    createdUserIds.add(u.userId);
+
+    for (const body of [{ country: 'DEU' }, { businessType: 'sole_trader' }]) {
+      await request(app.getHttpServer())
+        .post('/api/v1/inspector/stripe-onboarding')
+        .set('Authorization', `Bearer ${u.token}`)
+        .send(body)
+        .expect(400);
+    }
+    // Nothing was created by a refused request.
+    const profile = await prisma.inspectorProfile.findUnique({ where: { userId: u.userId } });
+    expect(profile?.stripeAccountId ?? null).toBeNull();
+  });
+
+  // ============================================================
   // 3. onboarding without auth → 401
   // ============================================================
   it('3. stripe-onboarding without a token → 401', async () => {
