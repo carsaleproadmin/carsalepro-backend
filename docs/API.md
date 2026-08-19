@@ -130,7 +130,7 @@ When `IAP_VALIDATION_MODE=server` (Render env), the receipt is validated against
 {
   "platform": "ios",
   "receipt": "MIIBoAYJKoZIhvcNAQcC...",
-  "productId": "carsalepro_pro_monthly",
+  "productId": "carsalepro_pro_lifetime",
   "environment": "string"
 }
 ```

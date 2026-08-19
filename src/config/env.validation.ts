@@ -153,7 +153,7 @@ export const envValidationSchema = Joi.object({
   ALLOW_SHARED_KYC_BUCKET: Joi.string().valid('true', 'false').default('false'),
 
   IAP_VALIDATION_MODE: Joi.string().valid('client-trust', 'server').default('client-trust'),
-  IAP_BUNDLE_ID: Joi.string().default('com.carsalepro.app'),
+  IAP_BUNDLE_ID: Joi.string().default('us.designkey.carsalepro'),
   APPLE_SHARED_SECRET: Joi.string().allow('').default(''),
   APPLE_ISSUER_ID: Joi.string().allow('').default(''),
   APPLE_KEY_ID: Joi.string().allow('').default(''),

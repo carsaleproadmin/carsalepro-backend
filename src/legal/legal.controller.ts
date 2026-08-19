@@ -9,6 +9,25 @@ import {
   renderLegalHtml,
 } from './legal.content';
 
+/**
+ * Which of the three languages to serve.
+ *
+ * **The fallback is `en`, not `de`, and that changed on 2026-08-19.** It used to
+ * return German for anything it did not recognise, and the mobile app sends the
+ * raw language code of whichever of its 35 languages the inspector picked — so a
+ * Greek user requesting `?lang=el` matched neither the document list nor the
+ * Accept-Language header and was served German. Thirty-one of thirty-five
+ * locales read this policy in a language they had not chosen.
+ *
+ * The app's own documented rule for a destination that does not speak the
+ * user's language is English, on the stated grounds that an unreadable page in
+ * a language the user did not pick is worse than the lingua franca
+ * (`external_links.dart`). This is that rule, on the other side of the wire, so
+ * the two can no longer disagree.
+ *
+ * German is still first choice where the CALLER asks for it or the browser
+ * prefers it, which is every German visitor.
+ */
 function resolveLang(queryLang: string | undefined, acceptLanguage: string | undefined): LegalLang {
   const q = (queryLang ?? '').toLowerCase();
   if (LEGAL_LANGS.includes(q as LegalLang)) return q as LegalLang;
@@ -16,7 +35,7 @@ function resolveLang(queryLang: string | undefined, acceptLanguage: string | und
   for (const lang of LEGAL_LANGS) {
     if (header.includes(lang)) return lang;
   }
-  return 'de'; // Germany is the primary market.
+  return 'en';
 }
 
 @ApiTags('legal')

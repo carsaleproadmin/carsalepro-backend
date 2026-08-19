@@ -48,7 +48,7 @@ All variables match `.env.example`. The deployed values are stored on Render and
 | `LOG_LEVEL` | `info` | |
 | `DATABASE_URL` | Render Postgres Internal URL | `postgresql://carsalepro_db_user:…@dpg-…/carsalepro_db` |
 | `R2_ACCOUNT_ID` | Cloudflare R2 page | `f8dbfc5a3fcf74bf65e0e7af90b5a349` |
-| `R2_ACCESS_KEY_ID` | R2 API token (S3 panel) | `d3ac9b77314a48b77f103edec7895bd2` |
+| `R2_ACCESS_KEY_ID` | R2 API token (S3 panel) | `b4cc9fd9d4fcf04492022a10c826480d` |
 | `R2_SECRET_ACCESS_KEY` | R2 API token (S3 panel) | secret — store via Render dashboard only |
 | `R2_BUCKET` | `carsalepro-reports` | |
 | `R2_PUBLIC_URL` | empty | leave blank — backend always presigns downloads |
