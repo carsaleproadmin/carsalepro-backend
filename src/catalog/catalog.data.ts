@@ -58,7 +58,7 @@ export interface AngleDef {
    * of the mobile capture screen's instruction box.
    *
    * FIVE families, and the difference between them IS the instruction:
-   * the FRONT diagonals say to turn the near front wheel outward, every other
+   * the FRONT diagonals say to turn the near front wheel inward, every other
    * flank view says wheels square, the boot/bonnet angles say what to open or
    * lift, five cabin angles say to sit on the rear seat, and one says to
    * photograph the keys even with no book.
@@ -251,7 +251,7 @@ export interface CatalogV1 {
 const ANGLES: AngleDef[] = [
   // Walk-around order dictated by the inspector, and the array is kept in that
   // order so the block reads as the job is done. Down the LEFT flank (diagonal
-  // with the near front wheel turned outward → side with the wheels straight),
+  // with the near front wheel turned inward → side with the wheels straight),
   // across the REAR, then the boot is opened and documented, round to the FRONT,
   // then the bonnet is opened and the engine bay documented, and finally back
   // down the RIGHT flank. `order` is what the clients sort by; array position is
@@ -313,10 +313,10 @@ const ANGLES: AngleDef[] = [
       uk: 'Діагональ спереду-зліва',
     },
     hint: {
-      de: 'Schlagen Sie das Vorderrad nach außen ein.',
-      en: 'Turn the near front wheel outward.',
-      ru: 'Поверните переднее колесо наружу.',
-      uk: 'Поверніть переднє колесо назовні.',
+      de: 'Schlagen Sie das Vorderrad nach innen ein.',
+      en: 'Turn the near front wheel inward.',
+      ru: 'Поверните переднее колесо внутрь.',
+      uk: 'Поверніть переднє колесо всередину.',
     },
   },
   {
@@ -584,10 +584,10 @@ const ANGLES: AngleDef[] = [
       uk: 'Діагональ спереду-справа',
     },
     hint: {
-      de: 'Schlagen Sie das Vorderrad nach außen ein.',
-      en: 'Turn the near front wheel outward.',
-      ru: 'Поверните переднее колесо наружу.',
-      uk: 'Поверніть переднє колесо назовні.',
+      de: 'Schlagen Sie das Vorderrad nach innen ein.',
+      en: 'Turn the near front wheel inward.',
+      ru: 'Поверните переднее колесо внутрь.',
+      uk: 'Поверніть переднє колесо всередину.',
     },
   },
   {
@@ -2454,7 +2454,7 @@ const PARTS: PartDef[] = [
       de: 'Schweller links',
       en: 'Left rocker panel',
       ru: 'Порог кузова левый',
-      uk: 'Порог кузова лівий',
+      uk: 'Поріг кузова лівий',
     },
   },
   {
@@ -2862,7 +2862,7 @@ const PARTS: PartDef[] = [
       de: 'Schweller rechts',
       en: 'Right rocker panel',
       ru: 'Порог кузова правый',
-      uk: 'Порог кузова правий',
+      uk: 'Поріг кузова правий',
     },
   },
   {
@@ -10854,8 +10854,19 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
     },
   },
   {
-    id: 'opening_left',
+    id: 'sill_rear_left',
     order: 4,
+    partId: 'rocker_panel_left',
+    label: {
+      de: 'Türschweller hinten links',
+      en: 'Rear left door sill',
+      ru: 'Порог задней левой двери',
+      uk: 'Поріг задніх лівих дверей',
+    },
+  },
+  {
+    id: 'opening_left',
+    order: 5,
     partId: 'pillar_b_left',
     label: {
       de: 'Türöffnung / B-Säule links',
@@ -10865,8 +10876,19 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
     },
   },
   {
+    id: 'sill_front_left',
+    order: 6,
+    partId: 'rocker_panel_left',
+    label: {
+      de: 'Türschweller vorne links',
+      en: 'Front left door sill',
+      ru: 'Порог передней левой двери',
+      uk: 'Поріг передніх лівих дверей',
+    },
+  },
+  {
     id: 'door_front_left',
-    order: 5,
+    order: 7,
     partId: 'door_front_left',
     label: {
       de: 'Tür vorne links',
@@ -10877,7 +10899,7 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
   },
   {
     id: 'fender_front_left',
-    order: 6,
+    order: 8,
     partId: 'fender_front_left',
     label: {
       de: 'Kotflügel vorne links',
@@ -10888,7 +10910,7 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
   },
   {
     id: 'hood',
-    order: 7,
+    order: 9,
     partId: 'hood',
     label: {
       de: 'Motorhaube',
@@ -10899,7 +10921,7 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
   },
   {
     id: 'fender_front_right',
-    order: 8,
+    order: 10,
     partId: 'fender_front_right',
     label: {
       de: 'Kotflügel vorne rechts',
@@ -10910,7 +10932,7 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
   },
   {
     id: 'door_front_right',
-    order: 9,
+    order: 11,
     partId: 'door_front_right',
     label: {
       de: 'Tür vorne rechts',
@@ -10920,8 +10942,19 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
     },
   },
   {
+    id: 'sill_front_right',
+    order: 12,
+    partId: 'rocker_panel_right',
+    label: {
+      de: 'Türschweller vorne rechts',
+      en: 'Front right door sill',
+      ru: 'Порог передней правой двери',
+      uk: 'Поріг передніх правих дверей',
+    },
+  },
+  {
     id: 'opening_right',
-    order: 10,
+    order: 13,
     partId: 'pillar_b_right',
     label: {
       de: 'Türöffnung / B-Säule rechts',
@@ -10932,7 +10965,7 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
   },
   {
     id: 'door_rear_right',
-    order: 11,
+    order: 14,
     partId: 'door_rear_right',
     label: {
       de: 'Tür hinten rechts',
@@ -10942,8 +10975,19 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
     },
   },
   {
+    id: 'sill_rear_right',
+    order: 15,
+    partId: 'rocker_panel_right',
+    label: {
+      de: 'Türschweller hinten rechts',
+      en: 'Rear right door sill',
+      ru: 'Порог задней правой двери',
+      uk: 'Поріг задніх правих дверей',
+    },
+  },
+  {
     id: 'fender_rear_right',
-    order: 12,
+    order: 16,
     partId: 'side_panel_rear_right',
     label: {
       de: 'Seitenwand hinten rechts',
@@ -10954,7 +10998,7 @@ const THICKNESS_PANELS: ThicknessPanelDef[] = [
   },
   {
     id: 'trunk_lid',
-    order: 13,
+    order: 17,
     partId: 'trunk_lid',
     label: {
       de: 'Heckklappe',

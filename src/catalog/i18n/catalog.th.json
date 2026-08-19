@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "ด้านหน้าซ้าย (3/4)",
-  "angles.diag_front_left.hint": "หมุนล้อหน้าที่อยู่ใกล้ออกไปด้านนอก",
+  "angles.diag_front_left.hint": "หมุนล้อหน้าที่อยู่ใกล้เข้าด้านใน",
   "angles.diag_front_right": "ด้านหน้าขวา (3/4)",
-  "angles.diag_front_right.hint": "หมุนล้อหน้าที่อยู่ใกล้ออกไปด้านนอก",
+  "angles.diag_front_right.hint": "หมุนล้อหน้าที่อยู่ใกล้เข้าด้านใน",
   "angles.diag_rear_left": "ด้านหลังซ้าย (3/4)",
   "angles.diag_rear_left.hint": "รักษาล้อให้ตรง",
   "angles.diag_rear_right": "ด้านหลังขวา (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "ประตูเปิดซ้าย / เสา B",
   "thicknessPanels.opening_right": "ประตูด้านขวา / B-pillar",
   "thicknessPanels.roof_rear_left": "หลังคา (มุมหลังซ้าย)",
+  "thicknessPanels.sill_front_left": "ชายบันไดหน้าซ้าย",
+  "thicknessPanels.sill_front_right": "ชายบันไดหน้าขวา",
+  "thicknessPanels.sill_rear_left": "ชายบันไดหลังซ้าย",
+  "thicknessPanels.sill_rear_right": "ชายบันไดหลังขวา",
   "thicknessPanels.trunk_lid": "ฝาท้าย / ฝาท้าย"
 }

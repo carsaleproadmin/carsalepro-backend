@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Μπροστά αριστερά (3/4)",
-  "angles.diag_front_left.hint": "Γυρίστε τον κοντινό μπροστινό τροχό προς τα έξω.",
+  "angles.diag_front_left.hint": "Γυρίστε τον κοντινό μπροστινό τροχό προς τα μέσα.",
   "angles.diag_front_right": "Μπροστά δεξιά (3/4)",
-  "angles.diag_front_right.hint": "Γυρίστε τον κοντινό μπροστινό τροχό προς τα έξω.",
+  "angles.diag_front_right.hint": "Γυρίστε τον κοντινό μπροστινό τροχό προς τα μέσα.",
   "angles.diag_rear_left": "Πίσω αριστερά (3/4)",
   "angles.diag_rear_left.hint": "Κρατήστε τους τροχούς ίσιους.",
   "angles.diag_rear_right": "Πίσω δεξιά (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Αριστερό άνοιγμα πόρτας / κολόνα Β",
   "thicknessPanels.opening_right": "Δεξί άνοιγμα πόρτας / κολόνα Β",
   "thicknessPanels.roof_rear_left": "Οροφή (πίσω αριστερή γωνία)",
+  "thicknessPanels.sill_front_left": "Μπροστινό αριστερό μαρσπιέ",
+  "thicknessPanels.sill_front_right": "Μπροστινό δεξιό μαρσπιέ",
+  "thicknessPanels.sill_rear_left": "Πίσω αριστερό μαρσπιέ",
+  "thicknessPanels.sill_rear_right": "Πίσω δεξιό μαρσπιέ",
   "thicknessPanels.trunk_lid": "Καπό πορτμπαγκάζ / πόρτα χώρου αποσκευών"
 }

@@ -3,6 +3,7 @@ import {
   currentRequiredAngles,
   evaluateCompleteness,
   resolveRequiredAngles,
+  resolveRequiredPanels,
   thicknessPanelIds,
 } from './report-completeness';
 
@@ -24,6 +25,23 @@ const LEGACY_8 = [
   'diag_front_right',
   'right',
   'diag_rear_right',
+];
+
+/** The paint-thickness stations that shipped before the four door sills. */
+const LEGACY_PANELS_13 = [
+  'roof_rear_left',
+  'fender_rear_left',
+  'door_rear_left',
+  'opening_left',
+  'door_front_left',
+  'fender_front_left',
+  'hood',
+  'fender_front_right',
+  'door_front_right',
+  'opening_right',
+  'door_rear_right',
+  'fender_rear_right',
+  'trunk_lid',
 ];
 
 /** A payload that satisfies every family. The base for the negative cases. */
@@ -188,5 +206,59 @@ describe('resolveRequiredAngles — the legacy amnesty', () => {
     const r = evaluateCompleteness(data);
     expect(r.complete).toBe(true);
     expect(r.exteriorAngleCount).toBe(8);
+  });
+});
+
+describe('resolveRequiredPanels — the legacy amnesty for paint stations', () => {
+  it('judges a 13-panel payload by the 13 it knows about', () => {
+    // The case this exists for. Four door sills were added on 2026-08-19, and
+    // CATALOG_VERSION did not change, so every installed build keeps sending
+    // thirteen for weeks. Without the amnesty each one is refused with eight
+    // missing elements — four readings and four photographs — that its own
+    // interface cannot collect.
+    expect(resolveRequiredPanels(new Set(LEGACY_PANELS_13))).toEqual(
+      LEGACY_PANELS_13,
+    );
+  });
+
+  it('judges a payload that names any sill by the full current set', () => {
+    const knowsSills = new Set([...LEGACY_PANELS_13, 'sill_rear_left']);
+    expect(resolveRequiredPanels(knowsSills)).toEqual(thicknessPanelIds());
+  });
+
+  it('judges an incomplete legacy payload by the current set', () => {
+    // Same rule as the angles: the amnesty is for reports that were COMPLETE
+    // under the old catalog, never for partial ones.
+    expect(resolveRequiredPanels(new Set(LEGACY_PANELS_13.slice(0, 6)))).toEqual(
+      thicknessPanelIds(),
+    );
+  });
+
+  it('accepts a complete 13-panel payload end to end', () => {
+    const data = completePayload();
+    data.thickness = {
+      panels: LEGACY_PANELS_13.map((panelId) => ({ panelId, um: 120 })),
+    };
+    data.photos = [
+      ...data.photos.filter((p) => !p.kind.startsWith('thickness-')),
+      ...LEGACY_PANELS_13.map((id) => ({ kind: `thickness-${id}` })),
+    ];
+    const r = evaluateCompleteness(data);
+    expect(r.complete).toBe(true);
+    expect(countMissing(r.missing)).toBe(0);
+  });
+
+  it('a PHOTOGRAPH of a sill is enough to opt into the current set', () => {
+    // A station is "mentioned" by a reading or by a photograph. An inspector
+    // who photographed the sill without typing its number has proved the build
+    // knows the station exists, which is what is being detected here.
+    const data = completePayload();
+    data.thickness = {
+      panels: LEGACY_PANELS_13.map((panelId) => ({ panelId, um: 120 })),
+    };
+    const r = evaluateCompleteness(data);
+    expect(r.complete).toBe(false);
+    expect(r.missing.thicknessValues).toContain('sill_rear_left');
+    expect(r.missing.thicknessPhotos).toHaveLength(0);
   });
 });

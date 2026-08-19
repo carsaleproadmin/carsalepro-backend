@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Priekinė kairė (3/4)",
-  "angles.diag_front_left.hint": "Pasukite priekinį ratą į išorę.",
+  "angles.diag_front_left.hint": "Pasukite priekinį ratą į vidų.",
   "angles.diag_front_right": "Priekinis dešinysis (3/4)",
-  "angles.diag_front_right.hint": "Pasukite priekinį ratą į išorę.",
+  "angles.diag_front_right.hint": "Pasukite priekinį ratą į vidų.",
   "angles.diag_rear_left": "Galinė kairė (3/4)",
   "angles.diag_rear_left.hint": "Laikyk ratus tiesiai.",
   "angles.diag_rear_right": "Galinė dešinė (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Kairiųjų durų atidarymas / B statramsčio",
   "thicknessPanels.opening_right": "Dešinės durų angos / B statramsčio",
   "thicknessPanels.roof_rear_left": "Stogas (galinis kairysis kampas)",
+  "thicknessPanels.sill_front_left": "Priekinis kairysis slenkstis",
+  "thicknessPanels.sill_front_right": "Priekinis dešinysis slenkstis",
+  "thicknessPanels.sill_rear_left": "Galinis kairysis slenkstis",
+  "thicknessPanels.sill_rear_right": "Galinis dešinysis slenkstis",
   "thicknessPanels.trunk_lid": "Bagažinės dangtis / bagažinės dangtis"
 }

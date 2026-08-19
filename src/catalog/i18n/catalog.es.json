@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Delantera izquierda (3/4)",
-  "angles.diag_front_left.hint": "Gira la rueda delantera cercana hacia fuera.",
+  "angles.diag_front_left.hint": "Gira la rueda delantera cercana hacia dentro.",
   "angles.diag_front_right": "Delantero derecho (3/4)",
-  "angles.diag_front_right.hint": "Gira la rueda delantera cercana hacia fuera.",
+  "angles.diag_front_right.hint": "Gira la rueda delantera cercana hacia dentro.",
   "angles.diag_rear_left": "Trasero izquierdo (3/4)",
   "angles.diag_rear_left.hint": "Mantén las ruedas rectas.",
   "angles.diag_rear_right": "Trasero derecho (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Puerta izquierda abriéndose / Pilar B",
   "thicknessPanels.opening_right": "Puerta derecha abriéndose / Pilar B",
   "thicknessPanels.roof_rear_left": "Techo (esquina trasera izquierda)",
+  "thicknessPanels.sill_front_left": "Estribo delantero izquierdo",
+  "thicknessPanels.sill_front_right": "Estribo delantero derecho",
+  "thicknessPanels.sill_rear_left": "Estribo trasero izquierdo",
+  "thicknessPanels.sill_rear_right": "Estribo trasero derecho",
   "thicknessPanels.trunk_lid": "Tapa del maletero / portón trasero"
 }

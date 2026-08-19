@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Depan kiri (3/4)",
-  "angles.diag_front_left.hint": "Putar roda depan dekat ke luar.",
+  "angles.diag_front_left.hint": "Putar roda depan dekat ke dalam.",
   "angles.diag_front_right": "Depan kanan (3/4)",
-  "angles.diag_front_right.hint": "Putar roda depan dekat ke luar.",
+  "angles.diag_front_right.hint": "Putar roda depan dekat ke dalam.",
   "angles.diag_rear_left": "Belakang kiri (3/4)",
   "angles.diag_rear_left.hint": "Jaga roda tetap lurus.",
   "angles.diag_rear_right": "Belakang kanan (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Pintu kiri yang dibuka / pilar B",
   "thicknessPanels.opening_right": "Bukaan pintu kanan / pilar B",
   "thicknessPanels.roof_rear_left": "Atap (sudut kiri belakang)",
+  "thicknessPanels.sill_front_left": "Ambang pintu depan kiri",
+  "thicknessPanels.sill_front_right": "Ambang pintu depan kanan",
+  "thicknessPanels.sill_rear_left": "Ambang pintu belakang kiri",
+  "thicknessPanels.sill_rear_right": "Ambang pintu belakang kanan",
   "thicknessPanels.trunk_lid": "Tutup bagasi / pintu belakang"
 }

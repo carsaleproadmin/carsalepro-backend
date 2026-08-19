@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Frente esquerda (3/4)",
-  "angles.diag_front_left.hint": "Vire a roda dianteira próxima para fora.",
+  "angles.diag_front_left.hint": "Vire a roda dianteira próxima para dentro.",
   "angles.diag_front_right": "Frente direita (3/4)",
-  "angles.diag_front_right.hint": "Vire a roda dianteira próxima para fora.",
+  "angles.diag_front_right.hint": "Vire a roda dianteira próxima para dentro.",
   "angles.diag_rear_left": "Traseira esquerda (3/4)",
   "angles.diag_rear_left.hint": "Mantenha as rodas retas.",
   "angles.diag_rear_right": "Traseira direita (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Porta esquerda abrindo / Pilar B",
   "thicknessPanels.opening_right": "Porta direita abrindo / Pilar B",
   "thicknessPanels.roof_rear_left": "Teto (canto traseiro esquerdo)",
+  "thicknessPanels.sill_front_left": "Embaladeira dianteira esquerda",
+  "thicknessPanels.sill_front_right": "Embaladeira dianteira direita",
+  "thicknessPanels.sill_rear_left": "Embaladeira traseira esquerda",
+  "thicknessPanels.sill_rear_right": "Embaladeira traseira direita",
   "thicknessPanels.trunk_lid": "Tampa do porta-malas / tampa traseira"
 }

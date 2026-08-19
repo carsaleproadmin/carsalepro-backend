@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "جلوی چپ (۳/۴)",
-  "angles.diag_front_left.hint": "چرخ جلوی نزدیک را به سمت بیرون بچرخانید.",
+  "angles.diag_front_left.hint": "چرخ جلوی نزدیک را به سمت داخل بچرخانید.",
   "angles.diag_front_right": "جلوی راست (۳/۴)",
-  "angles.diag_front_right.hint": "چرخ جلوی نزدیک را به سمت بیرون بچرخانید.",
+  "angles.diag_front_right.hint": "چرخ جلوی نزدیک را به سمت داخل بچرخانید.",
   "angles.diag_rear_left": "عقب چپ (۳/۴)",
   "angles.diag_rear_left.hint": "چرخ ها رو صاف نگه دار.",
   "angles.diag_rear_right": "عقب راست (۳/۴)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "باز شدن درب چپ / ستون B",
   "thicknessPanels.opening_right": "باز شدن درب راست / ستون B",
   "thicknessPanels.roof_rear_left": "سقف (گوشه عقب چپ)",
+  "thicknessPanels.sill_front_left": "رکاب درب جلویی سمت چپ",
+  "thicknessPanels.sill_front_right": "رکاب درب جلویی سمت راست",
+  "thicknessPanels.sill_rear_left": "رکاب درب عقب سمت چپ",
+  "thicknessPanels.sill_rear_right": "رکاب درب عقب سمت راست",
   "thicknessPanels.trunk_lid": "درب صندوق عقب / درب عقب"
 }

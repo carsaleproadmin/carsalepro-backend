@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "前左（3/4）",
-  "angles.diag_front_left.hint": "把靠近的前轮向外转动。",
+  "angles.diag_front_left.hint": "把靠近的前轮向内转动。",
   "angles.diag_front_right": "前右（3/4）",
-  "angles.diag_front_right.hint": "把靠近的前轮向外转动。",
+  "angles.diag_front_right.hint": "把靠近的前轮向内转动。",
   "angles.diag_rear_left": "后左（3/4）",
   "angles.diag_rear_left.hint": "保持轮子直。",
   "angles.diag_rear_right": "后右（3/4）",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "左侧车门开口 / B柱",
   "thicknessPanels.opening_right": "右侧车门开启 / B柱",
   "thicknessPanels.roof_rear_left": "车顶（后左角）",
+  "thicknessPanels.sill_front_left": "前左车门门槛",
+  "thicknessPanels.sill_front_right": "前右车门门槛",
+  "thicknessPanels.sill_rear_left": "后左车门门槛",
+  "thicknessPanels.sill_rear_right": "后右车门门槛",
   "thicknessPanels.trunk_lid": "后备箱盖 / 尾门"
 }

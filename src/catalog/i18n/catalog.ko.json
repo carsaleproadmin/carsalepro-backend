@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "앞 왼쪽 (3/4)",
-  "angles.diag_front_left.hint": "가까운 쪽 앞바퀴를 바깥쪽으로 돌리세요.",
+  "angles.diag_front_left.hint": "가까운 쪽 앞바퀴를 안쪽으로 돌리세요.",
   "angles.diag_front_right": "앞 오른쪽 (3/4)",
-  "angles.diag_front_right.hint": "가까운 쪽 앞바퀴를 바깥쪽으로 돌리세요.",
+  "angles.diag_front_right.hint": "가까운 쪽 앞바퀴를 안쪽으로 돌리세요.",
   "angles.diag_rear_left": "후면 왼쪽 (3/4)",
   "angles.diag_rear_left.hint": "바퀴를 곧게 유지하세요.",
   "angles.diag_rear_right": "후면 오른쪽 (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "왼쪽 문 개폐 / B필러",
   "thicknessPanels.opening_right": "오른쪽 문 열림 / B필러",
   "thicknessPanels.roof_rear_left": "지붕 (뒤쪽 왼쪽 모서리)",
+  "thicknessPanels.sill_front_left": "앞 왼쪽 로커 패널",
+  "thicknessPanels.sill_front_right": "앞 오른쪽 로커 패널",
+  "thicknessPanels.sill_rear_left": "뒤 왼쪽 로커 패널",
+  "thicknessPanels.sill_rear_right": "뒤 오른쪽 로커 패널",
   "thicknessPanels.trunk_lid": "트렁크 뚜껑 / 테일게이트"
 }

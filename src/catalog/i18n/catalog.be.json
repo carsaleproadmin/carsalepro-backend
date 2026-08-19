@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Пярэдні левы бок (3/4)",
-  "angles.diag_front_left.hint": "Павярніце блізкае пярэдняе кола вонкі.",
+  "angles.diag_front_left.hint": "Павярніце блізкае пярэдняе кола ўнутр.",
   "angles.diag_front_right": "Пярэдні правы бок (3/4)",
-  "angles.diag_front_right.hint": "Павярніце блізкае пярэдняе кола вонкі.",
+  "angles.diag_front_right.hint": "Павярніце блізкае пярэдняе кола ўнутр.",
   "angles.diag_rear_left": "Задняя левая (3/4)",
   "angles.diag_rear_left.hint": "Трымай колы прамымі.",
   "angles.diag_rear_right": "Задні правы (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Левае адкрыццё дзвярэй / B-стойка",
   "thicknessPanels.opening_right": "Правае адкрыццё дзвярэй / B-стойка",
   "thicknessPanels.roof_rear_left": "Дах (задні левы кут)",
+  "thicknessPanels.sill_front_left": "Пярэдні левы парог",
+  "thicknessPanels.sill_front_right": "Пярэдні правы парог",
+  "thicknessPanels.sill_rear_left": "Задні левы парог",
+  "thicknessPanels.sill_rear_right": "Задні правы парог",
   "thicknessPanels.trunk_lid": "Вечка багажніка / задняя дзверы"
 }
