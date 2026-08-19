@@ -26,10 +26,13 @@ export interface LegalContent {
   sections: LegalSection[];
 }
 
-// --- Shared placeholders (replace before submission) ---
-const COMPANY = '[COMPANY NAME]';
-const ADDRESS = '[COMPANY ADDRESS]';
-const EMAIL = '[CONTACT EMAIL]';
+// --- Operator details, as published in the site Imprint (FE-J1 / DEN-37) ---
+// The entity is a Wyoming LLC, so there is no Registergericht, no register number
+// and no USt-IdNr. to quote here. Keep these three in step with
+// `carsalepro-frontend/messages/{ru,en,de}.json` -> `legal.imprint`.
+const COMPANY = 'CarSalePro LLC';
+const ADDRESS = '1023 E Lincolnway, Cheyenne, WY 82001, USA';
+const EMAIL = 'carsaleproadmin@gmail.com';
 
 const PRIVACY: Record<LegalLang, LegalContent> = {
   en: {
