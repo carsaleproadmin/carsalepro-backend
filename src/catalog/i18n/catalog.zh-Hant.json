@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "前左（3/4）",
-  "angles.diag_front_left.hint": "把靠近的前輪向外轉動。",
+  "angles.diag_front_left.hint": "把靠近的前輪向內轉動。",
   "angles.diag_front_right": "前右（3/4）",
-  "angles.diag_front_right.hint": "把靠近的前輪向外轉動。",
+  "angles.diag_front_right.hint": "把靠近的前輪向內轉動。",
   "angles.diag_rear_left": "後左（3/4）",
   "angles.diag_rear_left.hint": "保持輪子直。",
   "angles.diag_rear_right": "後右（3/4）",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "左側車門開啟 / B 柱",
   "thicknessPanels.opening_right": "右側車門開啟 / B 柱",
   "thicknessPanels.roof_rear_left": "車頂（後左角）",
+  "thicknessPanels.sill_front_left": "前左車門門檻",
+  "thicknessPanels.sill_front_right": "前右車門門檻",
+  "thicknessPanels.sill_rear_left": "後左車門門檻",
+  "thicknessPanels.sill_rear_right": "後右車門門檻",
   "thicknessPanels.trunk_lid": "後車廂蓋/尾門"
 }

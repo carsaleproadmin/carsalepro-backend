@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Priekšējā kreisā (3/4)",
-  "angles.diag_front_left.hint": "Pagrieziet tuvāko priekšējo riteni uz āru.",
+  "angles.diag_front_left.hint": "Pagrieziet tuvāko priekšējo riteni uz iekšu.",
   "angles.diag_front_right": "Priekšējā labā (3/4)",
-  "angles.diag_front_right.hint": "Pagrieziet tuvāko priekšējo riteni uz āru.",
+  "angles.diag_front_right.hint": "Pagrieziet tuvāko priekšējo riteni uz iekšu.",
   "angles.diag_rear_left": "Aizmugurējais kreisais (3/4)",
   "angles.diag_rear_left.hint": "Turiet riteņus taisni.",
   "angles.diag_rear_right": "Aizmugurējais labais (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Kreisās durvju atvērums / B-stabs",
   "thicknessPanels.opening_right": "Labās puses durvju atvērums / B-statnis",
   "thicknessPanels.roof_rear_left": "Jumts (aizmugurējais kreisais stūris)",
+  "thicknessPanels.sill_front_left": "Priekšējais kreisais slieksnis",
+  "thicknessPanels.sill_front_right": "Priekšējais labais slieksnis",
+  "thicknessPanels.sill_rear_left": "Aizmugurējais kreisais slieksnis",
+  "thicknessPanels.sill_rear_right": "Aizmugurējais labais slieksnis",
   "thicknessPanels.trunk_lid": "Bagāžnieka vāks / bagāžnieka durvis"
 }

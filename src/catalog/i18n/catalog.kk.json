@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Алдыңғы сол жақ (3/4)",
-  "angles.diag_front_left.hint": "Жақын алдыңғы дөңгелекті сыртқа бұр.",
+  "angles.diag_front_left.hint": "Жақын алдыңғы дөңгелекті ішке бұр.",
   "angles.diag_front_right": "Алдыңғы оң жақ (3/4)",
-  "angles.diag_front_right.hint": "Жақын алдыңғы дөңгелекті сыртқа бұр.",
+  "angles.diag_front_right.hint": "Жақын алдыңғы дөңгелекті ішке бұр.",
   "angles.diag_rear_left": "Артқы сол жақ (3/4)",
   "angles.diag_rear_left.hint": "Дөңгелектерді түзу ұста.",
   "angles.diag_rear_right": "Артқы оң жақ (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Сол жақ есіктің ашылуы / B-бағанасы",
   "thicknessPanels.opening_right": "Оң есіктің ашылуы / B-тірегі",
   "thicknessPanels.roof_rear_left": "Шатыр (артқы сол жақ бұрыш)",
+  "thicknessPanels.sill_front_left": "Алдыңғы сол жақ табалдырық",
+  "thicknessPanels.sill_front_right": "Алдыңғы оң жақ табалдырық",
+  "thicknessPanels.sill_rear_left": "Артқы сол жақ табалдырық",
+  "thicknessPanels.sill_rear_right": "Артқы оң жақ табалдырық",
   "thicknessPanels.trunk_lid": "Багажник қақпағы / артқы қақпағы"
 }

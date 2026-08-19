@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Első bal (3/4)",
-  "angles.diag_front_left.hint": "Fordítsd ki a közeli első kereket.",
+  "angles.diag_front_left.hint": "Fordítsd be a közeli első kereket.",
   "angles.diag_front_right": "Jobb első (3/4)",
-  "angles.diag_front_right.hint": "Fordítsd ki a közeli első kereket.",
+  "angles.diag_front_right.hint": "Fordítsd be a közeli első kereket.",
   "angles.diag_rear_left": "Hátsó bal (3/4)",
   "angles.diag_rear_left.hint": "Tartsd egyenesen a kerekeket.",
   "angles.diag_rear_right": "Jobb hátsó (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Bal ajtó nyílása / B-oszlop",
   "thicknessPanels.opening_right": "Jobb ajtó nyílása / B-oszlop",
   "thicknessPanels.roof_rear_left": "Tető (hátsó bal sarok)",
+  "thicknessPanels.sill_front_left": "Első bal ajtóküszöb",
+  "thicknessPanels.sill_front_right": "Első jobb ajtóküszöb",
+  "thicknessPanels.sill_rear_left": "Hátsó bal ajtóküszöb",
+  "thicknessPanels.sill_rear_right": "Hátsó jobb ajtóküszöb",
   "thicknessPanels.trunk_lid": "Csomagtartó kapu / csomagajtó"
 }

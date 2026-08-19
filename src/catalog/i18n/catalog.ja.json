@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "前左(3/4)",
-  "angles.diag_front_left.hint": "手前側の前輪を外側に切ってください。",
+  "angles.diag_front_left.hint": "手前側の前輪を内側に切ってください。",
   "angles.diag_front_right": "前右(3/4)",
-  "angles.diag_front_right.hint": "手前側の前輪を外側に切ってください。",
+  "angles.diag_front_right.hint": "手前側の前輪を内側に切ってください。",
   "angles.diag_rear_left": "後部左(3/4)",
   "angles.diag_rear_left.hint": "車輪をまっすぐに保て。",
   "angles.diag_rear_right": "後部右(3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "左ドア開閉式/Bピラー",
   "thicknessPanels.opening_right": "右ドア開閉式/Bピラー",
   "thicknessPanels.roof_rear_left": "ルーフ(後部左隅)",
+  "thicknessPanels.sill_front_left": "フロント左ロッカーパネル",
+  "thicknessPanels.sill_front_right": "フロント右ロッカーパネル",
+  "thicknessPanels.sill_rear_left": "リア左ロッカーパネル",
+  "thicknessPanels.sill_rear_right": "リア右ロッカーパネル",
   "thicknessPanels.trunk_lid": "トランク蓋/テールゲート"
 }

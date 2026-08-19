@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Voorlinks (3/4)",
-  "angles.diag_front_left.hint": "Draai het voorwiel dichtbij naar buiten.",
+  "angles.diag_front_left.hint": "Draai het voorwiel dichtbij naar binnen.",
   "angles.diag_front_right": "Voorrechts (3/4)",
-  "angles.diag_front_right.hint": "Draai het voorwiel dichtbij naar buiten.",
+  "angles.diag_front_right.hint": "Draai het voorwiel dichtbij naar binnen.",
   "angles.diag_rear_left": "Achterlinks (3/4)",
   "angles.diag_rear_left.hint": "Houd de wielen recht.",
   "angles.diag_rear_right": "Rechtsachter (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Linker deuropening / B-stijl",
   "thicknessPanels.opening_right": "Rechterdeuropening / B-zuil",
   "thicknessPanels.roof_rear_left": "Dak (linkerachterhoek)",
+  "thicknessPanels.sill_front_left": "Deurdorpel linksvoor",
+  "thicknessPanels.sill_front_right": "Deurdorpel rechtsvoor",
+  "thicknessPanels.sill_rear_left": "Deurdorpel linksachter",
+  "thicknessPanels.sill_rear_right": "Deurdorpel rechtsachter",
   "thicknessPanels.trunk_lid": "Kofferdeksel / achterklep"
 }

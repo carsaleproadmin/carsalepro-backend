@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "წინა მარცხენა (3/4)",
-  "angles.diag_front_left.hint": "მოაბრუნეთ ახლო წინა ბორბალი გარეთ.",
+  "angles.diag_front_left.hint": "მოაბრუნეთ ახლო წინა ბორბალი შიგნით.",
   "angles.diag_front_right": "წინა მარჯვენა (3/4)",
-  "angles.diag_front_right.hint": "მოაბრუნეთ ახლო წინა ბორბალი გარეთ.",
+  "angles.diag_front_right.hint": "მოაბრუნეთ ახლო წინა ბორბალი შიგნით.",
   "angles.diag_rear_left": "უკანა მარცხენა (3/4)",
   "angles.diag_rear_left.hint": "შეინახეთ ბორბლები სწორი.",
   "angles.diag_rear_right": "უკანა მარჯვენა (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "მარცხენა კარის გაღება / B- სვეტი",
   "thicknessPanels.opening_right": "მარჯვენა კარის გაღება / B- სვეტი",
   "thicknessPanels.roof_rear_left": "სახურავი (უკანა მარცხენა კუთხე)",
+  "thicknessPanels.sill_front_left": "წინა მარცხენა ზღურბლი",
+  "thicknessPanels.sill_front_right": "წინა მარჯვენა ზღურბლი",
+  "thicknessPanels.sill_rear_left": "უკანა მარცხენა ზღურბლი",
+  "thicknessPanels.sill_rear_right": "უკანა მარჯვენა ზღურბლი",
   "thicknessPanels.trunk_lid": "საბარგულის თავსახური / უკანა კარი"
 }

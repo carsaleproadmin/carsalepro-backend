@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "الجهة الأمامية اليسرى (3/4)",
-  "angles.diag_front_left.hint": "قم بتدوير العجلة الأمامية القريبة للخارج.",
+  "angles.diag_front_left.hint": "قم بتدوير العجلة الأمامية القريبة للداخل.",
   "angles.diag_front_right": "الجهة الأمامية اليمنى (3/4)",
-  "angles.diag_front_right.hint": "قم بتدوير العجلة الأمامية القريبة للخارج.",
+  "angles.diag_front_right.hint": "قم بتدوير العجلة الأمامية القريبة للداخل.",
   "angles.diag_rear_left": "الخلف الأيسر (3/4)",
   "angles.diag_rear_left.hint": "حافظ على استقامة العجلات.",
   "angles.diag_rear_right": "الجهة الخلفية اليمنى (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "فتح الباب الأيسر / عمود B",
   "thicknessPanels.opening_right": "فتح الباب الأيمن / عمود B",
   "thicknessPanels.roof_rear_left": "السقف (الزاوية الخلفية اليسرى)",
+  "thicknessPanels.sill_front_left": "عتبة الباب الأمامي الأيسر",
+  "thicknessPanels.sill_front_right": "عتبة الباب الأمامي الأيمن",
+  "thicknessPanels.sill_rear_left": "عتبة الباب الخلفي الأيسر",
+  "thicknessPanels.sill_rear_right": "عتبة الباب الخلفي الأيمن",
   "thicknessPanels.trunk_lid": "غطاء الصندوق الخلفي / باب الصندوق الخلفي"
 }

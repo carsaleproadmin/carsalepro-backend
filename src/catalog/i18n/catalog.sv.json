@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Främre vänster (3/4)",
-  "angles.diag_front_left.hint": "Vrid det närmaste framhjulet utåt.",
+  "angles.diag_front_left.hint": "Vrid det närmaste framhjulet inåt.",
   "angles.diag_front_right": "Främre höger (3/4)",
-  "angles.diag_front_right.hint": "Vrid det närmaste framhjulet utåt.",
+  "angles.diag_front_right.hint": "Vrid det närmaste framhjulet inåt.",
   "angles.diag_rear_left": "Bakre vänster (3/4)",
   "angles.diag_rear_left.hint": "Håll hjulen raka.",
   "angles.diag_rear_right": "Bakre höger (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Vänster dörröppning / B-stolpe",
   "thicknessPanels.opening_right": "Höger dörröppning / B-stolpe",
   "thicknessPanels.roof_rear_left": "Tak (bakre vänstra hörnet)",
+  "thicknessPanels.sill_front_left": "Dörrtröskel vänster fram",
+  "thicknessPanels.sill_front_right": "Dörrtröskel höger fram",
+  "thicknessPanels.sill_rear_left": "Dörrtröskel vänster bak",
+  "thicknessPanels.sill_rear_right": "Dörrtröskel höger bak",
   "thicknessPanels.trunk_lid": "Baklucka / baklucka"
 }

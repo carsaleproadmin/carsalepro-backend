@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Przednie lewo (3/4)",
-  "angles.diag_front_left.hint": "Obróć przednie koło na zewnątrz.",
+  "angles.diag_front_left.hint": "Obróć przednie koło do wewnątrz.",
   "angles.diag_front_right": "Przednia prawa (3/4)",
-  "angles.diag_front_right.hint": "Obróć przednie koło na zewnątrz.",
+  "angles.diag_front_right.hint": "Obróć przednie koło do wewnątrz.",
   "angles.diag_rear_left": "Tylne lewe (3/4)",
   "angles.diag_rear_left.hint": "Trzymaj koła prosto.",
   "angles.diag_rear_right": "Tylna prawa (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Otwieranie lewych drzwi / słupek B",
   "thicknessPanels.opening_right": "Otwieranie drzwi po prawej stronie / słupek B",
   "thicknessPanels.roof_rear_left": "Dach (tylny lewy róg)",
+  "thicknessPanels.sill_front_left": "Przedni lewy próg drzwiowy",
+  "thicknessPanels.sill_front_right": "Przedni prawy próg drzwiowy",
+  "thicknessPanels.sill_rear_left": "Tylny lewy próg drzwiowy",
+  "thicknessPanels.sill_rear_right": "Tylny prawy próg drzwiowy",
   "thicknessPanels.trunk_lid": "Pokrywa bagażnika / klapa bagażnika"
 }

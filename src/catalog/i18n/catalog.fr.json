@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Avant gauche (3/4)",
-  "angles.diag_front_left.hint": "Tournez la roue avant proche vers l’extérieur.",
+  "angles.diag_front_left.hint": "Tournez la roue avant proche vers l’intérieur.",
   "angles.diag_front_right": "Avant droit (3/4)",
-  "angles.diag_front_right.hint": "Tournez la roue avant proche vers l’extérieur.",
+  "angles.diag_front_right.hint": "Tournez la roue avant proche vers l’intérieur.",
   "angles.diag_rear_left": "Arrière gauche (3/4)",
   "angles.diag_rear_left.hint": "Gardez les roues droites.",
   "angles.diag_rear_right": "Arrière droit (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Ouverture de la porte gauche / Pilier B",
   "thicknessPanels.opening_right": "Ouverture de la porte droite / Pilier B",
   "thicknessPanels.roof_rear_left": "Toit (coin arrière gauche)",
+  "thicknessPanels.sill_front_left": "Bas de caisse avant gauche",
+  "thicknessPanels.sill_front_right": "Bas de caisse avant droit",
+  "thicknessPanels.sill_rear_left": "Bas de caisse arrière gauche",
+  "thicknessPanels.sill_rear_right": "Bas de caisse arrière droit",
   "thicknessPanels.trunk_lid": "Couvercle du coffre / hayon arrière"
 }

@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Partea stângă față (3/4)",
-  "angles.diag_front_left.hint": "Întoarce roata din față din apropiere spre exterior.",
+  "angles.diag_front_left.hint": "Întoarce roata din față din apropiere spre interior.",
   "angles.diag_front_right": "Față dreapta (3/4)",
-  "angles.diag_front_right.hint": "Întoarce roata din față din apropiere spre exterior.",
+  "angles.diag_front_right.hint": "Întoarce roata din față din apropiere spre interior.",
   "angles.diag_rear_left": "Spate stânga (3/4)",
   "angles.diag_rear_left.hint": "Ține roțile drepte.",
   "angles.diag_rear_right": "Spate dreapta (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Deschiderea ușii din stânga / Stâlpul B",
   "thicknessPanels.opening_right": "Deschiderea ușii din dreapta / Stâlpul B",
   "thicknessPanels.roof_rear_left": "Acoperiș (colțul din spate stânga)",
+  "thicknessPanels.sill_front_left": "Pragul ușii față stânga",
+  "thicknessPanels.sill_front_right": "Pragul ușii față dreapta",
+  "thicknessPanels.sill_rear_left": "Pragul ușii spate stânga",
+  "thicknessPanels.sill_rear_right": "Pragul ușii spate dreapta",
   "thicknessPanels.trunk_lid": "Capacul portbagajului / hayon de la spate"
 }

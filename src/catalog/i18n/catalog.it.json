@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Anteriore sinistra (3/4)",
-  "angles.diag_front_left.hint": "Gira la ruota anteriore vicina verso l'esterno.",
+  "angles.diag_front_left.hint": "Gira la ruota anteriore vicina verso l'interno.",
   "angles.diag_front_right": "Anteriore destra (3/4)",
-  "angles.diag_front_right.hint": "Gira la ruota anteriore vicina verso l'esterno.",
+  "angles.diag_front_right.hint": "Gira la ruota anteriore vicina verso l'interno.",
   "angles.diag_rear_left": "Posteriore sinistra (3/4)",
   "angles.diag_rear_left.hint": "Tieni le ruote dritte.",
   "angles.diag_rear_right": "Posteriore destra (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Apertura porta sinistra / Pilastro B",
   "thicknessPanels.opening_right": "Apertura della porta destra / Pilastro B",
   "thicknessPanels.roof_rear_left": "Tetto (angolo posteriore sinistro)",
+  "thicknessPanels.sill_front_left": "Brancardo anteriore sinistro",
+  "thicknessPanels.sill_front_right": "Brancardo anteriore destro",
+  "thicknessPanels.sill_rear_left": "Brancardo posteriore sinistro",
+  "thicknessPanels.sill_rear_right": "Brancardo posteriore destro",
   "thicknessPanels.trunk_lid": "Coperchio bagagliaio / portellone posteriore"
 }

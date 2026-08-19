@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Forrest venstre (3/4)",
-  "angles.diag_front_left.hint": "Drej det nærmeste forhjul udad.",
+  "angles.diag_front_left.hint": "Drej det nærmeste forhjul indad.",
   "angles.diag_front_right": "Forrest højre (3/4)",
-  "angles.diag_front_right.hint": "Drej det nærmeste forhjul udad.",
+  "angles.diag_front_right.hint": "Drej det nærmeste forhjul indad.",
   "angles.diag_rear_left": "Bageste venstre (3/4)",
   "angles.diag_rear_left.hint": "Hold hjulene lige.",
   "angles.diag_rear_right": "Baghøjre (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Venstre døråbning / B-søjle",
   "thicknessPanels.opening_right": "Højre døråbning / B-søjle",
   "thicknessPanels.roof_rear_left": "Tag (bagerste venstre hjørne)",
+  "thicknessPanels.sill_front_left": "Dørtærskel for venstre",
+  "thicknessPanels.sill_front_right": "Dørtærskel for højre",
+  "thicknessPanels.sill_rear_left": "Dørtærskel bag venstre",
+  "thicknessPanels.sill_rear_right": "Dørtærskel bag højre",
   "thicknessPanels.trunk_lid": "Bagagerumsdæksel / bagklap"
 }

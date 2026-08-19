@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Přední levá strana (3/4)",
-  "angles.diag_front_left.hint": "Otočte přední kolo ven.",
+  "angles.diag_front_left.hint": "Otočte přední kolo dovnitř.",
   "angles.diag_front_right": "Přední pravá strana (3/4)",
-  "angles.diag_front_right.hint": "Otočte přední kolo ven.",
+  "angles.diag_front_right.hint": "Otočte přední kolo dovnitř.",
   "angles.diag_rear_left": "Zadní levá (3/4)",
   "angles.diag_rear_left.hint": "Drž kola rovně.",
   "angles.diag_rear_right": "Zadní pravá část (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Levé dveře / B-sloupek",
   "thicknessPanels.opening_right": "Otevírání pravých dveří / B-sloupek",
   "thicknessPanels.roof_rear_left": "Střecha (zadní levý roh)",
+  "thicknessPanels.sill_front_left": "Přední levý práh dveří",
+  "thicknessPanels.sill_front_right": "Přední pravý práh dveří",
+  "thicknessPanels.sill_rear_left": "Zadní levý práh dveří",
+  "thicknessPanels.sill_rear_right": "Zadní pravý práh dveří",
   "thicknessPanels.trunk_lid": "Víko kufru / zadní dveře"
 }

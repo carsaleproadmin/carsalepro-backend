@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Ön sol (3/4)",
-  "angles.diag_front_left.hint": "Yakındaki ön tekerleği dışa doğru çevirin.",
+  "angles.diag_front_left.hint": "Yakındaki ön tekerleği içe doğru çevirin.",
   "angles.diag_front_right": "Ön sağ (3/4)",
-  "angles.diag_front_right.hint": "Yakındaki ön tekerleği dışa doğru çevirin.",
+  "angles.diag_front_right.hint": "Yakındaki ön tekerleği içe doğru çevirin.",
   "angles.diag_rear_left": "Arka sol (3/4)",
   "angles.diag_rear_left.hint": "Tekerlekleri düz tut.",
   "angles.diag_rear_right": "Arka sağ (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Sol kapı açılıyor / B sütunu",
   "thicknessPanels.opening_right": "Sağ kapı açılışı / B sütunu",
   "thicknessPanels.roof_rear_left": "Tavan (arka sol köşe)",
+  "thicknessPanels.sill_front_left": "Ön sol kapı eşiği",
+  "thicknessPanels.sill_front_right": "Ön sağ kapı eşiği",
+  "thicknessPanels.sill_rear_left": "Arka sol kapı eşiği",
+  "thicknessPanels.sill_rear_right": "Arka sağ kapı eşiği",
   "thicknessPanels.trunk_lid": "Bagaj kapağı / bagaj kapağı"
 }
