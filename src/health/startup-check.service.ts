@@ -174,6 +174,7 @@ export class StartupCheckService implements OnApplicationBootstrap {
     await this.checkStripe(raw, production);
     await this.checkMapbox(raw, production);
     this.checkVinHistory(raw, production);
+    this.checkIap(raw);
     await this.checkFonts(raw);
 
     const findings: StartupFinding[] = raw.map((finding) => {
@@ -534,6 +535,68 @@ export class StartupCheckService implements OnApplicationBootstrap {
   }
 
   /** Informational: which provenance provider is live, and whether it may sell. */
+  /**
+   * A default that happens to be right today is a coincidence; a startup
+   * refusal is a fact.
+   *
+   * `IAP_BUNDLE_ID` defaulted to `com.carsalepro.app` — a package that has never
+   * existed — against the shipped `us.designkey.carsalepro`, and because
+   * `GOOGLE_PLAY_PACKAGE_NAME` falls through to it, BOTH Apple and Google
+   * server-side validation pointed at nothing. It was invisible because
+   * `IAP_VALIDATION_MODE` defaults to `client-trust`, which never contacts a
+   * store: the mismatch only bites the day somebody sets `server`, which is
+   * exactly when nobody is looking for a config fault.
+   *
+   * So this is BLOCKING in `server` mode and informational otherwise. It also
+   * reports the product ids Play is told are subscriptions, because PRO became a
+   * one-time managed product on 2026-08-19 and listing its id there routes the
+   * validation to `/purchases/subscriptions/`, where Play answers 404.
+   */
+  private checkIap(raw: RawFinding[]): void {
+    // Read defensively. A self-check that THROWS takes the boot down for a
+    // reason it was written to report, which is the one failure mode it must
+    // not have — and the spec's config double carries only the blocks each case
+    // exercises.
+    const iap = this.config.get('iap', { infer: true }) as
+      | {
+          mode?: string;
+          bundleId?: string;
+          google?: { packageName?: string; subscriptionProductIds?: string[] };
+        }
+      | undefined;
+    if (!iap) return;
+    const subs = iap.google?.subscriptionProductIds ?? [];
+    const serverMode = iap.mode === 'server';
+    const stale = iap.bundleId === 'com.carsalepro.app';
+
+    if (serverMode && stale) {
+      raw.push({
+        id: 'iap',
+        intended: 'fatal',
+        message:
+          'IAP_VALIDATION_MODE=server with IAP_BUNDLE_ID still at the retired ' +
+          'default com.carsalepro.app. The app ships us.designkey.carsalepro, so ' +
+          'every Apple and Google receipt would be rejected on a bundle mismatch. ' +
+          'Set IAP_BUNDLE_ID.',
+      });
+      return;
+    }
+
+    const lifetimeAsSub = subs.includes('carsalepro_pro_lifetime');
+    raw.push({
+      id: 'iap',
+      intended: lifetimeAsSub ? 'warn' : 'info',
+      message:
+        `IAP mode=${iap.mode} bundleId=${iap.bundleId} ` +
+        `googlePackage=${iap.google?.packageName} ` +
+        `subscriptionIds=[${subs.join(', ')}]` +
+        (lifetimeAsSub
+          ? ' - carsalepro_pro_lifetime is a one-time managed product and must ' +
+            'NOT be listed as a subscription; Play answers 404 for it there.'
+          : ''),
+    });
+  }
+
   private checkVinHistory(raw: RawFinding[], production: boolean): void {
     const vin = this.config.get('vinHistory', { infer: true });
     const selling = production && vin.provider === 'mock' && vin.allowSyntheticSale;

@@ -211,7 +211,15 @@ export default (): AppConfig => ({
   },
   iap: {
     mode: (process.env.IAP_VALIDATION_MODE as 'client-trust' | 'server') || 'client-trust',
-    bundleId: process.env.IAP_BUNDLE_ID ?? 'com.carsalepro.app',
+    // `us.designkey.carsalepro` is what the app actually ships (see
+    // android/app/build.gradle.kts and codemagic.yaml). The old default,
+    // `com.carsalepro.app`, is a package that has never existed — and because
+    // GOOGLE_PLAY_PACKAGE_NAME defaults to an empty string and falls through to
+    // this value, BOTH Apple and Google server-side validation pointed at it.
+    // Latent rather than live, because `mode` defaults to `client-trust` and
+    // never contacts a store; the startup check refuses `server` mode while
+    // this is still the compiled default.
+    bundleId: process.env.IAP_BUNDLE_ID ?? 'us.designkey.carsalepro',
     apple: {
       sharedSecret: process.env.APPLE_SHARED_SECRET ?? '',
       issuerId: process.env.APPLE_ISSUER_ID ?? '',
@@ -220,7 +228,10 @@ export default (): AppConfig => ({
       useSandboxFirst: (process.env.APPLE_USE_SANDBOX_FIRST ?? 'false') === 'true',
     },
     google: {
-      packageName: process.env.GOOGLE_PLAY_PACKAGE_NAME ?? process.env.IAP_BUNDLE_ID ?? 'com.carsalepro.app',
+      packageName:
+        process.env.GOOGLE_PLAY_PACKAGE_NAME ||
+        process.env.IAP_BUNDLE_ID ||
+        'us.designkey.carsalepro',
       serviceAccountJson: process.env.GOOGLE_PLAY_SA_JSON ?? '',
       subscriptionProductIds: (process.env.GOOGLE_PLAY_SUBSCRIPTION_IDS ?? '')
         .split(',')

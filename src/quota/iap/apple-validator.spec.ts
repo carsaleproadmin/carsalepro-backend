@@ -53,7 +53,7 @@ describe('AppleValidator (verifyReceipt)', () => {
           receipt: { bundle_id: 'com.carsalepro.app' },
           latest_receipt_info: [
             {
-              product_id: 'carsalepro_pro_monthly',
+              product_id: 'carsalepro_pro_lifetime',
               transaction_id: '1000000999000001',
               original_transaction_id: '1000000999000001',
               purchase_date_ms: '1716470000000',
@@ -65,7 +65,7 @@ describe('AppleValidator (verifyReceipt)', () => {
     );
     const res = await v.validate({ platform: 'ios', receipt: 'base64-blob' });
     expect(res.valid).toBe(true);
-    expect(res.productId).toBe('carsalepro_pro_monthly');
+    expect(res.productId).toBe('carsalepro_pro_lifetime');
     expect(res.transactionId).toBe('1000000999000001');
     expect(res.environment).toBe('Production');
     expect(res.provider).toBe('apple-verifyreceipt');
@@ -84,7 +84,7 @@ describe('AppleValidator (verifyReceipt)', () => {
             receipt: { bundle_id: 'com.carsalepro.app' },
             latest_receipt_info: [
               {
-                product_id: 'carsalepro_pro_monthly',
+                product_id: 'carsalepro_pro_lifetime',
                 transaction_id: '2000000111222333',
                 purchase_date_ms: '1716470000000',
               },
