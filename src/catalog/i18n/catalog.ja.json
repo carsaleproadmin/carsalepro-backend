@@ -204,7 +204,7 @@
   "damageTypes.engine_noise_abnormal": "異常な走行音(油圧リフター、VVTフェイザー、タイミングチェーンのノッキング音)",
   "damageTypes.exhaust_manifold_burnthrough": "排気マニホールドの焼き抜け/ひび割れ",
   "damageTypes.exhaust_pipe_burnthrough": "フレックスパイプ/マフラーの焼き抜け(排気音の増加)",
-  "damageTypes.exhaust_smoke_abnormal": "スモーキー排気(青灰色 — オイル燃焼、白色 — 冷却液、黒 — 過剰に濃い混合気)",
+  "damageTypes.exhaust_smoke_abnormal": "スモーキー排気(青灰色 - オイル燃焼、白色 - 冷却液、黒 - 過剰に濃い混合気)",
   "damageTypes.floor_sill_rust_through": "床やシルの下からの貫通腐食",
   "damageTypes.frame_straightening_marks": "フレームマシンの直線化の兆候(ロッカーパネルフランジのジグクランプの跡)",
   "damageTypes.fuel_brake_line_damage": "燃料やブレーキラインの損傷・圧迫",
