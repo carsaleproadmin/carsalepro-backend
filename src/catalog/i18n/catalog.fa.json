@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "جلوی چپ (۳/۴)",
-  "angles.diag_front_left.hint": "چرخ جلوی نزدیک را به سمت بیرون بچرخانید.",
+  "angles.diag_front_left.hint": "چرخ جلوی نزدیک را به سمت داخل بچرخانید.",
   "angles.diag_front_right": "جلوی راست (۳/۴)",
-  "angles.diag_front_right.hint": "چرخ جلوی نزدیک را به سمت بیرون بچرخانید.",
+  "angles.diag_front_right.hint": "چرخ جلوی نزدیک را به سمت داخل بچرخانید.",
   "angles.diag_rear_left": "عقب چپ (۳/۴)",
   "angles.diag_rear_left.hint": "چرخ ها رو صاف نگه دار.",
   "angles.diag_rear_right": "عقب راست (۳/۴)",
@@ -204,7 +204,7 @@
   "damageTypes.engine_noise_abnormal": "صدای غیرعادی دویدن (صدای ضربه زدن به بالابرهای هیدرولیکی، فازرهای VVT، زنجیره تایمینگ)",
   "damageTypes.exhaust_manifold_burnthrough": "سوختگی / ترک در منیفولد اگزوز",
   "damageTypes.exhaust_pipe_burnthrough": "سوختگی لوله فلکس / صداخفه کن (افزایش صدای اگزوز)",
-  "damageTypes.exhaust_smoke_abnormal": "دود دود (آبی-خاکستری — روغن سوختن، سفید — خنک کننده، سیاه — مخلوط بیش از حد غنی)",
+  "damageTypes.exhaust_smoke_abnormal": "دود دود (آبی-خاکستری - روغن سوختن، سفید - خنک کننده، سیاه - مخلوط بیش از حد غنی)",
   "damageTypes.floor_sill_rust_through": "خوردگی کامل کف / طاقچه ها از پایین",
   "damageTypes.frame_straightening_marks": "نشانه هایی از صاف شدن قاب ماشین (لکه های گیره جیگ روی فلنج های پنل راکر)",
   "damageTypes.fuel_brake_line_damage": "آسیب / چین خوردگی سوخت یا خطوط ترمز",
@@ -280,7 +280,7 @@
   "damageTypes.paint_dust_inclusions": "گرد و غبار/آوار زیر لایه شفاف (نشانه رنگ آمیزی آماتور)",
   "damageTypes.paint_fading": "محو شدن / از دست دادن رنگ (عدم تطابق رنگ بین پنل ها)",
   "damageTypes.paint_orange_peel": "بافت پوست پرتقال غیر کارخانه ای (بافت رنگ با کارخانه متفاوت است)",
-  "damageTypes.paint_repaint_thickness": "رنگ آمیزی مجدد شناسایی شد (ضخامت رنگ ۱۵۰–۳۰۰ میکرومتر بالاتر از مشخصات کارخانه ای)",
+  "damageTypes.paint_repaint_thickness": "رنگ آمیزی مجدد شناسایی شد (ضخامت رنگ ۱۵۰-۳۰۰ میکرومتر بالاتر از مشخصات کارخانه ای)",
   "damageTypes.paint_runs": "لاک و رنگ (نشانه تعمیر مجدد)",
   "damageTypes.paint_scratch_deep": "خراش عمیق (تا پرایمر یا فلز برهنه)",
   "damageTypes.paint_scratch_surface": "خش سطحی (پرایمر سالم، قابل صیقل دادن)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "باز شدن درب چپ / ستون B",
   "thicknessPanels.opening_right": "باز شدن درب راست / ستون B",
   "thicknessPanels.roof_rear_left": "سقف (گوشه عقب چپ)",
+  "thicknessPanels.sill_front_left": "رکاب درب جلویی سمت چپ",
+  "thicknessPanels.sill_front_right": "رکاب درب جلویی سمت راست",
+  "thicknessPanels.sill_rear_left": "رکاب درب عقب سمت چپ",
+  "thicknessPanels.sill_rear_right": "رکاب درب عقب سمت راست",
   "thicknessPanels.trunk_lid": "درب صندوق عقب / درب عقب"
 }

@@ -26,10 +26,27 @@ export interface LegalContent {
   sections: LegalSection[];
 }
 
-// --- Operator details, as published in the site Imprint (FE-J1 / DEN-37) ---
-// The entity is a Wyoming LLC, so there is no Registergericht, no register number
-// and no USt-IdNr. to quote here. Keep these three in step with
-// `carsalepro-frontend/messages/{ru,en,de}.json` -> `legal.imprint`.
+// --- The legal entity, supplied by the client on 2026-08-19 ---
+//
+// These were `[COMPANY NAME]` / `[COMPANY ADDRESS]` / `[CONTACT EMAIL]` until
+// then, interpolated into the controller paragraph and the intro of both
+// documents in all three languages. That is a hard store blocker, not a
+// cosmetic gap: GDPR Art. 13 requires the controller to be named and German
+// §5 DDG requires an Impressum, and a reviewer opening the privacy policy would
+// have read a square bracket.
+//
+// `legal.content.spec.ts` now asserts that no `[` survives in any rendered
+// section of either document in any of LEGAL_LANGS, so it cannot ship
+// unfilled again. The website carries its OWN copy of the same text in
+// `messages/{de,en,ru}.json` and had the same placeholders — pointing the app at
+// the website would have read a third unfilled copy rather than fixing
+// anything.
+//
+// The entity is a Wyoming LLC, so there is no Registergericht, no register
+// number and no USt-IdNr. to quote — the Imprint states the three fields below
+// and nothing more (FE-J1 / DEN-37). Keep them in step with
+// `carsalepro-frontend/messages/{ru,en,de}.json` -> `legal.imprint`, which is
+// the website's own copy of the same text.
 const COMPANY = 'CarSalePro LLC';
 const ADDRESS = '1023 E Lincolnway, Cheyenne, WY 82001, USA';
 const EMAIL = 'carsaleproadmin@gmail.com';

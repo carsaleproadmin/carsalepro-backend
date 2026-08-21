@@ -235,6 +235,23 @@ model InspectorProfile {
   available       Boolean                                @default(true)
   stripeAccountId String?                                @unique @map("stripe_account_id")
   stripeOnboarded Boolean                                @default(false) @map("stripe_onboarded")
+  /// Country of the Stripe connected account, ISO 3166-1 alpha-2, upper case.
+  ///
+  /// Stripe fixes an account's country AT CREATION and offers no way to change
+  /// it — the account has to be replaced. So this column is the record of what
+  /// was sent, and `InspectorService` refuses a later request naming a
+  /// different country instead of silently creating an account somewhere the
+  /// inspector cannot be paid.
+  ///
+  /// Null with an account present means "created before the country became a
+  /// choice"; the migration backfills those to DE, which is what the code sent.
+  stripeCountry      String?                             @map("stripe_country")
+  /// Stripe `business_type`: individual | company | non_profit | government_entity.
+  ///
+  /// Null means the inspector has not said, and Express onboarding asks them —
+  /// which is the freest answer and the default. It was hardcoded to
+  /// `individual` until 2026-08-19, so no company could be onboarded at all.
+  stripeBusinessType String?                             @map("stripe_business_type")
   fcmToken        String?                                @map("fcm_token")
   cancelCount     Int                                    @default(0) @map("cancel_count")
   createdAt       DateTime                               @default(now())

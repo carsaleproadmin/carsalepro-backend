@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "Avant gauche (3/4)",
-  "angles.diag_front_left.hint": "Tournez la roue avant proche vers l’extérieur.",
+  "angles.diag_front_left.hint": "Tournez la roue avant proche vers l’intérieur.",
   "angles.diag_front_right": "Avant droit (3/4)",
-  "angles.diag_front_right.hint": "Tournez la roue avant proche vers l’extérieur.",
+  "angles.diag_front_right.hint": "Tournez la roue avant proche vers l’intérieur.",
   "angles.diag_rear_left": "Arrière gauche (3/4)",
   "angles.diag_rear_left.hint": "Gardez les roues droites.",
   "angles.diag_rear_right": "Arrière droit (3/4)",
@@ -204,7 +204,7 @@
   "damageTypes.engine_noise_abnormal": "Bruit de fonctionnement anormal (claquements hydrauliques, phasers VVT, chaîne de distribution)",
   "damageTypes.exhaust_manifold_burnthrough": "Brûlure / fissure dans le collecteur d’échappement",
   "damageTypes.exhaust_pipe_burnthrough": "Brûlure du tuyau flexible / silencieux (bruit d’échappement accru)",
-  "damageTypes.exhaust_smoke_abnormal": "Échappement fumé (bleu-gris — brûlant à l’huile, blanc — liquide de refroidissement, noir — mélange trop riche)",
+  "damageTypes.exhaust_smoke_abnormal": "Échappement fumé (bleu-gris - brûlant à l’huile, blanc - liquide de refroidissement, noir - mélange trop riche)",
   "damageTypes.floor_sill_rust_through": "Corrosion traversante du plancher / des seuils par le dessous",
   "damageTypes.frame_straightening_marks": "Signes de redressement de la machine du cadre (marques de serrage de gabarit sur les brides du panneau culbuteur)",
   "damageTypes.fuel_brake_line_damage": "Dommages / sertissage des conduites de carburant ou de frein",
@@ -280,7 +280,7 @@
   "damageTypes.paint_dust_inclusions": "Inclusions de poussière/débris sous la couche transparente (signe de repeindre amateur)",
   "damageTypes.paint_fading": "Fanation / perte de couleur (décalage de teinte entre les panneaux)",
   "damageTypes.paint_orange_peel": "Texture non originale de peau d’orange (la texture de la peinture diffère de celle d’origine)",
-  "damageTypes.paint_repaint_thickness": "Repeint détecté (épaisseur de peinture 150–300 µm au-dessus des spécifications d’usine)",
+  "damageTypes.paint_repaint_thickness": "Repeint détecté (épaisseur de peinture 150-300 µm au-dessus des spécifications d’usine)",
   "damageTypes.paint_runs": "Des filées de laque/peinture (signe d’une réparation répétée)",
   "damageTypes.paint_scratch_deep": "Rayures profondes (jusqu’à l’amorçage ou le métal nu)",
   "damageTypes.paint_scratch_surface": "Rayure de surface (apprêt intact, peut être poli)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "Ouverture de la porte gauche / Pilier B",
   "thicknessPanels.opening_right": "Ouverture de la porte droite / Pilier B",
   "thicknessPanels.roof_rear_left": "Toit (coin arrière gauche)",
+  "thicknessPanels.sill_front_left": "Bas de caisse avant gauche",
+  "thicknessPanels.sill_front_right": "Bas de caisse avant droit",
+  "thicknessPanels.sill_rear_left": "Bas de caisse arrière gauche",
+  "thicknessPanels.sill_rear_right": "Bas de caisse arrière droit",
   "thicknessPanels.trunk_lid": "Couvercle du coffre / hayon arrière"
 }

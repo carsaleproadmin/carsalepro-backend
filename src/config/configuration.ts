@@ -153,6 +153,8 @@ export interface AppConfig {
     webhookSecret: string;
     connectRefreshUrl: string;
     connectReturnUrl: string;
+    /** ISO 3166-1 alpha-2, upper case. Where a connected account lands by default. */
+    connectDefaultCountry: string;
   };
   mapbox: {
     token: string;
@@ -209,7 +211,15 @@ export default (): AppConfig => ({
   },
   iap: {
     mode: (process.env.IAP_VALIDATION_MODE as 'client-trust' | 'server') || 'client-trust',
-    bundleId: process.env.IAP_BUNDLE_ID ?? 'com.carsalepro.app',
+    // `us.designkey.carsalepro` is what the app actually ships (see
+    // android/app/build.gradle.kts and codemagic.yaml). The old default,
+    // `com.carsalepro.app`, is a package that has never existed — and because
+    // GOOGLE_PLAY_PACKAGE_NAME defaults to an empty string and falls through to
+    // this value, BOTH Apple and Google server-side validation pointed at it.
+    // Latent rather than live, because `mode` defaults to `client-trust` and
+    // never contacts a store; the startup check refuses `server` mode while
+    // this is still the compiled default.
+    bundleId: process.env.IAP_BUNDLE_ID ?? 'us.designkey.carsalepro',
     apple: {
       sharedSecret: process.env.APPLE_SHARED_SECRET ?? '',
       issuerId: process.env.APPLE_ISSUER_ID ?? '',
@@ -218,7 +228,10 @@ export default (): AppConfig => ({
       useSandboxFirst: (process.env.APPLE_USE_SANDBOX_FIRST ?? 'false') === 'true',
     },
     google: {
-      packageName: process.env.GOOGLE_PLAY_PACKAGE_NAME ?? process.env.IAP_BUNDLE_ID ?? 'com.carsalepro.app',
+      packageName:
+        process.env.GOOGLE_PLAY_PACKAGE_NAME ||
+        process.env.IAP_BUNDLE_ID ||
+        'us.designkey.carsalepro',
       serviceAccountJson: process.env.GOOGLE_PLAY_SA_JSON ?? '',
       subscriptionProductIds: (process.env.GOOGLE_PLAY_SUBSCRIPTION_IDS ?? '')
         .split(',')
@@ -266,6 +279,13 @@ export default (): AppConfig => ({
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? '',
     connectRefreshUrl: process.env.STRIPE_CONNECT_REFRESH_URL ?? '',
     connectReturnUrl: process.env.STRIPE_CONNECT_RETURN_URL ?? '',
+    /*
+     * Normalised HERE and not only in Joi: `@nestjs/config` writes a validated
+     * value back into `process.env` only for keys that were ABSENT, so a
+     * deployment that sets `de` keeps `de` here while Joi's `.uppercase()`
+     * reports success. Stripe rejects a lower-case country code.
+     */
+    connectDefaultCountry: (process.env.STRIPE_CONNECT_DEFAULT_COUNTRY ?? 'DE').trim().toUpperCase(),
   },
   mapbox: {
     token: process.env.MAPBOX_TOKEN ?? '',

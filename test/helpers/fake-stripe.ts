@@ -7,6 +7,7 @@ import type {
   CreateVinHistoryCheckoutParams,
   StripeAccount,
   StripeAccountLink,
+  StripeBusinessType,
   StripeEvent,
   StripePaymentIntent,
   StripeRefund,
@@ -296,18 +297,57 @@ export class FakeStripeService {
     return transfer;
   }
 
-  async createConnectedAccount(email: string): Promise<StripeAccount> {
+  /**
+   * `country` and `business_type` are RECORDED, not merely accepted: they are
+   * the only two properties of a connected account this platform chooses, one of
+   * them can never be changed afterwards, and both were hardcoded until
+   * 2026-08-19. A test asserting "the inspector was onboarded in Poland as a
+   * company" has to be able to read them back.
+   *
+   * `businessType` stays `null` when the caller omitted it, which is how the real
+   * service leaves the question to Express onboarding.
+   */
+  async createConnectedAccount(params: {
+    email: string;
+    country: string;
+    businessType?: StripeBusinessType | null;
+  }): Promise<StripeAccount> {
     this.take('createConnectedAccount');
     const id = `acct_fake_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
     this.accounts.set(id, {
       id,
-      email,
+      email: params.email,
+      country: params.country,
+      business_type: params.businessType ?? null,
       charges_enabled: false,
       payouts_enabled: false,
       details_submitted: false,
     });
     this.record('createConnectedAccount', id);
     return this.accounts.get(id) as unknown as StripeAccount;
+  }
+
+  async updateConnectedAccountBusinessType(
+    accountId: string,
+    businessType: StripeBusinessType,
+  ): Promise<StripeAccount> {
+    this.take('updateConnectedAccountBusinessType');
+    const account = this.accounts.get(accountId);
+    if (!account) {
+      throw fakeStripeError({
+        type: 'StripeInvalidRequestError',
+        code: 'resource_missing',
+        message: `No such account: ${accountId}`,
+      });
+    }
+    account.business_type = businessType;
+    this.record('updateConnectedAccountBusinessType', accountId);
+    return account as unknown as StripeAccount;
+  }
+
+  /** What the fake believes about an account — for assertions, not for the service. */
+  accountSnapshot(accountId: string): FakeAccount | undefined {
+    return this.accounts.get(accountId);
   }
 
   async createAccountLink(
@@ -486,6 +526,7 @@ export type FakeStripeOp =
   | 'transfer'
   | 'retrievePaymentIntent'
   | 'createConnectedAccount'
+  | 'updateConnectedAccountBusinessType'
   | 'createAccountLink'
   | 'retrieveAccount'
   | 'checkout';
@@ -523,9 +564,13 @@ export interface FakePaymentIntent {
   metadata: Record<string, string>;
 }
 
-interface FakeAccount {
+export interface FakeAccount {
   id: string;
   email: string;
+  /** ISO 3166-1 alpha-2, as sent. Fixed for the life of the account, like Stripe's. */
+  country: string;
+  /** Null when the caller left it to Express onboarding. */
+  business_type: StripeBusinessType | null;
   charges_enabled: boolean;
   payouts_enabled: boolean;
   details_submitted: boolean;
