@@ -55,6 +55,7 @@ interface StubOptions {
   stripeSecretKey?: string;
   mapboxToken?: string;
   r2?: Record<string, unknown>;
+  iap?: Record<string, unknown>;
 }
 
 function buildConfig(opts: StubOptions): ConfigService<AppConfig, true> {
@@ -73,6 +74,8 @@ function buildConfig(opts: StubOptions): ConfigService<AppConfig, true> {
     stripe: { secretKey: opts.stripeSecretKey ?? '' },
     mapbox: { token: opts.mapboxToken ?? '' },
     vinHistory: { provider: 'mock', apiKey: '', allowSyntheticSale: false },
+    // Absent unless a case exercises it, like every other optional block here.
+    ...(opts.iap ? { iap: opts.iap } : {}),
   };
   return { get: (key: string) => values[key] } as unknown as ConfigService<AppConfig, true>;
 }
@@ -175,6 +178,46 @@ describe('StartupCheckService', () => {
     it('lists every critical variable in the env table, defect or not', async () => {
       const report = await build().run();
       expect(report.env.map((row) => row.name)).toEqual(CRITICAL_ENV_VARS.map((s) => s.name));
+    });
+  });
+
+  describe('IAP', () => {
+    /**
+     * The retired package used to be FATAL in `server` mode, which took the
+     * whole API down over a mobile-only setting that `configuration.ts` now
+     * ignores anyway. A stale variable nobody reads is a warning.
+     */
+    it('warns about the retired bundle id rather than failing the boot', async () => {
+      const report = await build({
+        iap: {
+          mode: 'server',
+          bundleId: 'us.designkey.carsalepro',
+          retiredBundleIdInEnv: true,
+          google: { packageName: 'us.designkey.carsalepro', subscriptionProductIds: [] },
+        },
+      }).run();
+
+      const bundle = findingsFor(report, 'iap.bundle');
+      expect(bundle).toHaveLength(1);
+      expect(bundle[0].severity).toBe('warn');
+      expect(bundle[0].message).toContain('com.carsalepro.app');
+      expect(bundle[0].message).toContain('us.designkey.carsalepro');
+      expect(report.counts.fatal).toBe(0);
+    });
+
+    it('says nothing about the bundle id when the environment is clean', async () => {
+      const report = await build({
+        iap: {
+          mode: 'server',
+          bundleId: 'us.designkey.carsalepro',
+          retiredBundleIdInEnv: false,
+          google: { packageName: 'us.designkey.carsalepro', subscriptionProductIds: [] },
+        },
+      }).run();
+
+      expect(findingsFor(report, 'iap.bundle')).toHaveLength(0);
+      expect(findingsFor(report, 'iap')[0].severity).toBe('info');
+      expect(report.counts.fatal).toBe(0);
     });
   });
 

@@ -86,6 +86,13 @@ export interface AppConfig {
   iap: {
     mode: 'client-trust' | 'server';
     bundleId: string;
+    /**
+     * True when `IAP_BUNDLE_ID` or `GOOGLE_PLAY_PACKAGE_NAME` still holds the
+     * retired `com.carsalepro.app`. The value is IGNORED (see the resolver
+     * below) and reported by the startup check, so the environment can be
+     * corrected without the boot depending on it.
+     */
+    retiredBundleIdInEnv: boolean;
     apple: {
       sharedSecret: string;
       issuerId: string;
@@ -174,6 +181,39 @@ export interface AppConfig {
   };
 }
 
+/**
+ * The bundle identifier the app actually ships (see
+ * `android/app/build.gradle.kts` and `codemagic.yaml`).
+ */
+const SHIPPED_BUNDLE_ID = 'us.designkey.carsalepro';
+
+/**
+ * A package that has never existed. It was this project's compiled default
+ * until 2026-08-19 and, because `GOOGLE_PLAY_PACKAGE_NAME` falls through to
+ * `IAP_BUNDLE_ID`, it pointed BOTH stores' server-side validation at nothing.
+ */
+const RETIRED_BUNDLE_ID = 'com.carsalepro.app';
+
+/**
+ * A bundle id from the environment, or `undefined` when it is blank or holds
+ * the retired package.
+ *
+ * The retired value is ignored rather than obeyed or refused. It cannot ever be
+ * correct — no such package exists in either store — so honouring it would
+ * reject every receipt, and failing the boot over it (which is what shipped)
+ * takes the whole API down for a mobile-only feature and can only be repaired
+ * from a dashboard. Ignoring it resolves to the id the app really ships, and
+ * the startup check reports the stale variable so it still gets cleaned up.
+ */
+const bundleIdFromEnv = (value: string | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === RETIRED_BUNDLE_ID) return undefined;
+  return trimmed;
+};
+
+const holdsRetiredBundleId = (value: string | undefined): boolean =>
+  value?.trim() === RETIRED_BUNDLE_ID;
+
 export default (): AppConfig => ({
   nodeEnv: (process.env.NODE_ENV as AppConfig['nodeEnv']) || 'development',
   port: parseInt(process.env.PORT ?? '3000', 10),
@@ -211,15 +251,13 @@ export default (): AppConfig => ({
   },
   iap: {
     mode: (process.env.IAP_VALIDATION_MODE as 'client-trust' | 'server') || 'client-trust',
-    // `us.designkey.carsalepro` is what the app actually ships (see
-    // android/app/build.gradle.kts and codemagic.yaml). The old default,
-    // `com.carsalepro.app`, is a package that has never existed — and because
-    // GOOGLE_PLAY_PACKAGE_NAME defaults to an empty string and falls through to
-    // this value, BOTH Apple and Google server-side validation pointed at it.
-    // Latent rather than live, because `mode` defaults to `client-trust` and
-    // never contacts a store; the startup check refuses `server` mode while
-    // this is still the compiled default.
-    bundleId: process.env.IAP_BUNDLE_ID ?? 'us.designkey.carsalepro',
+    // The retired `com.carsalepro.app` is ignored wherever it comes from — see
+    // `bundleIdFromEnv`. Both stores' server-side validation used to point at
+    // it, because `GOOGLE_PLAY_PACKAGE_NAME` falls through to this value.
+    bundleId: bundleIdFromEnv(process.env.IAP_BUNDLE_ID) ?? SHIPPED_BUNDLE_ID,
+    retiredBundleIdInEnv:
+      holdsRetiredBundleId(process.env.IAP_BUNDLE_ID) ||
+      holdsRetiredBundleId(process.env.GOOGLE_PLAY_PACKAGE_NAME),
     apple: {
       sharedSecret: process.env.APPLE_SHARED_SECRET ?? '',
       issuerId: process.env.APPLE_ISSUER_ID ?? '',
@@ -229,9 +267,9 @@ export default (): AppConfig => ({
     },
     google: {
       packageName:
-        process.env.GOOGLE_PLAY_PACKAGE_NAME ||
-        process.env.IAP_BUNDLE_ID ||
-        'us.designkey.carsalepro',
+        bundleIdFromEnv(process.env.GOOGLE_PLAY_PACKAGE_NAME) ??
+        bundleIdFromEnv(process.env.IAP_BUNDLE_ID) ??
+        SHIPPED_BUNDLE_ID,
       serviceAccountJson: process.env.GOOGLE_PLAY_SA_JSON ?? '',
       subscriptionProductIds: (process.env.GOOGLE_PLAY_SUBSCRIPTION_IDS ?? '')
         .split(',')
