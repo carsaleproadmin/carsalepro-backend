@@ -255,7 +255,7 @@ Two validation paths, picked automatically:
 | Base64-encoded App Receipt blob (Flutter `in_app_purchase` default on iOS) | `POST https://buy.itunes.apple.com/verifyReceipt` with prod→sandbox fallback on status 21007 | `APPLE_SHARED_SECRET` |
 | Numeric StoreKit 2 transactionId | `GET https://api.storekit.itunes.apple.com/inApps/v1/transactions/:id` with an ES256-signed JWT | `APPLE_ISSUER_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` (the P8 PEM with `\n` literal newlines) |
 
-Bundle ID is checked against `IAP_BUNDLE_ID` (default `com.carsalepro.app`) and the request is rejected on mismatch.
+Bundle ID is checked against `IAP_BUNDLE_ID` (default `us.designkey.carsalepro`; the retired `com.carsalepro.app` is ignored if the environment still holds it) and the request is rejected on mismatch.
 
 ### 10.2 Google Play
 

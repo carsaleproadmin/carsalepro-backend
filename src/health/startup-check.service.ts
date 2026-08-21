@@ -536,9 +536,6 @@ export class StartupCheckService implements OnApplicationBootstrap {
 
   /** Informational: which provenance provider is live, and whether it may sell. */
   /**
-   * A default that happens to be right today is a coincidence; a startup
-   * refusal is a fact.
-   *
    * `IAP_BUNDLE_ID` defaulted to `com.carsalepro.app` — a package that has never
    * existed — against the shipped `us.designkey.carsalepro`, and because
    * `GOOGLE_PLAY_PACKAGE_NAME` falls through to it, BOTH Apple and Google
@@ -547,10 +544,19 @@ export class StartupCheckService implements OnApplicationBootstrap {
    * store: the mismatch only bites the day somebody sets `server`, which is
    * exactly when nobody is looking for a config fault.
    *
-   * So this is BLOCKING in `server` mode and informational otherwise. It also
-   * reports the product ids Play is told are subscriptions, because PRO became a
-   * one-time managed product on 2026-08-19 and listing its id there routes the
-   * validation to `/purchases/subscriptions/`, where Play answers 404.
+   * This used to be FATAL in `server` mode, and that was the wrong lever. The
+   * retired package cannot ever be a correct answer, so `configuration.ts` now
+   * ignores it and resolves the shipped id instead; a value nothing reads is
+   * worth a WARNING, not a refusal that takes the whole API down over a
+   * mobile-only setting and can only be cleared from a dashboard. The warning
+   * names both variables so the environment still gets cleaned up, and it is
+   * raised in `client-trust` mode too — the variable is equally stale there, and
+   * only the consequence differs.
+   *
+   * It also reports the product ids Play is told are subscriptions, because PRO
+   * became a one-time managed product on 2026-08-19 and listing its id there
+   * routes the validation to `/purchases/subscriptions/`, where Play answers
+   * 404.
    */
   private checkIap(raw: RawFinding[]): void {
     // Read defensively. A self-check that THROWS takes the boot down for a
@@ -561,25 +567,23 @@ export class StartupCheckService implements OnApplicationBootstrap {
       | {
           mode?: string;
           bundleId?: string;
+          retiredBundleIdInEnv?: boolean;
           google?: { packageName?: string; subscriptionProductIds?: string[] };
         }
       | undefined;
     if (!iap) return;
     const subs = iap.google?.subscriptionProductIds ?? [];
-    const serverMode = iap.mode === 'server';
-    const stale = iap.bundleId === 'com.carsalepro.app';
 
-    if (serverMode && stale) {
+    if (iap.retiredBundleIdInEnv) {
       raw.push({
-        id: 'iap',
-        intended: 'fatal',
+        id: 'iap.bundle',
+        intended: 'warn',
         message:
-          'IAP_VALIDATION_MODE=server with IAP_BUNDLE_ID still at the retired ' +
-          'default com.carsalepro.app. The app ships us.designkey.carsalepro, so ' +
-          'every Apple and Google receipt would be rejected on a bundle mismatch. ' +
-          'Set IAP_BUNDLE_ID.',
+          'IAP_BUNDLE_ID / GOOGLE_PLAY_PACKAGE_NAME still holds the retired ' +
+          'com.carsalepro.app, a package that has never existed. It is IGNORED ' +
+          `and ${iap.bundleId} is used instead - clear the variable so the ` +
+          'environment stops describing a store nobody publishes to.',
       });
-      return;
     }
 
     const lifetimeAsSub = subs.includes('carsalepro_pro_lifetime');
