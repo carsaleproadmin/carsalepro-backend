@@ -41,6 +41,12 @@ export interface LegalContent {
 // `messages/{de,en,ru}.json` and had the same placeholders — pointing the app at
 // the website would have read a third unfilled copy rather than fixing
 // anything.
+//
+// The entity is a Wyoming LLC, so there is no Registergericht, no register
+// number and no USt-IdNr. to quote — the Imprint states the three fields below
+// and nothing more (FE-J1 / DEN-37). Keep them in step with
+// `carsalepro-frontend/messages/{ru,en,de}.json` -> `legal.imprint`, which is
+// the website's own copy of the same text.
 const COMPANY = 'CarSalePro LLC';
 const ADDRESS = '1023 E Lincolnway, Cheyenne, WY 82001, USA';
 const EMAIL = 'carsaleproadmin@gmail.com';
