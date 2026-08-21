@@ -25,6 +25,34 @@ export interface ListingInspectionBlock {
   reportCode: string | null;
 }
 
+/**
+ * Mean paint thickness across the stations the inspector actually measured, in
+ * micrometres, or null when nothing was measured.
+ *
+ * Free on the preview because it is a SUMMARY, not a finding: one number says
+ * how thick the coating is on average and cannot say which panel is thicker
+ * than the rest, which is the sentence a buyer pays for.
+ *
+ * Every field is treated as untrusted. `reportData` is free-form JSON on old
+ * rows, and a preview must degrade to "no number" rather than throw on a shape
+ * some 2025 mobile build wrote.
+ */
+export function averagePaintThicknessUm(data: Record<string, unknown>): number | null {
+  const thickness = data.thickness as { panels?: unknown } | undefined;
+  const panels = Array.isArray(thickness?.panels) ? thickness.panels : [];
+  const values: number[] = [];
+  for (const panel of panels) {
+    if (!panel || typeof panel !== 'object') continue;
+    const um = (panel as { um?: unknown }).um;
+    // A station that was skipped carries no `um`, and counting it as 0 would
+    // drag the mean towards a number nobody measured.
+    if (typeof um === 'number' && Number.isFinite(um) && um > 0) values.push(um);
+  }
+  if (values.length === 0) return null;
+  const mean = values.reduce((sum, um) => sum + um, 0) / values.length;
+  return Math.round(mean);
+}
+
 @Injectable()
 export class PublicService {
   constructor(
@@ -187,6 +215,9 @@ export class PublicService {
       qualityScore: report.qualityScore,
       vehicle: this.vehicle(report),
       damageCount: damages.length,
+      // Free, because it is a summary and not a finding: one number cannot say
+      // WHICH panel was repainted, which is what the paid report is for.
+      paintThicknessAvgUm: averagePaintThicknessUm(data),
       photos: await this.signPhotos(report.photosManifest, 2),
       vinMasked: report.vin ? this.maskVin(report.vin) : null,
       unlockPriceCents: await this.settings.getCents('payPerViewPriceEur'),
