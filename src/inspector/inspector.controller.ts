@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/auth.decorators';
 import { UpdateInspectorProfileDto } from './dto/inspector-profile.dto';
 import { RegisterPushTokenDto, RegisterPushTokenResultDto } from './dto/push-token.dto';
+import { StartStripeOnboardingDto } from './dto/stripe-onboarding.dto';
 import {
   EarningsResponse,
   InspectorProfileView,
@@ -49,11 +50,17 @@ export class InspectorController {
 
   @Post('stripe-onboarding')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Begin/resume Stripe Connect Express onboarding for the caller' })
+  @ApiOperation({
+    summary: 'Begin/resume Stripe Connect Express onboarding for the caller',
+    description:
+      'Optionally names the payout account country (ISO 3166-1 alpha-2) and its legal form. ' +
+      'An empty body keeps whatever is stored, so an older client is unaffected.',
+  })
   async stripeOnboarding(
     @CurrentUser('id') userId: string,
+    @Body() dto: StartStripeOnboardingDto,
   ): Promise<StripeOnboardingResponse> {
-    return this.inspector.startStripeOnboarding(userId);
+    return this.inspector.startStripeOnboarding(userId, dto);
   }
 
   @Get('onboarding-status')

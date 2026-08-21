@@ -77,6 +77,22 @@ export const envValidationSchema = Joi.object({
   STRIPE_WEBHOOK_SECRET: Joi.string().allow('').default(''),
   STRIPE_CONNECT_REFRESH_URL: Joi.string().uri().allow('').default(''),
   STRIPE_CONNECT_RETURN_URL: Joi.string().uri().allow('').default(''),
+  /*
+   * Country a connected account lands in when the inspector names none and none
+   * is stored — the platform's own country. ISO 3166-1 alpha-2.
+   *
+   * Deliberately NOT a `.valid()` list of the countries Stripe supports: that
+   * list changes on Stripe's schedule, and a stale copy here would refuse a
+   * country that works, taking the whole API down over one feature (the same
+   * reasoning as VIN_HISTORY_PROVIDER). Which countries are supported is
+   * Stripe's answer at the moment of the call, and a rejection is mapped onto
+   * `connect_country_unsupported`.
+   */
+  STRIPE_CONNECT_DEFAULT_COUNTRY: Joi.string()
+    .uppercase()
+    .length(2)
+    .pattern(/^[A-Z]{2}$/)
+    .default('DE'),
 
   // Mapbox (server-side geocoding)
   MAPBOX_TOKEN: Joi.string().allow('').default(''),
@@ -137,7 +153,7 @@ export const envValidationSchema = Joi.object({
   ALLOW_SHARED_KYC_BUCKET: Joi.string().valid('true', 'false').default('false'),
 
   IAP_VALIDATION_MODE: Joi.string().valid('client-trust', 'server').default('client-trust'),
-  IAP_BUNDLE_ID: Joi.string().default('com.carsalepro.app'),
+  IAP_BUNDLE_ID: Joi.string().default('us.designkey.carsalepro'),
   APPLE_SHARED_SECRET: Joi.string().allow('').default(''),
   APPLE_ISSUER_ID: Joi.string().allow('').default(''),
   APPLE_KEY_ID: Joi.string().allow('').default(''),

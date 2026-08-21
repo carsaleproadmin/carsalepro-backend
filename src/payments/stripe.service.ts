@@ -17,6 +17,32 @@ export type StripeAccount = StripeNamespace.Account;
 export type StripeAccountLink = StripeNamespace.AccountLink;
 export type StripeTransfer = StripeNamespace.Transfer;
 
+/**
+ * Stripe's `business_type` enum, taken from the SDK rather than retyped, so the
+ * day Stripe adds a fifth kind of business the compiler is the one that says so.
+ */
+export type StripeBusinessType = StripeNamespace.AccountCreateParams.BusinessType;
+
+/**
+ * The same four values at runtime — a DTO needs a list to validate against and a
+ * type is erased. `satisfies` keeps the list and the SDK type from drifting
+ * apart: a typo, or a value Stripe removed, fails to compile.
+ *
+ * All four are offered, not just the obvious two. A driving school run as a
+ * non-profit association and a municipal fleet workshop are both plausible
+ * inspectors, and neither is an individual or a company.
+ */
+export const STRIPE_BUSINESS_TYPES = [
+  'individual',
+  'company',
+  'non_profit',
+  'government_entity',
+] as const satisfies readonly StripeBusinessType[];
+
+export function isStripeBusinessType(value: unknown): value is StripeBusinessType {
+  return typeof value === 'string' && (STRIPE_BUSINESS_TYPES as readonly string[]).includes(value);
+}
+
 export interface CreateOrderPaymentIntentParams {
   amountCents: number;
   orderId: string;
@@ -467,15 +493,51 @@ export class StripeService implements OnModuleInit {
    * Create an Express connected account for an inspector. `transfers` is the
    * only requested capability — the platform charges the customer and transfers
    * the inspector's share via separate charges-and-transfers.
+   *
+   * `country` and `businessType` are PARAMETERS, and until 2026-08-19 they were
+   * the literals `'DE'` and `'individual'`. That pair excluded every company and
+   * every inspector outside Germany from the platform, silently: Express
+   * onboarding does not offer the company form to an account that already
+   * declares itself a natural person, so the applicant simply could not describe
+   * their own business.
+   *
+   * `businessType` is OMITTED when null rather than defaulted. An absent
+   * `business_type` is what makes Express ask the question itself, which is the
+   * only answer that is right for every applicant. Sending a guess produces an
+   * onboarding form that cannot be completed truthfully.
+   *
+   * Note what cannot be undone here: Stripe fixes the account's COUNTRY at
+   * creation and has no API to change it. `resolveConnectAccountParams` owns
+   * that rule; this method is the one place the value is spent.
    */
-  async createConnectedAccount(email: string): Promise<StripeAccount> {
+  async createConnectedAccount(params: {
+    email: string;
+    country: string;
+    businessType?: StripeBusinessType | null;
+  }): Promise<StripeAccount> {
     return this.requireClient().accounts.create({
       type: 'express',
-      country: 'DE',
-      email,
+      country: params.country,
+      email: params.email,
       capabilities: { transfers: { requested: true } },
-      business_type: 'individual',
+      ...(params.businessType ? { business_type: params.businessType } : {}),
     });
+  }
+
+  /**
+   * Change an existing connected account's `business_type`.
+   *
+   * Stripe accepts this while the account is still unverified and refuses it
+   * afterwards, which is the correct shape for the product: an inspector who
+   * ticked "individual" and then registered a company can fix it themselves
+   * until the point where the declaration has been checked, and after that it is
+   * a support matter rather than a silent overwrite of a verified fact.
+   */
+  async updateConnectedAccountBusinessType(
+    accountId: string,
+    businessType: StripeBusinessType,
+  ): Promise<StripeAccount> {
+    return this.requireClient().accounts.update(accountId, { business_type: businessType });
   }
 
   /** Create an onboarding account link the inspector follows to finish KYC. */

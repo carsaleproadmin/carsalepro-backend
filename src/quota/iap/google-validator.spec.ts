@@ -101,8 +101,22 @@ describe('GoogleValidator', () => {
     expect(res.valid).toBe(true);
     expect(res.transactionId).toBe('GPA.0000-0000-0000-0001');
     expect(res.provider).toBe('google-play');
+
+    // The route matters as much as the verdict, and nothing asserted it. PRO
+    // became a one-time product on 2026-08-19, so with the DEFAULT (empty)
+    // GOOGLE_PLAY_SUBSCRIPTION_IDS the lifetime id must reach
+    // /purchases/products/. Adding it to that env list would silently send it
+    // to /purchases/subscriptions/, where Play answers 404 for a managed
+    // product — a config change with no test to stop it.
+    const url = http.get.mock.calls[0][0] as string;
+    expect(url).toContain('/purchases/products/');
+    expect(url).not.toContain('/purchases/subscriptions/');
   });
 
+  // The subscription branch is still reachable and still tested: a rolled-back
+  // config can list an id in GOOGLE_PLAY_SUBSCRIPTION_IDS. The id below is
+  // deliberately SYNTHETIC rather than the retired carsalepro_pro_monthly, so a
+  // reader cannot mistake it for a product this project still sells.
   it('validates a subscription purchase', async () => {
     const http = mockHttp();
     http.post.mockReturnValueOnce(
@@ -119,11 +133,11 @@ describe('GoogleValidator', () => {
         }),
       ),
     );
-    const v = await buildValidator(http, makeServiceAccountJson(), ['carsalepro_pro_monthly']);
+    const v = await buildValidator(http, makeServiceAccountJson(), ['example_legacy_subscription']);
     const res = await v.validate({
       platform: 'android',
       receipt: 'sub-token',
-      productId: 'carsalepro_pro_monthly',
+      productId: 'example_legacy_subscription',
     });
     expect(res.valid).toBe(true);
     expect(res.expiresAt?.getTime()).toBe(1719062000000);

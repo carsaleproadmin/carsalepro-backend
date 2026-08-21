@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "წინა მარცხენა (3/4)",
-  "angles.diag_front_left.hint": "მოაბრუნეთ ახლო წინა ბორბალი გარეთ.",
+  "angles.diag_front_left.hint": "მოაბრუნეთ ახლო წინა ბორბალი შიგნით.",
   "angles.diag_front_right": "წინა მარჯვენა (3/4)",
-  "angles.diag_front_right.hint": "მოაბრუნეთ ახლო წინა ბორბალი გარეთ.",
+  "angles.diag_front_right.hint": "მოაბრუნეთ ახლო წინა ბორბალი შიგნით.",
   "angles.diag_rear_left": "უკანა მარცხენა (3/4)",
   "angles.diag_rear_left.hint": "შეინახეთ ბორბლები სწორი.",
   "angles.diag_rear_right": "უკანა მარჯვენა (3/4)",
@@ -280,7 +280,7 @@
   "damageTypes.paint_dust_inclusions": "მტვერი/ნამსხვრევების ჩანართები გამჭვირვალე ფენის ქვეშ (სამოყვარულო შეღებვის ნიშანი)",
   "damageTypes.paint_fading": "გაქრობა / ფერის დაკარგვა (პანელებს შორის ჩრდილის შეუსაბამობა)",
   "damageTypes.paint_orange_peel": "არაქარხნული ფორთოხლის ქერქის ტექსტურა (საღებავის ტექსტურა განსხვავდება ქარხნისგან)",
-  "damageTypes.paint_repaint_thickness": "აღმოჩენილია ხელახალი შეღებვა (საღებავის სისქე 150–300 მკმ ქარხნული სპეციფიკაციების ზემოთ)",
+  "damageTypes.paint_repaint_thickness": "აღმოჩენილია ხელახალი შეღებვა (საღებავის სისქე 150-300 მკმ ქარხნული სპეციფიკაციების ზემოთ)",
   "damageTypes.paint_runs": "ლაქი/საღებავი გადის (განმეორებითი შეკეთების ნიშანი)",
   "damageTypes.paint_scratch_deep": "ღრმა ნაკაწრი (პრაიმერამდე ან შიშველ ლითონამდე)",
   "damageTypes.paint_scratch_surface": "ზედაპირის ნაკაწრი (პრაიმერი ხელუხლებელი, შეიძლება გაპრიალებული)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "მარცხენა კარის გაღება / B- სვეტი",
   "thicknessPanels.opening_right": "მარჯვენა კარის გაღება / B- სვეტი",
   "thicknessPanels.roof_rear_left": "სახურავი (უკანა მარცხენა კუთხე)",
+  "thicknessPanels.sill_front_left": "წინა მარცხენა ზღურბლი",
+  "thicknessPanels.sill_front_right": "წინა მარჯვენა ზღურბლი",
+  "thicknessPanels.sill_rear_left": "უკანა მარცხენა ზღურბლი",
+  "thicknessPanels.sill_rear_right": "უკანა მარჯვენა ზღურბლი",
   "thicknessPanels.trunk_lid": "საბარგულის თავსახური / უკანა კარი"
 }

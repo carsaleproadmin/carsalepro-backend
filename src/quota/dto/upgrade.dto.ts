@@ -18,7 +18,7 @@ export class UpgradeDto {
   receipt!: string;
 
   @ApiPropertyOptional({
-    example: 'carsalepro_pro_monthly',
+    example: 'carsalepro_pro_lifetime',
     description: 'Product/SKU id. Required for Android (Google Play API needs it).',
   })
   @IsOptional()

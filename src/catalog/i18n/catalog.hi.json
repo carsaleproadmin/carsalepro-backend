@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "सामने बाएँ (3/4)",
-  "angles.diag_front_left.hint": "सामने के पहिये को बाहर की ओर मोड़ें।",
+  "angles.diag_front_left.hint": "सामने के पहिये को अंदर की ओर मोड़ें।",
   "angles.diag_front_right": "सामने दाएँ (3/4)",
-  "angles.diag_front_right.hint": "सामने के पहिये को बाहर की ओर मोड़ें।",
+  "angles.diag_front_right.hint": "सामने के पहिये को अंदर की ओर मोड़ें।",
   "angles.diag_rear_left": "पीछे बाएँ (3/4)",
   "angles.diag_rear_left.hint": "पहियों को सीधा रखें।",
   "angles.diag_rear_right": "पीछे दाएँ (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "बायां दरवाजा खोलना/बी-पिलर",
   "thicknessPanels.opening_right": "दायां दरवाजा खोलना/बी-पिलर",
   "thicknessPanels.roof_rear_left": "छत (पीछे बाएँ कोने)",
+  "thicknessPanels.sill_front_left": "सामने बायां रॉकर पैनल",
+  "thicknessPanels.sill_front_right": "सामने दाहिना रॉकर पैनल",
+  "thicknessPanels.sill_rear_left": "पिछला बायां रॉकर पैनल",
+  "thicknessPanels.sill_rear_right": "पिछला दाहिना रॉकर पैनल",
   "thicknessPanels.trunk_lid": "ट्रंक ढक्कन/टेलगेट"
 }

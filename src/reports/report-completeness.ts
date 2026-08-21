@@ -73,6 +73,34 @@ const LEGACY_EXTERIOR_ANGLES_8 = [
   'diag_rear_right',
 ] as const;
 
+/**
+ * The paint-thickness stations that shipped before 2026-08-19.
+ *
+ * Same purpose as [LEGACY_EXTERIOR_ANGLES_8], and it exists because the panels
+ * had NO such escape hatch when four door sills were added. Unlike a catalog
+ * angle, a station is required unconditionally, so the moment this service
+ * deployed with seventeen panels every phone still carrying the thirteen-panel
+ * bundle would have been refused with eight missing elements — four readings
+ * and four photographs — that its own interface cannot collect. `CATALOG_VERSION`
+ * is still `'1'`, so those builds keep thirteen panels until the app is updated,
+ * which is weeks.
+ */
+const LEGACY_THICKNESS_PANELS_13 = [
+  'roof_rear_left',
+  'fender_rear_left',
+  'door_rear_left',
+  'opening_left',
+  'door_front_left',
+  'fender_front_left',
+  'hood',
+  'fender_front_right',
+  'door_front_right',
+  'opening_right',
+  'door_rear_right',
+  'fender_rear_right',
+  'trunk_lid',
+] as const;
+
 export type CompletenessMissing = {
   /** Catalog angle ids with no `exterior-<id>` photo. */
   exteriorAngles: string[];
@@ -149,6 +177,33 @@ export function resolveRequiredAngles(capturedAngleIds: Set<string>): string[] {
 }
 
 /**
+ * Which paint-thickness station set to judge this payload by.
+ *
+ * The same rule as [resolveRequiredAngles], and deliberately the same shape so
+ * the two read as one policy: a payload that names ANY station the current set
+ * has and the legacy set does not is judged by the current set. Everything else
+ * falls back to the thirteen, because a build that cannot show the four door
+ * sills must not be refused for not having them.
+ *
+ * [measuredPanelIds] is every station the payload mentions at all — a reading
+ * or a photograph is equally good evidence that the app knows the station
+ * exists, which is what is being detected here rather than completeness.
+ */
+export function resolveRequiredPanels(measuredPanelIds: Set<string>): string[] {
+  const current = thicknessPanelIds();
+  const legacy = new Set<string>(LEGACY_THICKNESS_PANELS_13);
+  const knowsNewPanels = current.some(
+    (id) => !legacy.has(id) && measuredPanelIds.has(id),
+  );
+  if (knowsNewPanels) return current;
+
+  const coversLegacy = LEGACY_THICKNESS_PANELS_13.every((id) =>
+    measuredPanelIds.has(id),
+  );
+  return coversLegacy ? [...LEGACY_THICKNESS_PANELS_13] : current;
+}
+
+/**
  * Judges [reportData]. Never throws — the caller decides what a gap means.
  *
  * The photo evidence comes from the payload's `photos[].kind` manifest and NOT
@@ -203,9 +258,19 @@ export function evaluateCompleteness(
       }
     }
   }
+  // Every station the payload mentions in either way — a reading or a
+  // photograph — so a build that photographed a sill without typing its number
+  // is still recognised as knowing the sill exists.
+  const mentionedPanels = new Set<string>(panels.keys());
+  for (const kind of photoKinds) {
+    if (kind.startsWith(THICKNESS_PREFIX)) {
+      mentionedPanels.add(kind.slice(THICKNESS_PREFIX.length));
+    }
+  }
+
   const thicknessValues: string[] = [];
   const thicknessPhotos: string[] = [];
-  for (const id of thicknessPanelIds()) {
+  for (const id of resolveRequiredPanels(mentionedPanels)) {
     if (panels.get(id) === undefined) thicknessValues.push(id);
     if (!photoKinds.has(`${THICKNESS_PREFIX}${id}`)) thicknessPhotos.push(id);
   }

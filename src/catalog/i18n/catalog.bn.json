@@ -1,8 +1,8 @@
 {
   "angles.diag_front_left": "সামনের বাম (3/4)",
-  "angles.diag_front_left.hint": "কাছাকাছি সামনের চাকাটি বাইরের দিকে ঘোরান।",
+  "angles.diag_front_left.hint": "কাছাকাছি সামনের চাকাটি ভিতরের দিকে ঘোরান।",
   "angles.diag_front_right": "সামনের ডান (3/4)",
-  "angles.diag_front_right.hint": "কাছাকাছি সামনের চাকাটি বাইরের দিকে ঘোরান।",
+  "angles.diag_front_right.hint": "কাছাকাছি সামনের চাকাটি ভিতরের দিকে ঘোরান।",
   "angles.diag_rear_left": "পিছনের বাম (3/4)",
   "angles.diag_rear_left.hint": "চাকা সোজা রাখুন।",
   "angles.diag_rear_right": "পিছনের ডান (3/4)",
@@ -1124,5 +1124,9 @@
   "thicknessPanels.opening_left": "বাম দরজা খোলা / বি-পিলার",
   "thicknessPanels.opening_right": "ডান দরজা খোলার / বি-পিলার",
   "thicknessPanels.roof_rear_left": "ছাদ (পিছনের বাম কোণ)",
+  "thicknessPanels.sill_front_left": "সামনের বাম রকার প্যানেল",
+  "thicknessPanels.sill_front_right": "সামনের ডান রকার প্যানেল",
+  "thicknessPanels.sill_rear_left": "পিছনের বাম রকার প্যানেল",
+  "thicknessPanels.sill_rear_right": "পিছনের ডান রকার প্যানেল",
   "thicknessPanels.trunk_lid": "ট্রাঙ্ক ঢাকনা / টেলগেট"
 }
