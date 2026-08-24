@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -119,11 +120,50 @@ export class ListingsService {
       });
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        // Already claimed — by this user or anyone else. Same answer either way.
-        throw this.unclaimable();
+        // Already claimed. The one caller who may be told so is the caller who
+        // claimed it — see `alreadyClaimedByCaller`. Everyone else, including
+        // the report's own device owner, gets the single opaque answer.
+        throw (await this.alreadyClaimedByCaller(userId, report.id)) ?? this.unclaimable();
       }
       throw err;
     }
+  }
+
+  /**
+   * The one claim failure a caller may be told the truth about — DEN-178.
+   *
+   * `unclaimable()` answers "unknown, or already in use" to everything, which is
+   * what keeps this endpoint from enumerating report codes. It also leaves the
+   * seller who simply typed their own code twice unable to tell a typo from a
+   * listing they already have, and that is what a client reported.
+   *
+   * Telling THIS caller is not an oracle: the answer is given only when the
+   * existing listing is the caller's own, and an attacker cannot make a listing
+   * they do not own answer differently. So a probe learns exactly what it could
+   * learn by reading its own cabinet.
+   *
+   * Returns null when the claimant is anybody else, and the caller then throws
+   * the opaque refusal instead.
+   */
+  private async alreadyClaimedByCaller(
+    userId: string,
+    reportId: string,
+  ): Promise<ConflictException | null> {
+    const existing = await this.prisma.listing.findFirst({
+      where: { reportId, sellerId: userId },
+      select: { id: true, status: true },
+    });
+    if (!existing) return null;
+    return new ConflictException({
+      error: {
+        code: 'own_listing_exists',
+        message: 'You have already used this Report ID for one of your listings.',
+      },
+      // The listing to send the seller to. It is theirs by the query above, so
+      // naming it here discloses nothing they cannot already read.
+      listingId: existing.id,
+      listingStatus: existing.status,
+    });
   }
 
   /**
