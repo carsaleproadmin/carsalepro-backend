@@ -628,6 +628,10 @@ describe('Listings (e2e)', () => {
       expect(item.vehicle.model).toBe('320d');
       expect(item.vehicle.year).toBe(2018);
       expect(item.vehicle.mileageKm).toBe(120000);
+      // The report gallery, not the seller gallery. This listing owns no
+      // ListingPhoto rows, and the cabinet must still report the pictures its
+      // public card shows — the seeded manifest holds one.
+      expect(item.photoCount).toBe(1);
       expect(typeof item.viewsCount).toBe('number');
     } finally {
       await cleanup({ listingId, reportId: report.id });
