@@ -628,7 +628,10 @@ export class ListingsService {
     const listings = await this.prisma.listing.findMany({
       where: { sellerId: userId, status: { not: 'DELETED' } },
       orderBy: { createdAt: 'desc' },
-      include: { report: { select: { code: true } }, _count: { select: { photos: true } } },
+      include: {
+        report: { select: { code: true, photosManifest: true } },
+        _count: { select: { photos: true } },
+      },
     });
 
     const items = listings.map((l) => ({
@@ -651,7 +654,19 @@ export class ListingsService {
         mileageKm: l.mileageKm,
       },
       reportCode: l.report?.code ?? null,
-      photoCount: l._count.photos,
+      // Whichever gallery the listing actually has — the same choice
+      // `listingPhotos()` makes in the public service. A report-backed listing
+      // owns no `ListingPhoto` rows, so `_count.photos` is 0 for every one of
+      // them, and the cabinet used to say "no photos" about a listing whose
+      // public card was showing the inspector's pictures.
+      //
+      // Capped at MAX_LISTING_PHOTOS because that is the subset the showroom
+      // displays: the count answers "how many pictures does my advert show",
+      // not "how many frames did the inspector take".
+      photoCount:
+        l.source === 'report'
+          ? manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).length
+          : l._count.photos,
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
       expiresAt: l.expiresAt ? l.expiresAt.toISOString() : null,
       viewsCount: l.viewsCount,
