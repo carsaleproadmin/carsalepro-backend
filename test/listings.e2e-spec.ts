@@ -602,6 +602,43 @@ describe('Listings (e2e)', () => {
     }
   });
 
+  it('10b. renewing an ACTIVE listing ADDS to the time it has left', async () => {
+    // The cabinet offers renewal in the advert's last week (DEN-177). Measuring
+    // the new expiry from `now` would take those days away from the seller, so
+    // the extension runs from the current expiry while it is still in future.
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    const expiresAt = new Date(Date.now() + 5 * 86400000);
+    const listing = await prisma.listing.create({
+      data: {
+        sellerId: owner.userId,
+        reportId: report.id,
+        status: 'ACTIVE',
+        package: 'standard',
+        priceCents: 1000000,
+        city: 'Bremen',
+        publishedAt: new Date(Date.now() - 25 * 86400000),
+        expiresAt,
+      },
+    });
+    try {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/renew`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(201);
+      expect(res.body.status).toBe('ACTIVE');
+      // The five unused days survive: the extension is measured from the old
+      // expiry, so the new one clears "today plus five days" by the whole
+      // renewal period. Asserted against a one-day floor rather than the
+      // seeded 30, so an admin changing listingDurationDays cannot fail this.
+      const renewed = new Date(res.body.expiresAt).getTime();
+      expect(renewed).toBeGreaterThan(expiresAt.getTime() + 86400000);
+    } finally {
+      await cleanup({ listingId: listing.id, reportId: report.id });
+    }
+  });
+
   it('11. GET /api/v1/me/listings lists the user listings', async () => {
     const owner = await registerUser(app);
     const code = uniqueCode();

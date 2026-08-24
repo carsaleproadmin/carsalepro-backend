@@ -368,7 +368,13 @@ export class ListingsService {
       });
     }
     const durationDays = await this.settings.getNumber('listingDurationDays');
-    const expiresAt = new Date(Date.now() + durationDays * 86_400_000);
+    // Measured from whichever is later, now or the current expiry — DEN-177.
+    // The cabinet now offers renewal in the advert's last week, and measuring
+    // from `now` would charge the seller the days they have not used yet:
+    // renewing with 6 days left would have LOST 6 days. An expired listing has
+    // no unused time, so for it this is unchanged.
+    const from = Math.max(Date.now(), listing.expiresAt?.getTime() ?? 0);
+    const expiresAt = new Date(from + durationDays * 86_400_000);
     return this.prisma.listing.update({
       where: { id },
       data: { status: 'ACTIVE', expiresAt, publishedAt: listing.publishedAt ?? new Date() },
