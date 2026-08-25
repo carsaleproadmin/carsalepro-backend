@@ -1,5 +1,8 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+// The same hasher the service uses, so the seeded legacy account is one a real
+// sign-in can verify.
+import { hash } from '@node-rs/argon2';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createTestApp } from './helpers/test-app';
 
@@ -47,7 +50,12 @@ describe('Auth + users (e2e)', () => {
     return token;
   }
 
-  const password = 'Sup3rSecret!';
+  /*
+   * Letters and digits only, since DEN-187. It held an exclamation mark, which
+   * the registration rule now refuses - so the whole suite failed at the first
+   * `register`. That is the rule biting, not a broken test.
+   */
+  const password = 'Sup3rSecret9';
 
   it('1. registers a new user and returns a token', async () => {
     const email = uniqueEmail();
@@ -71,6 +79,83 @@ describe('Auth + users (e2e)', () => {
       .send({ email, password, gdprConsent: true })
       .expect(409);
     expect(res.body.error.code).toBe('email_taken');
+  });
+
+  /*
+   * DEN-187. The field rules, over the wire.
+   *
+   * `src/auth/auth-validation.spec.ts` proves the decorator stack; this proves
+   * the PIPE is wired to it and that the codes reach a client - which is what
+   * the website maps into 35 languages, and the only thing a mobile client has
+   * to work with.
+   */
+  describe('DEN-187: the field rules', () => {
+    const ok = () => ({
+      email: uniqueEmail(),
+      password: 'Sup3rSecret9',
+      name: 'Anna Maria',
+      gdprConsent: true,
+    });
+
+    it.each([
+      ['a digit in the name', { name: 'Anna2' }, 'name_invalid'],
+      ['punctuation in the name', { name: 'Dr. Anna' }, 'name_invalid'],
+      ['a name over 100 characters', { name: 'a'.repeat(101) }, 'name_too_long'],
+      ['an address with no at sign', { email: 'anna.example.com' }, 'email_invalid'],
+      ['an address with no domain dot', { email: 'anna@example' }, 'email_invalid'],
+      ['a password under eight', { password: 'abc1234' }, 'password_too_short'],
+      ['a symbol in the password', { password: 'hunter2!' }, 'password_charset'],
+    ])('refuses %s with a code the client can translate', async (_why, bad, code) => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/auth/register')
+        .send({ ...ok(), ...bad })
+        .expect(400);
+      expect(res.body.message).toContain(code);
+    });
+
+    it.each([
+      ['two words', 'Anna Maria'],
+      ['a hyphen', 'Anne-Marie'],
+      ['an apostrophe', "O'Brien"],
+      ['Cyrillic', 'Анна Волошко'],
+      ['Chinese', '李雷'],
+    ])('accepts %s as a name', async (_why, name) => {
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/register')
+        .send({ ...ok(), name })
+        .expect(201);
+    });
+
+    /*
+     * The one that protects existing customers. Their stored password may hold
+     * a symbol or be shorter than today's floor; refusing it at sign-in would
+     * lock them out of their own account with a message about character sets,
+     * and no edit to the form could help.
+     */
+    it('lets an account whose password breaks the new rules still sign in', async () => {
+      const email = uniqueEmail();
+      const legacy = 'old!pw';
+      await prisma.user.create({
+        data: {
+          email,
+          passwordHash: await hash(legacy),
+          gdprConsentAt: new Date(),
+        },
+      });
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: legacy })
+        .expect(200);
+    });
+
+    it('still checks the shape of the address at sign-in', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email: 'anna.example.com', password: 'whatever' })
+        .expect(400);
+      expect(res.body.message).toContain('email_invalid');
+    });
   });
 
   it('3. rejects registration without GDPR consent', async () => {
@@ -301,7 +386,7 @@ describe('Auth + users (e2e)', () => {
         .expect(200);
 
       const token = await linkFromNotification(userId, 'auth.password_reset', 'resetUrl');
-      const newPassword = 'Ev3nMoreSecret!';
+      const newPassword = 'Ev3nMoreSecret9';
       await request(app.getHttpServer())
         .post('/api/v1/auth/password-reset/confirm')
         .send({ token, password: newPassword })

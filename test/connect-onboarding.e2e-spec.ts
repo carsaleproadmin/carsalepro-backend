@@ -62,7 +62,7 @@ describe('Stripe Connect onboarding: any country, any business type (e2e, Stripe
     const email = `connect-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@example.com`;
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/register')
-      .send({ email, password: 'Sup3rSecret!', gdprConsent: true })
+      .send({ email, password: 'Sup3rSecret9', gdprConsent: true })
       .expect(201);
     const userId = res.body.user.id as string;
     createdUserIds.add(userId);

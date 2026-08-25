@@ -51,7 +51,7 @@ import { PinnedTariff, colocatedQuote, pinTariff } from './helpers/tariff';
 const ORDER_LAT = 52.52;
 const ORDER_LNG = 13.405;
 const SCHEDULED_AT = '2026-07-01T09:00:00.000Z';
-const PASSWORD = 'Sup3rSecret!';
+const PASSWORD = 'Sup3rSecret9';
 
 function uniqueEmail(prefix = 'mc'): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@example.com`;

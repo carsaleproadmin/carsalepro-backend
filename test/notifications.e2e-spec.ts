@@ -11,7 +11,7 @@ import { OrdersService } from '../src/orders/orders.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { createTestApp } from './helpers/test-app';
 
-const PASSWORD = 'Sup3rSecret!';
+const PASSWORD = 'Sup3rSecret9';
 
 // Berlin Mitte — the order/customer location used to seed an in-range inspector.
 const ORDER_LAT = 52.52;

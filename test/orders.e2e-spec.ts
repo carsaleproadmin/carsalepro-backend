@@ -33,7 +33,7 @@ async function registerUser(app: INestApplication, prefix = 'cust'): Promise<Reg
   const email = uniqueEmail(prefix);
   const res = await request(app.getHttpServer())
     .post('/api/v1/auth/register')
-    .send({ email, password: 'Sup3rSecret!', gdprConsent: true })
+    .send({ email, password: 'Sup3rSecret9', gdprConsent: true })
     .expect(201);
   return { token: res.body.token as string, userId: res.body.user.id as string, email };
 }
@@ -121,7 +121,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     // Re-login: the registration token was minted before the role change.
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
-      .send({ email: u.email, password: 'Sup3rSecret!' })
+      .send({ email: u.email, password: 'Sup3rSecret9' })
       .expect(200);
     return { token: res.body.token as string, userId: u.userId, email: u.email };
   }
