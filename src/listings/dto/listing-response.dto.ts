@@ -57,7 +57,12 @@ export class MyListingItemDto {
   @ApiProperty({ example: 'CSP-042', nullable: true, description: 'Null for a manual listing.' })
   reportCode!: string | null;
 
-  @ApiProperty({ example: 3, description: 'Photos in the seller gallery (manual listings).' })
+  @ApiProperty({
+    example: 3,
+    description:
+      'Photos the advert shows: the seller gallery for a manual listing, the ' +
+      'report manifest (capped at the showroom subset) for a report-backed one.',
+  })
   photoCount!: number;
 
   @ApiProperty({ example: '2026-06-13T10:00:00.000Z', nullable: true })
