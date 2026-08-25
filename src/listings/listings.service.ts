@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -119,11 +120,50 @@ export class ListingsService {
       });
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        // Already claimed — by this user or anyone else. Same answer either way.
-        throw this.unclaimable();
+        // Already claimed. The one caller who may be told so is the caller who
+        // claimed it — see `alreadyClaimedByCaller`. Everyone else, including
+        // the report's own device owner, gets the single opaque answer.
+        throw (await this.alreadyClaimedByCaller(userId, report.id)) ?? this.unclaimable();
       }
       throw err;
     }
+  }
+
+  /**
+   * The one claim failure a caller may be told the truth about — DEN-178.
+   *
+   * `unclaimable()` answers "unknown, or already in use" to everything, which is
+   * what keeps this endpoint from enumerating report codes. It also leaves the
+   * seller who simply typed their own code twice unable to tell a typo from a
+   * listing they already have, and that is what a client reported.
+   *
+   * Telling THIS caller is not an oracle: the answer is given only when the
+   * existing listing is the caller's own, and an attacker cannot make a listing
+   * they do not own answer differently. So a probe learns exactly what it could
+   * learn by reading its own cabinet.
+   *
+   * Returns null when the claimant is anybody else, and the caller then throws
+   * the opaque refusal instead.
+   */
+  private async alreadyClaimedByCaller(
+    userId: string,
+    reportId: string,
+  ): Promise<ConflictException | null> {
+    const existing = await this.prisma.listing.findFirst({
+      where: { reportId, sellerId: userId },
+      select: { id: true, status: true },
+    });
+    if (!existing) return null;
+    return new ConflictException({
+      error: {
+        code: 'own_listing_exists',
+        message: 'You have already used this Report ID for one of your listings.',
+      },
+      // The listing to send the seller to. It is theirs by the query above, so
+      // naming it here discloses nothing they cannot already read.
+      listingId: existing.id,
+      listingStatus: existing.status,
+    });
   }
 
   /**
@@ -368,7 +408,13 @@ export class ListingsService {
       });
     }
     const durationDays = await this.settings.getNumber('listingDurationDays');
-    const expiresAt = new Date(Date.now() + durationDays * 86_400_000);
+    // Measured from whichever is later, now or the current expiry — DEN-177.
+    // The cabinet now offers renewal in the advert's last week, and measuring
+    // from `now` would charge the seller the days they have not used yet:
+    // renewing with 6 days left would have LOST 6 days. An expired listing has
+    // no unused time, so for it this is unchanged.
+    const from = Math.max(Date.now(), listing.expiresAt?.getTime() ?? 0);
+    const expiresAt = new Date(from + durationDays * 86_400_000);
     return this.prisma.listing.update({
       where: { id },
       data: { status: 'ACTIVE', expiresAt, publishedAt: listing.publishedAt ?? new Date() },
@@ -628,7 +674,10 @@ export class ListingsService {
     const listings = await this.prisma.listing.findMany({
       where: { sellerId: userId, status: { not: 'DELETED' } },
       orderBy: { createdAt: 'desc' },
-      include: { report: { select: { code: true } }, _count: { select: { photos: true } } },
+      include: {
+        report: { select: { code: true, photosManifest: true } },
+        _count: { select: { photos: true } },
+      },
     });
 
     const items = listings.map((l) => ({
@@ -651,7 +700,19 @@ export class ListingsService {
         mileageKm: l.mileageKm,
       },
       reportCode: l.report?.code ?? null,
-      photoCount: l._count.photos,
+      // Whichever gallery the listing actually has — the same choice
+      // `listingPhotos()` makes in the public service. A report-backed listing
+      // owns no `ListingPhoto` rows, so `_count.photos` is 0 for every one of
+      // them, and the cabinet used to say "no photos" about a listing whose
+      // public card was showing the inspector's pictures.
+      //
+      // Capped at MAX_LISTING_PHOTOS because that is the subset the showroom
+      // displays: the count answers "how many pictures does my advert show",
+      // not "how many frames did the inspector take".
+      photoCount:
+        l.source === 'report'
+          ? manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).length
+          : l._count.photos,
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
       expiresAt: l.expiresAt ? l.expiresAt.toISOString() : null,
       viewsCount: l.viewsCount,

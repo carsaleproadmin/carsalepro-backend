@@ -125,7 +125,53 @@ describe('Listings (e2e)', () => {
     }
   });
 
-  it('3. BE-S1: claiming is single-use, and a second claim looks like "not found"', async () => {
+  it('3. BE-S1: claiming is single-use, and a stranger cannot tell a used code from a fake one', async () => {
+    const owner = await registerUser(app);
+    const stranger = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    try {
+      const first = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = first.body.id;
+
+      // A code that never existed must be INDISTINGUISHABLE from a claimed one,
+      // or this endpoint becomes an oracle for which report codes are real. The
+      // subject of that property is a caller who does NOT hold the listing —
+      // the holder is told the truth, and is the only one who is (DEN-178).
+      const claimed = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .send({ reportCode: code })
+        .expect(404);
+      expect(claimed.body.error.code).toBe('report_not_claimable');
+
+      const missing = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .send({ reportCode: uniqueCode() })
+        .expect(404);
+      // Everything but the timestamp, which the exception filter stamps on every
+      // error and which says nothing about the code.
+      const withoutTimestamp = (b: Record<string, unknown>) => {
+        const { timestamp: _ts, ...rest } = b;
+        void _ts;
+        return rest;
+      };
+      expect(withoutTimestamp(missing.body)).toEqual(withoutTimestamp(claimed.body));
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
+  it('3e. DEN-178: the seller who claimed the code is told so, and gets the listing', async () => {
+    // The opaque refusal left the seller who typed their own code twice unable
+    // to tell a typo from a listing they already own. Answering them leaks
+    // nothing: an attacker cannot make a listing they do not hold reply this way.
     const owner = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code, userId: owner.userId });
@@ -138,28 +184,14 @@ describe('Listings (e2e)', () => {
         .expect(201);
       listingId = first.body.id;
 
-      const claimed = await request(app.getHttpServer())
+      const again = await request(app.getHttpServer())
         .post('/api/v1/listings')
         .set('Authorization', `Bearer ${owner.token}`)
         .send({ reportCode: code })
-        .expect(404);
-      expect(claimed.body.error.code).toBe('report_not_claimable');
-
-      // A code that never existed must be INDISTINGUISHABLE from a claimed one,
-      // or this endpoint becomes an oracle for which report codes are real.
-      const missing = await request(app.getHttpServer())
-        .post('/api/v1/listings')
-        .set('Authorization', `Bearer ${owner.token}`)
-        .send({ reportCode: uniqueCode() })
-        .expect(404);
-      // Everything but the timestamp, which the exception filter stamps on every
-      // error and which says nothing about the code.
-      const withoutTimestamp = (b: Record<string, unknown>) => {
-        const { timestamp: _ts, ...rest } = b;
-        void _ts;
-        return rest;
-      };
-      expect(withoutTimestamp(missing.body)).toEqual(withoutTimestamp(claimed.body));
+        .expect(409);
+      expect(again.body.error.code).toBe('own_listing_exists');
+      expect(again.body.listingId).toBe(listingId);
+      expect(again.body.listingStatus).toBe('DRAFT');
     } finally {
       await cleanup({ listingId, reportId: report.id });
     }
@@ -602,6 +634,43 @@ describe('Listings (e2e)', () => {
     }
   });
 
+  it('10b. renewing an ACTIVE listing ADDS to the time it has left', async () => {
+    // The cabinet offers renewal in the advert's last week (DEN-177). Measuring
+    // the new expiry from `now` would take those days away from the seller, so
+    // the extension runs from the current expiry while it is still in future.
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    const expiresAt = new Date(Date.now() + 5 * 86400000);
+    const listing = await prisma.listing.create({
+      data: {
+        sellerId: owner.userId,
+        reportId: report.id,
+        status: 'ACTIVE',
+        package: 'standard',
+        priceCents: 1000000,
+        city: 'Bremen',
+        publishedAt: new Date(Date.now() - 25 * 86400000),
+        expiresAt,
+      },
+    });
+    try {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/renew`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(201);
+      expect(res.body.status).toBe('ACTIVE');
+      // The five unused days survive: the extension is measured from the old
+      // expiry, so the new one clears "today plus five days" by the whole
+      // renewal period. Asserted against a one-day floor rather than the
+      // seeded 30, so an admin changing listingDurationDays cannot fail this.
+      const renewed = new Date(res.body.expiresAt).getTime();
+      expect(renewed).toBeGreaterThan(expiresAt.getTime() + 86400000);
+    } finally {
+      await cleanup({ listingId: listing.id, reportId: report.id });
+    }
+  });
+
   it('11. GET /api/v1/me/listings lists the user listings', async () => {
     const owner = await registerUser(app);
     const code = uniqueCode();
@@ -628,6 +697,10 @@ describe('Listings (e2e)', () => {
       expect(item.vehicle.model).toBe('320d');
       expect(item.vehicle.year).toBe(2018);
       expect(item.vehicle.mileageKm).toBe(120000);
+      // The report gallery, not the seller gallery. This listing owns no
+      // ListingPhoto rows, and the cabinet must still report the pictures its
+      // public card shows — the seeded manifest holds one.
+      expect(item.photoCount).toBe(1);
       expect(typeof item.viewsCount).toBe('number');
     } finally {
       await cleanup({ listingId, reportId: report.id });
