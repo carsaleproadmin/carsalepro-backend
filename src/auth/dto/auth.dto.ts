@@ -4,23 +4,44 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
+import {
+  AUTH_VALIDATION_CODES as CODE,
+  EMAIL_PATTERN,
+  NAME_MAX,
+  NAME_PATTERN,
+  PASSWORD_MAX,
+  PASSWORD_MIN,
+  PASSWORD_PATTERN,
+} from '../auth-validation';
+
+/*
+ * The rules themselves are in `auth-validation.ts`, next to the reasoning for
+ * each one - including why the password character set is NOT applied at
+ * sign-in. The messages are codes: the web app serves 35 languages and maps
+ * them into its own catalogue (DEN-187).
+ */
 
 export class RegisterDto {
-  @IsEmail()
+  @IsEmail({}, { message: CODE.email })
+  @Matches(EMAIL_PATTERN, { message: CODE.email })
   email!: string;
 
+  // Optional because an OAuth account has no password of its own.
   @IsOptional()
   @IsString()
-  @MinLength(8)
-  @MaxLength(128)
+  @MinLength(PASSWORD_MIN, { message: CODE.passwordLength })
+  @MaxLength(PASSWORD_MAX, { message: CODE.passwordLength })
+  @Matches(PASSWORD_PATTERN, { message: CODE.passwordCharset })
   password?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(120)
+  @MaxLength(NAME_MAX, { message: CODE.nameLength })
+  @Matches(NAME_PATTERN, { message: CODE.name })
   name?: string;
 
   @IsOptional()
@@ -32,11 +53,19 @@ export class RegisterDto {
 }
 
 export class LoginDto {
-  @IsEmail()
+  @IsEmail({}, { message: CODE.email })
+  @Matches(EMAIL_PATTERN, { message: CODE.email })
   email!: string;
 
+  /*
+   * The shape of the password and nothing else. The character set and the
+   * length floor are NOT checked here on purpose: accounts exist whose
+   * passwords predate both rules, and enforcing them at sign-in would lock
+   * those people out with a message about punctuation. Only the hash decides.
+   */
   @IsString()
-  @IsNotEmpty()
+  @IsNotEmpty({ message: CODE.passwordLength })
+  @MaxLength(PASSWORD_MAX, { message: CODE.passwordLength })
   password!: string;
 }
 
@@ -50,9 +79,12 @@ export class PasswordResetConfirmDto {
   @IsNotEmpty()
   token!: string;
 
+  // A password is CREATED here, so the full policy applies, exactly as it does
+  // at registration.
   @IsString()
-  @MinLength(8)
-  @MaxLength(128)
+  @MinLength(PASSWORD_MIN, { message: CODE.passwordLength })
+  @MaxLength(PASSWORD_MAX, { message: CODE.passwordLength })
+  @Matches(PASSWORD_PATTERN, { message: CODE.passwordCharset })
   password!: string;
 }
 
@@ -63,11 +95,18 @@ export class VerifyEmailDto {
 }
 
 export class OAuthUpsertDto {
-  @IsEmail()
+  @IsEmail({}, { message: CODE.email })
   email!: string;
 
+  /*
+   * NOT held to NAME_PATTERN. This name comes from Google, not from a form:
+   * nobody can retype it, and a profile that says "Anna (CarSale)" or carries
+   * a degree after a comma would be refused a sign-in over punctuation. It is
+   * length-capped and stored as given.
+   */
   @IsOptional()
   @IsString()
+  @MaxLength(NAME_MAX, { message: CODE.nameLength })
   name?: string;
 
   @IsString()

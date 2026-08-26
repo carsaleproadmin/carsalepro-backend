@@ -111,7 +111,7 @@ describe('VIN history — simulated real provider (e2e)', () => {
       .slice(2, 8)}@example.com`;
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/register')
-      .send({ email, password: 'Sup3rSecret!', gdprConsent: true })
+      .send({ email, password: 'Sup3rSecret9', gdprConsent: true })
       .expect(201);
     userIds.push(res.body.user.id as string);
     return { token: res.body.token as string, userId: res.body.user.id as string };
