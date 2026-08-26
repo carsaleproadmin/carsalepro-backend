@@ -8,7 +8,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { R2Service } from '../src/r2/r2.service';
 import { createTestApp } from './helpers/test-app';
 
-const PASSWORD = 'Sup3rSecret!';
+const PASSWORD = 'Sup3rSecret9';
 
 function uniqueEmail(prefix = 'kyc'): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@example.com`;

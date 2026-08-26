@@ -146,7 +146,7 @@ describe('LegalSync / Order Contract (e2e)', () => {
     const email = uniqueEmail(prefix);
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/register')
-      .send({ email, password: 'Sup3rSecret!', gdprConsent: true })
+      .send({ email, password: 'Sup3rSecret9', gdprConsent: true })
       .expect(201);
     return { token: res.body.token as string, userId: res.body.user.id as string, email };
   }
@@ -166,7 +166,7 @@ describe('LegalSync / Order Contract (e2e)', () => {
     // before the role change).
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
-      .send({ email: u.email, password: 'Sup3rSecret!' })
+      .send({ email: u.email, password: 'Sup3rSecret9' })
       .expect(200);
     return { token: res.body.token as string, userId: u.userId, email: u.email };
   }

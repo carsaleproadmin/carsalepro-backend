@@ -26,7 +26,7 @@ async function registerUser(app: INestApplication, prefix = 'cust'): Promise<Reg
   const email = uniqueEmail(prefix);
   const res = await request(app.getHttpServer())
     .post('/api/v1/auth/register')
-    .send({ email, password: 'Sup3rSecret!', gdprConsent: true })
+    .send({ email, password: 'Sup3rSecret9', gdprConsent: true })
     .expect(201);
   return { token: res.body.token as string, userId: res.body.user.id as string, email };
 }
