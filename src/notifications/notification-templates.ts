@@ -13,6 +13,43 @@ export interface RenderedTemplate {
   body: string;
   /** Short single-line text for SMS and push. */
   short: string;
+  /**
+   * The one action the letter is asking for, rendered as a button in the HTML
+   * part (DEN-200). Optional, and only the email provider reads it: SMS, push
+   * and the in-app list all take their text from `short`/`body`.
+   *
+   * The URL MUST also appear in `body`. The button is an addition to the
+   * plain-text link, never a replacement for it - a client that refuses HTML,
+   * or a reader who copies the mail into a text editor, still has to be able to
+   * finish what the letter asked them to do.
+   */
+  cta?: { url: string; label: string };
+}
+
+/**
+ * An ISO timestamp as plain English: `26 August 2026, 14:32 UTC`.
+ *
+ * The templates used to interpolate the ISO string straight into the sentence,
+ * which put `2026-08-27T09:14:22.001Z` in front of a reader who is being asked
+ * to trust the letter. UTC is stated rather than converted: the server does not
+ * know the reader's zone, and a time with no zone on it is worse than a time in
+ * a zone the reader has to think about once.
+ */
+export function formatDeadline(iso: unknown): string {
+  const at = new Date(String(iso ?? ''));
+  if (Number.isNaN(at.getTime())) return '';
+  const date = at.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+  const time = at.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC',
+  });
+  return `${date}, ${time} UTC`;
 }
 
 type TemplateFn = (p: Record<string, unknown>) => RenderedTemplate;
@@ -43,10 +80,26 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       body: `Bitte bestätigen Sie Ihre E-Mail-Adresse: ${str(p, 'verifyUrl')}\n\nDer Link ist bis ${str(p, 'expiresAt')} gültig und kann nur einmal verwendet werden. Falls Sie sich nicht registriert haben, ignorieren Sie diese Nachricht.`,
       short: 'Bitte bestätigen Sie Ihre E-Mail-Adresse.',
     }),
+    /*
+     * The English letter is the one every new account gets, whatever language
+     * the site was read in - `AuthService.sendVerificationEmail` pins the
+     * locale to `en` (DEN-200). The German and Russian versions below are kept
+     * because the catalog is keyed by locale and because pinning is a caller's
+     * decision that a later caller may want to make differently.
+     */
     en: (p) => ({
       subject: 'Confirm your email address',
-      body: `Please confirm your email address: ${str(p, 'verifyUrl')}\n\nThe link is valid until ${str(p, 'expiresAt')} and can be used once. If you did not sign up, ignore this message.`,
+      body:
+        `Welcome to CarSalePro.\n\n` +
+        `One step is left: confirm that ${str(p, 'email', 'this address')} is yours. ` +
+        `Open the link below and your registration is complete.\n\n` +
+        `${str(p, 'verifyUrl')}\n\n` +
+        `The link works once and stops working on ${formatDeadline(p.expiresAt)}. ` +
+        `If it has already expired, sign in and ask for a new one from the banner in your account.\n\n` +
+        `If you did not create a CarSalePro account, no action is needed - ` +
+        `nothing happens until somebody opens that link, and it will expire on its own.`,
       short: 'Please confirm your email address.',
+      cta: { url: str(p, 'verifyUrl'), label: 'Confirm my email address' },
     }),
     ru: (p) => ({
       subject: 'Подтвердите адрес электронной почты',
