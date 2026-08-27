@@ -20,6 +20,21 @@ const toBool = ({ value }: { value: unknown }) => {
   return value === 'true' || value === '1';
 };
 
+export const PAGE_SIZES = [10, 20, 30, 50, 100] as const;
+
+export const LISTING_SORTS = [
+  'default',
+  'price_asc',
+  'price_desc',
+  'recent',
+  'year_asc',
+  'year_desc',
+  'mileage_asc',
+  'mileage_desc',
+] as const;
+
+export type ListingSort = (typeof LISTING_SORTS)[number];
+
 /** Query for the public showroom. All filters optional; verified listings only. */
 export class ListingQueryDto {
   @IsOptional() @IsString() make?: string;
@@ -48,7 +63,26 @@ export class ListingQueryDto {
    */
   @IsOptional() @Transform(toBool) @IsBoolean() verifiedOnly?: boolean;
 
-  @IsOptional() @IsIn(['recent', 'price_asc', 'price_desc']) sort?: 'recent' | 'price_asc' | 'price_desc';
+  /**
+   * DEN-211. The orders the showroom offers.
+   *
+   * `default` is the ranking the site has always had and stays the default.
+   * `recent` is now the reader ASKING for newest first, which is a different
+   * statement even though the two agree today - the default is free to change
+   * and `recent` is not.
+   *
+   * The list is closed on purpose. An unknown value is refused rather than
+   * quietly answered with the default, because a sort silently ignored looks
+   * to the reader like the data is wrong.
+   */
+  @IsOptional() @IsIn([...LISTING_SORTS]) sort?: ListingSort;
 
   @IsOptional() @Transform(toInt) @IsInt() @Min(1) page?: number;
+
+  /**
+   * How many cards one page carries. Closed set, because the value decides how
+   * much work one request costs and an open integer is an invitation to ask
+   * for ten thousand.
+   */
+  @IsOptional() @Transform(toInt) @IsInt() @IsIn([...PAGE_SIZES]) perPage?: number;
 }

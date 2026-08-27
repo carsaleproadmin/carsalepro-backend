@@ -3,7 +3,7 @@ import { Listing, Prisma, Report } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import { SettingsService } from '../settings/settings.service';
-import { ListingQueryDto } from './dto/listing-query.dto';
+import { ListingQueryDto, ListingSort, PAGE_SIZES } from './dto/listing-query.dto';
 import {
   MAX_LISTING_PHOTOS,
   manifestPhotoRefs,
@@ -12,7 +12,47 @@ import {
 } from '../listings/listing-photo-urls';
 import { citySearchKeys, normalizeCompact, normalizeSearchText } from '../common/search-text';
 
-const PAGE_SIZE = 12;
+/*
+ * DEN-211. The reader chooses how many cards a page carries, out of the closed
+ * set in the DTO. 20 is the default because it is the middle of that set and
+ * the size the showroom's two-up layout is built around; the previous 12 is
+ * not offered, so a bookmarked `?page=` cannot land on a page that no longer
+ * exists at any offered size.
+ */
+const DEFAULT_PAGE_SIZE = 20;
+
+/**
+ * The eight orders the showroom offers.
+ *
+ * Two things are the same in every one of them, and both are deliberate:
+ *
+ *  - `package: 'asc'` first. 'gold' sorts before 'standard', so a paid listing
+ *    ranks above a free one in EVERY order, including "cheapest first". That is
+ *    a commercial rule, not a sorting bug - it predates this change and is left
+ *    exactly as it was. It does mean the cheapest car on the page is not always
+ *    the first card.
+ *  - `id: 'asc'` last, the tiebreaker from DEN-205. Without a total order rows
+ *    repeat across pages and others are never shown.
+ *
+ * `year` and `mileageKm` are NULLABLE, so both directions ask for nulls last.
+ * The default in Postgres puts them first on a descending sort, which would
+ * open "newest year first" with the cars whose year nobody filled in.
+ */
+function orderFor(sort: ListingSort | undefined): Prisma.ListingOrderByWithRelationInput[] {
+  const gold: Prisma.ListingOrderByWithRelationInput = { package: 'asc' };
+  const tiebreak: Prisma.ListingOrderByWithRelationInput = { id: 'asc' };
+  const by: Record<ListingSort, Prisma.ListingOrderByWithRelationInput> = {
+    default: { publishedAt: 'desc' },
+    recent: { publishedAt: 'desc' },
+    price_asc: { priceCents: 'asc' },
+    price_desc: { priceCents: 'desc' },
+    year_asc: { year: { sort: 'asc', nulls: 'last' } },
+    year_desc: { year: { sort: 'desc', nulls: 'last' } },
+    mileage_asc: { mileageKm: { sort: 'asc', nulls: 'last' } },
+    mileage_desc: { mileageKm: { sort: 'desc', nulls: 'last' } },
+  };
+  return [gold, by[sort ?? 'default'], tiebreak];
+}
 
 type ListingWithReport = Prisma.ListingGetPayload<{ include: { report: true } }>;
 
@@ -155,39 +195,32 @@ export class PublicService {
       ...(q.verifiedOnly ? { reportId: { not: null }, source: 'report' } : {}),
     };
 
-    // Gold listings rank first. 'gold' < 'standard' lexically, so ascending
-    // order on `package` puts Gold ahead of Standard.
-    const orderBy: Prisma.ListingOrderByWithRelationInput[] =
-      q.sort === 'price_asc'
-        ? [{ package: 'asc' }, { priceCents: 'asc' }, { id: 'asc' }]
-        : q.sort === 'price_desc'
-          ? [{ package: 'asc' }, { priceCents: 'desc' }, { id: 'asc' }]
-          : [{ package: 'asc' }, { publishedAt: 'desc' }, { id: 'asc' }];
+    const orderBy = orderFor(q.sort);
 
     /*
-     * The `id` is a TIEBREAKER, not a sort the reader asked for - DEN-205.
-     *
-     * Without it the order is undefined between rows that agree on package and
-     * price (or on the second a batch was published). Postgres is free to
-     * return those in a different order for each page, so a row can appear on
-     * page 1 and again on page 2 while another is never shown at all. It is
-     * invisible on a small showroom and certain on a seeded one: twenty
-     * listings published in the same second reproduced it every run.
+     * The DTO has already refused a size outside the offered set, so this only
+     * fills in the default. It is written as a membership test rather than a
+     * clamp so the two cannot drift: adding a size to `PAGE_SIZES` is the whole
+     * change.
      */
+    const pageSize =
+      q.perPage && (PAGE_SIZES as readonly number[]).includes(q.perPage)
+        ? q.perPage
+        : DEFAULT_PAGE_SIZE;
 
     const [rows, total] = await Promise.all([
       this.prisma.listing.findMany({
         where,
         orderBy,
-        skip: (page - 1) * PAGE_SIZE,
-        take: PAGE_SIZE,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
         include: { report: true },
       }),
       this.prisma.listing.count({ where }),
     ]);
 
     const items = await Promise.all(rows.map((l) => this.toCard(l)));
-    return { items, total, page, pageSize: PAGE_SIZE, pages: Math.ceil(total / PAGE_SIZE) };
+    return { items, total, page, pageSize, pages: Math.ceil(total / pageSize) };
   }
 
   async getListing(id: string) {

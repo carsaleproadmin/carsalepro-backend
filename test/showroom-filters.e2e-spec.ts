@@ -112,6 +112,26 @@ describe('Showroom filters (e2e)', () => {
     expect([...(await actual(q))].sort()).toEqual([...expected(q)].sort());
   }
 
+  /** The same walk, keeping the ORDER the API returned this spec's rows in. */
+  async function actualOrdered(q: Record<string, unknown>): Promise<string[]> {
+    const mine = new Set(ids);
+    const found: string[] = [];
+    for (let page = 1; page <= 60; page++) {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/public/listings')
+        .query({ ...q, page })
+        .expect(200);
+      for (const item of res.body.items) if (mine.has(item.id)) found.push(item.id);
+      if (page >= (res.body.pages || 1)) break;
+    }
+    return found;
+  }
+
+  /** The seed behind an id, so a returned order can be judged against its data. */
+  function seedOf(id: string): Seed {
+    return SEEDS[ids.indexOf(id)];
+  }
+
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
@@ -276,9 +296,161 @@ describe('Showroom filters (e2e)', () => {
 
   /* ── 8. paging and sorting must not change WHICH rows come back ──────── */
   describe('sort and paging', () => {
-    it.each(['recent', 'price_asc', 'price_desc'])('sort=%s returns the same set', (sort) =>
-      check({ country: 'DE', sort }),
+    it.each([
+      'default',
+      'recent',
+      'price_asc',
+      'price_desc',
+      'year_asc',
+      'year_desc',
+      'mileage_asc',
+      'mileage_desc',
+    ])('sort=%s returns the same set', (sort) => check({ country: 'DE', sort }));
+
+    /*
+     * DEN-211. A sort orders rows; it must never REMOVE one. `year` and
+     * `mileageKm` are nullable, and the ordinary way to get this wrong is to
+     * filter the nulls out to keep the order tidy - which quietly hides every
+     * listing whose seller left the field blank.
+     */
+    it('keeps a listing with no year and no mileage in every order', async () => {
+      const base = await request(app.getHttpServer())
+        .get('/api/v1/public/listings')
+        .query({ perPage: 100 })
+        .expect(200);
+
+      for (const sort of ['year_asc', 'year_desc', 'mileage_asc', 'mileage_desc']) {
+        const res = await request(app.getHttpServer())
+          .get('/api/v1/public/listings')
+          .query({ perPage: 100, sort })
+          .expect(200);
+        expect(res.body.total).toBe(base.body.total);
+      }
+    });
+
+    it.each([10, 20, 30, 50, 100])('perPage=%i is honoured', async (perPage) => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/public/listings')
+        .query({ perPage })
+        .expect(200);
+
+      expect(res.body.pageSize).toBe(perPage);
+      expect(res.body.items.length).toBeLessThanOrEqual(perPage);
+      expect(res.body.pages).toBe(Math.ceil(res.body.total / perPage));
+    });
+
+    it('refuses a page size that is not offered', async () => {
+      // Closed set, not a clamp: an open integer is an invitation to ask for
+      // ten thousand rows, and answering 25 with 20 tells the reader nothing.
+      await request(app.getHttpServer())
+        .get('/api/v1/public/listings')
+        .query({ perPage: 25 })
+        .expect(400);
+    });
+
+    it('refuses a sort it does not offer', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/public/listings')
+        .query({ sort: 'cheapest' })
+        .expect(400);
+    });
+  });
+
+  /* ── 9. a filter and a sort applied together ─────────────────────────── */
+  describe('filtering and sorting at the same time', () => {
+    /*
+     * DEN-211. The two features were built separately and this is the place
+     * they can disagree.
+     *
+     * Two properties, and they are different questions:
+     *
+     *  - WHICH rows come back must be decided by the filter ALONE. A sort that
+     *    changes the set is a sort that hides a car - the way to get this wrong
+     *    is to drop null years to keep an ORDER BY tidy, and every seed below
+     *    is chosen so a filter leaves several rows with the same package.
+     *  - The ORDER of those rows must obey the sort. Asserting the set alone
+     *    would pass with the sort ignored entirely, which is exactly what a
+     *    mistyped query parameter does.
+     */
+    const KEY: Record<string, { of: (s: Seed) => number; dir: 1 | -1 }> = {
+      price_asc: { of: (s) => s.priceCents, dir: 1 },
+      price_desc: { of: (s) => s.priceCents, dir: -1 },
+      year_asc: { of: (s) => s.year, dir: 1 },
+      year_desc: { of: (s) => s.year, dir: -1 },
+      mileage_asc: { of: (s) => s.mileageKm, dir: 1 },
+      mileage_desc: { of: (s) => s.mileageKm, dir: -1 },
+    };
+
+    const FILTERS: Record<string, unknown>[] = [
+      { country: 'DE' },
+      { city: 'Берлин' },
+      { bodyType: 'SEDAN' },
+      { driveType: 'fwd' },
+      { make: 'skoda' },
+      { yearFrom: 2017 },
+      { priceTo: 2000000 },
+      { mileageTo: 120000 },
+      { country: 'DE', bodyType: 'sedan' },
+      { city: 'Munchen', make: 'BMW' },
+    ];
+
+    const CASES = FILTERS.flatMap((filter) =>
+      Object.keys(KEY).map((sort) => [filter, sort] as const),
     );
+
+    it.each(CASES)('%j sorted by %s', async (filter, sort) => {
+      const returned = await actualOrdered({ ...filter, sort, perPage: 100 });
+
+      // 1. The filter, and only the filter, decides the set.
+      expect([...returned].sort()).toEqual([...expected(filter)].sort());
+
+      // 2. The sort decides the order of it.
+      const { of, dir } = KEY[sort];
+      const values = returned.map((id) => of(seedOf(id)));
+      for (let i = 1; i < values.length; i++) {
+        expect(Math.sign(values[i] - values[i - 1]) * dir).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    it('gives the same answer whichever order the query names things in', async () => {
+      // A query string is a bag, not a sequence. This fails when a builder
+      // overwrites one key with another - the sibling-OR defect of DEN-205 in
+      // a new place.
+      const a = await actualOrdered({ country: 'DE', sort: 'price_asc', perPage: 100 });
+      const b = await actualOrdered({ sort: 'price_asc', perPage: 100, country: 'DE' });
+      expect(a).toEqual(b);
+    });
+
+    it('keeps the filter across every page of a sorted result', async () => {
+      /*
+       * Paging is where a filter is most likely to be lost: page 1 is built by
+       * one code path in most implementations and the rest by another. Two rows
+       * a page over a filtered, sorted set walks that seam repeatedly.
+       */
+      const seen: string[] = [];
+      const mine = new Set(ids);
+      for (let page = 1; page <= 60; page++) {
+        const res = await request(app.getHttpServer())
+          .get('/api/v1/public/listings')
+          .query({ country: 'DE', sort: 'price_desc', perPage: 10, page })
+          .expect(200);
+        for (const item of res.body.items) {
+          if (mine.has(item.id)) seen.push(item.id);
+          // Every row on every page must satisfy the filter, not only mine.
+          expect(item.countryCode ?? 'DE').toBe('DE');
+        }
+        if (page >= (res.body.pages || 1)) break;
+      }
+
+      expect([...seen].sort()).toEqual([...expected({ country: 'DE' })].sort());
+      // And no row twice - the tiebreaker still holds under a filter.
+      expect(new Set(seen).size).toBe(seen.length);
+
+      const prices = seen.map((id) => seedOf(id).priceCents);
+      for (let i = 1; i < prices.length; i++) {
+        expect(prices[i]).toBeLessThanOrEqual(prices[i - 1]);
+      }
+    });
 
     it('shows every row exactly once across the pages', async () => {
       /*
