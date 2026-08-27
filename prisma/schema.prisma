@@ -763,6 +763,16 @@ model Listing {
   package                String        @default("standard") // standard | gold
   priceCents             Int           @map("price_cents")
   city                   String
+  /// `city`, folded for search: lower case, diacritics stripped, Cyrillic
+  /// transliterated to Latin (DEN-205). Written by `normalizeSearchText`, never
+  /// by hand. A buyer types "Берлин" and a seller stored "Berlin"; this column
+  /// is where those two meet. Null = not normalized yet.
+  citySearch             String?       @map("city_search")
+  /// `make` and `model`, folded AND stripped of separators (DEN-205), so
+  /// "Mercedes-Benz" answers "mercedes benz" and "C 220" answers "C220".
+  /// Written by `normalizeCompact`, never by hand.
+  makeSearch             String?       @map("make_search")
+  modelSearch            String?       @map("model_search")
   /// ISO 3166-1 alpha-2, upper case. The showroom is worldwide, so the search
   /// starts with the country — and a city name alone cannot answer it (there is
   /// a Frankfurt in Germany and a Frankfort in Kentucky). Nullable because every
@@ -811,6 +821,8 @@ model Listing {
   @@index([sellerId])
   @@index([make, model, year])
   @@index([countryCode, city])
+  @@index([citySearch])
+  @@index([makeSearch, modelSearch])
   @@map("listing")
 }
 
