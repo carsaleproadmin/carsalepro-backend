@@ -670,7 +670,7 @@ export class InspectorService {
    */
   private async baseFeeBounds(): Promise<{ minCents: number; maxCents: number; platformCents: number }> {
     const platformCents = await this.settings.getCents('orderBaseFeeEur');
-    return { ...inspectorBaseFeeBounds(platformCents), platformCents };
+    return { ...inspectorBaseFeeBounds(), platformCents };
   }
 
   /** Refuse a fee outside the window, naming the window. */
