@@ -827,6 +827,18 @@ model Listing {
   driveType              String?       @map("drive_type")
   /// Structured seller-declared payload (ListingVehicleV1Dto). Manual only.
   vehicleData            Json?         @map("vehicle_data")
+  /// A listing the PLATFORM created to fill the showroom, not a car anybody is
+  /// selling (DEN-216).
+  ///
+  /// A real column and not a marker in the description, because the difference
+  /// has to be readable by code as well as by a person: the showroom can hide
+  /// it, the sitemap can skip it, and a sweep can find every one of them. A
+  /// sentence in free text is invisible to all three.
+  ///
+  /// Demo rows are ALWAYS self-declared. Fabricating an inspection report would
+  /// be a claim about a car nobody looked at, which is the one thing this
+  /// platform sells.
+  isDemo                 Boolean       @default(false) @map("is_demo")
   viewsCount             Int           @default(0) @map("views_count")
   /// When the showroom subset of a REPORT-backed listing's photos was copied
   /// into the public bucket. Report photos live in the private reports bucket
