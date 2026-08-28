@@ -48,25 +48,60 @@ import { flag, loadEnv, option, requireEnv } from './lib/script-env';
  * exercise is meant to avoid.
  */
 const QUERIES = [
-  'car exterior side view',
-  'silver sedan car',
-  'suv car parked',
-  'station wagon car',
-  'hatchback car street',
-  'white car front view',
-  'black car parked outdoor',
-  'blue car side',
-  'used car dealership',
-  'compact car city',
+  'silver sedan on road', 'white sedan parked street', 'black sedan parked outdoor',
+  'blue hatchback car parked', 'white suv parked', 'grey suv on road',
+  'red car parked street', 'station wagon car parked', 'compact car parked city street',
+  'modern car side profile', 'car parked in front of building', 'family car parked driveway',
+  'green car parked', 'beige car parked street', 'dark blue sedan parked',
+  'white hatchback parked', 'black suv parked street', 'silver suv parked',
+  'grey sedan parked outdoor', 'red suv on road', 'estate car parked street',
+  'small car parked kerb', 'sedan rear view parked', 'car parked parking lot',
+  'car parked residential street', 'white car alley', 'blue sedan road',
+  'black hatchback parked', 'brown car parked', 'car side view street',
 ];
 
 interface PexelsPhoto {
   id: number;
+  /** Pexels' own one-line description. The only thing that makes filtering possible. */
+  alt?: string;
   width: number;
   height: number;
   photographer: string;
   url: string;
   src: { large2x: string; large: string; original: string };
+}
+
+
+/*
+ * Words that mean "not a photograph of a car somebody could be selling".
+ *
+ * The first pass without this filter produced a dark crop of a door handle, a
+ * 1960 Edsel with its bonnet up at a classic car show, and a blurred Beetle
+ * window. Stock libraries answer "car" with mood photography, and a 2022
+ * Passat advert illustrated by a vintage American estate is worse than the
+ * empty-state icon it replaced.
+ */
+const REJECT = [
+  'close-up', 'closeup', 'close up', 'macro', 'detail',
+  'classic', 'vintage', 'retro', 'antique', 'oldtimer',
+  'black and white', 'monochrome',
+  'interior', 'dashboard', 'steering', 'seat', 'engine',
+  'aerial', 'drone', 'top view', 'from above',
+  'woman', 'people', 'person', 'child', 'couple',
+  'toy', 'miniature', 'wreck', 'abandoned', 'rusty', 'crash',
+  'race', 'racing', 'rally', 'formula', 'motorcycle', 'truck',
+];
+
+/** Words that mean the frame actually holds a whole car. */
+const REQUIRE = ['car', 'sedan', 'suv', 'hatchback', 'wagon', 'vehicle', 'coupe'];
+
+function looksUsable(photo: PexelsPhoto): boolean {
+  const alt = (photo.alt ?? '').toLowerCase();
+  // No description at all is not a pass: it cannot be checked, and one bad
+  // photograph on a card is more visible than one missing photograph.
+  if (alt.length < 12) return false;
+  if (REJECT.some((w) => alt.includes(w))) return false;
+  return REQUIRE.some((w) => alt.includes(w));
 }
 
 async function search(key: string, query: string, perPage: number): Promise<PexelsPhoto[]> {
@@ -79,6 +114,53 @@ async function search(key: string, query: string, perPage: number): Promise<Pexe
   }
   const body = (await res.json()) as { photos?: PexelsPhoto[] };
   return body.photos ?? [];
+}
+
+
+/*
+ * Group the photographs into SETS OF ONE CAR.
+ *
+ * A listing gallery holding three different cars is not a thin gallery, it is
+ * a broken one: the reader clicks through and sees a silver Audi, a black Ford
+ * and a white Defender under one advert. Stock photographs are unrelated by
+ * default, so the grouping has to be recovered.
+ *
+ * The signal that works is the photographer plus the colour: stock libraries
+ * carry SERIES - one photographer shooting one car from several angles in one
+ * session - and those frames share both. "Mike Bird + blue" really is five
+ * frames of the same blue Vauxhall Corsa.
+ *
+ * It is a heuristic, and it will occasionally put two different blue cars by
+ * one photographer in one set. That is a far smaller error than mixing three
+ * unrelated cars, and it is the best available without a human looking at
+ * every frame.
+ */
+const COLOURS = [
+  'white', 'black', 'silver', 'grey', 'gray', 'blue', 'red',
+  'green', 'brown', 'beige', 'yellow', 'orange',
+];
+
+function groupKey(photo: PexelsPhoto): string {
+  const alt = (photo.alt ?? '').toLowerCase();
+  const colour = COLOURS.find((c) => alt.includes(c)) ?? 'unknown';
+  return `${photo.photographer}|${colour}`;
+}
+
+/** One car per entry, biggest sets first. */
+function groupPhotos(photos: PexelsPhoto[]): PexelsPhoto[][] {
+  const buckets = new Map<string, PexelsPhoto[]>();
+  for (const photo of photos) {
+    const key = groupKey(photo);
+    const list = buckets.get(key);
+    if (list) list.push(photo);
+    else buckets.set(key, [photo]);
+  }
+  /*
+   * Biggest sets first: the importer walks groups in order, so the listings a
+   * visitor is most likely to open - the first page - get the richest
+   * galleries rather than whatever happened to sort first.
+   */
+  return [...buckets.values()].sort((a, b) => b.length - a.length);
 }
 
 async function main(): Promise<void> {
@@ -99,6 +181,7 @@ async function main(): Promise<void> {
       // the same picture on four cards is what the dedupe prevents.
       if (seen.has(photo.id)) continue;
       seen.add(photo.id);
+      if (!looksUsable(photo)) continue;
       chosen.push(photo);
     }
     console.log(`${query}: ${photos.length} found, ${chosen.length} kept so far`);
@@ -132,26 +215,31 @@ async function main(): Promise<void> {
     '',
   ];
 
+  /*
+   * Filenames carry the grouping: `g007-2-12345.jpg` is the third frame of car
+   * seven. The importer takes a plain directory and does not read CREDITS.txt,
+   * so the group has to travel in the name for that contract to stay intact.
+   */
+  const groups = groupPhotos(wanted);
   let written = 0;
-  for (const [index, photo] of wanted.entries()) {
-    const name = `${String(index + 1).padStart(3, '0')}-${photo.id}.jpg`;
-    const target = path.join(outDir, name);
-    if (fs.existsSync(target)) {
+  for (const [gi, group] of groups.entries()) {
+    for (const [pi, photo] of group.entries()) {
+      const name = `g${String(gi + 1).padStart(3, '0')}-${pi}-${photo.id}.jpg`;
+      const target = path.join(outDir, name);
+      if (fs.existsSync(target)) {
+        written++;
+        continue;
+      }
+      const res = await fetch(photo.src.large2x);
+      if (!res.ok) {
+        console.warn(`  skip ${photo.id}: ${res.status}`);
+        continue;
+      }
+      fs.writeFileSync(target, Buffer.from(await res.arrayBuffer()));
+      credits.push(`${name}\t${photo.photographer}\t${photo.url}\t${photo.alt ?? ''}`);
       written++;
-      continue;
+      process.stdout.write(`\r${written}/${wanted.length} downloaded, ${groups.length} cars`);
     }
-    // `large2x` and not `original`: originals run to 20 MB, and the importer
-    // compresses to 1920 px anyway, so the extra bytes are downloaded only to
-    // be thrown away.
-    const res = await fetch(photo.src.large2x);
-    if (!res.ok) {
-      console.warn(`  skip ${photo.id}: ${res.status}`);
-      continue;
-    }
-    fs.writeFileSync(target, Buffer.from(await res.arrayBuffer()));
-    credits.push(`${name}\t${photo.photographer}\t${photo.url}`);
-    written++;
-    process.stdout.write(`\r${written}/${wanted.length} downloaded`);
   }
 
   fs.writeFileSync(path.join(outDir, 'CREDITS.txt'), credits.join('\n') + '\n');

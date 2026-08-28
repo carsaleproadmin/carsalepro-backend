@@ -189,8 +189,19 @@ function generate(index: number, now: Date): GeneratedListing {
   };
 }
 
-/** The photos on disk, sorted so the assignment is the same on every run. */
-function loadPhotoFiles(dir: string): string[] {
+/**
+ * The photographs on disk, grouped into SETS OF ONE CAR.
+ *
+ * `fetch-demo-photos.ts` names its files `g007-2-12345.jpg`: car seven, third
+ * frame. Grouping matters because a gallery is per advert - three unrelated
+ * cars under one listing reads as broken, not as thin. Files that do not carry
+ * the prefix (a directory the user filled by hand) each become their own group
+ * of one, which is the safe reading: one photograph per advert and no false
+ * claim that two frames show the same car.
+ *
+ * Sorted, so the assignment is identical on every run.
+ */
+function loadPhotoGroups(dir: string): string[][] {
   const files = fs
     .readdirSync(dir)
     .filter((name) => /\.(jpe?g|png|webp)$/i.test(name))
@@ -198,7 +209,16 @@ function loadPhotoFiles(dir: string): string[] {
   if (files.length === 0) {
     throw new Error(`No image files in ${dir}. Nothing to upload.`);
   }
-  return files.map((name) => path.join(dir, name));
+
+  const groups = new Map<string, string[]>();
+  for (const name of files) {
+    const match = /^(g\d+)-/.exec(name);
+    const key = match ? match[1] : name;
+    const list = groups.get(key);
+    if (list) list.push(path.join(dir, name));
+    else groups.set(key, [path.join(dir, name)]);
+  }
+  return [...groups.values()];
 }
 
 async function main(): Promise<void> {
@@ -235,7 +255,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const files = photoDir ? loadPhotoFiles(photoDir) : [];
+  const groups = photoDir ? loadPhotoGroups(photoDir) : [];
   if (!photoDir) {
     console.warn(
       'WARNING: --photos was not given. Listings will have no image, and a showroom\n' +
@@ -253,7 +273,8 @@ async function main(): Promise<void> {
           `${row.mileageKm} km  ${(row.priceCents / 100).toFixed(0)} EUR  ${row.city}`,
       );
     }
-    console.log(`... ${rows.length} listings total, ${files.length} source photos available.`);
+    const frames = groups.reduce((n, g) => n + g.length, 0);
+    console.log(`... ${rows.length} listings total, ${frames} photos in ${groups.length} car sets.`);
     console.log(`Public bucket configured: ${r2.isPublicBucketConfigured()}`);
     await app.close();
     return;
@@ -342,10 +363,17 @@ async function main(): Promise<void> {
     });
     written++;
 
-    if (files.length > 0) {
+    if (groups.length > 0) {
+      /*
+       * ONE car set per listing, walked in order. Two adverts may end up
+       * showing the same car when there are fewer sets than listings - that is
+       * a repetition a reader can notice, but it is honest: each advert still
+       * shows one car from several angles rather than a collage of three.
+       */
+      const group = groups[index % groups.length];
       const existing = await prisma.listingPhoto.count({ where: { listingId: row.id } });
-      for (let slot = existing; slot < perListing; slot++) {
-        const file = files[(index * perListing + slot) % files.length];
+      for (let slot = existing; slot < Math.min(perListing, group.length); slot++) {
+        const file = group[slot];
         const processed = await photos.compress(fs.readFileSync(file));
         const key = `listings/${row.id}/demo-${slot}.jpg`;
         const bucket = r2.isPublicBucketConfigured()
