@@ -126,7 +126,7 @@ describe('Inspector base fee (e2e)', () => {
   describe('setting the fee', () => {
     it('refuses a fee outside the window, and names the window', async () => {
       const insp = await makeInspector();
-      const { maxCents } = inspectorBaseFeeBounds(platformBaseCents);
+      const { maxCents } = inspectorBaseFeeBounds();
 
       const res = await request(app.getHttpServer())
         .patch('/api/v1/inspector/profile')
@@ -141,7 +141,7 @@ describe('Inspector base fee (e2e)', () => {
 
     it('accepts a fee inside the window and reports the window back', async () => {
       const insp = await makeInspector();
-      const { minCents, maxCents } = inspectorBaseFeeBounds(platformBaseCents);
+      const { minCents, maxCents } = inspectorBaseFeeBounds();
       const chosen = maxCents;
 
       const res = await request(app.getHttpServer())
@@ -239,7 +239,7 @@ describe('Inspector base fee (e2e)', () => {
        * one further out cannot be offered the job: Stripe can capture less than
        * an authorisation and never more, and there is no second card to ask.
        */
-      const { maxCents } = inspectorBaseFeeBounds(platformBaseCents);
+      const { maxCents } = inspectorBaseFeeBounds();
       const cheap = await makeInspector(undefined, LAT, LNG);
       const customer = await register('cust');
       const orderId = await createOrder(customer.token);
@@ -273,7 +273,7 @@ describe('Inspector base fee (e2e)', () => {
        * at the minimum fare, and under the floor a cheaper base changes nothing
        * at all - which is the case the test below this one states.
        */
-      const { minCents } = inspectorBaseFeeBounds(platformBaseCents);
+      const { minCents } = inspectorBaseFeeBounds();
       const dear = await makeInspector(platformBaseCents, LAT + 0.36, LNG);
       const customer = await register('cust');
       const orderId = await createOrder(customer.token);
@@ -313,7 +313,7 @@ describe('Inspector base fee (e2e)', () => {
        * the customer nothing and buys the inspector no advantage in the queue.
        * The floor is the platform's and the inspector's discount stops at it.
        */
-      const { minCents } = inspectorBaseFeeBounds(platformBaseCents);
+      const { minCents } = inspectorBaseFeeBounds();
       await makeInspector(minCents, LAT, LNG);
       const customer = await register('cust');
 
