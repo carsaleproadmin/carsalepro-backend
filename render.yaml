@@ -77,6 +77,12 @@ services:
 
 databases:
   - name: carsalepro-db
-    plan: free
+    # Matches the live instance, verified against the Render API on 2026-08-28.
+    # This said `free`, which was never true of the running database and was
+    # actively misleading: a Free Postgres has NO backups and NO point-in-time
+    # recovery, expires 30 days after creation and is then deleted with its
+    # contents. Anybody reading this file to answer "can we restore?" would
+    # have got the wrong answer at the worst possible moment.
+    plan: basic_256mb
     region: frankfurt
     postgresMajorVersion: "16"
