@@ -109,4 +109,22 @@ export class UpdateInspectorProfileDto {
   @IsOptional()
   @IsBoolean()
   available?: boolean;
+
+  /**
+   * What this inspector charges as the base fee, in CENTS (DEN-213).
+   *
+   * `null` clears it and returns the inspector to the platform base - which is
+   * a different statement from "0", and the reason this is nullable rather than
+   * defaulted.
+   *
+   * The BOUND is not here. It depends on the platform base, which is a runtime
+   * setting and may differ by region, so it is checked in the service where
+   * that number is known; a decorator would have to hardcode today's 39 EUR.
+   */
+  @ApiPropertyOptional({ example: 4500, nullable: true, description: 'Base fee in cents.' })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsInt()
+  @Min(0)
+  baseFeeCents?: number | null;
 }
