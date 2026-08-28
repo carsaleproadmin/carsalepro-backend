@@ -232,6 +232,18 @@ model InspectorProfile {
   /// platform had before the field went live; somebody who does not want a
   /// five-hour drive now has a control that works.
   searchRadiusKm  Int                                    @default(300) @map("search_radius_km")
+  /// What THIS inspector charges as the base fee, in cents (DEN-213).
+  ///
+  /// NULL means "has not said", which resolves to the platform base - not to
+  /// zero, and not to a number this column invented. Only the base is theirs to
+  /// move: the kilometre and minute rates describe the drive, and the kilometre
+  /// rate is anchored to a published tax figure nobody renegotiates alone.
+  ///
+  /// Held inside +/-30 % of the platform base at every read
+  /// (`effectiveBaseFeeCents`), because the bound moves - a regional tariff
+  /// changes, an operator edits the tolerance - and a value that was legal when
+  /// it was typed must not drop the inspector out of dispatch weeks later.
+  baseFeeCents    Int?                                   @map("base_fee_cents")
   available       Boolean                                @default(true)
   stripeAccountId String?                                @unique @map("stripe_account_id")
   stripeOnboarded Boolean                                @default(false) @map("stripe_onboarded")
@@ -456,6 +468,19 @@ model OrderOffer {
   /// ranks the same way. Null for offers made before this column existed, and
   /// for an offer minted by an admin assignment, where no candidate search ran.
   straightLineKm Decimal? @map("straight_line_km") @db.Decimal(7, 2)
+
+  /// The price THIS offer was made at, frozen when it was sent (DEN-213).
+  ///
+  /// Frozen, and not read from the profile at acceptance, for one reason: an
+  /// inspector who could raise their base while looking at a live offer would
+  /// be pricing a job they have already seen. What was offered is what is
+  /// charged.
+  ///
+  /// Null for offers made before this column existed, and for an offer minted
+  /// by an admin assignment; both fall back to the order's own total.
+  priceCents          Int? @map("price_cents")
+  platformFeeCents    Int? @map("platform_fee_cents")
+  inspectorShareCents Int? @map("inspector_share_cents")
 
   order     Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
   inspector InspectorProfile @relation(fields: [inspectorId], references: [userId])
