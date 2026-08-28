@@ -105,7 +105,7 @@ export class EmailProviderImpl implements EmailProvider {
         to: [target.address],
         subject: message.subject,
         text: message.body,
-        html: renderEmailHtml(message.subject, message.body),
+        html: renderEmailHtml(message),
         ...(this.replyTo ? { replyTo: this.replyTo } : {}),
       });
       if (error) {

@@ -46,12 +46,47 @@ function paragraphs(escaped: string): string {
 }
 
 /**
- * Wrap a rendered notification (subject + plain-text body) in a minimal,
- * client-safe HTML document. Inline styles only — Gmail strips `<style>` blocks
- * in some contexts and no email client can be relied on for external CSS.
+ * The letter's one action, as a button (DEN-200).
+ *
+ * A table and not a `<div>`: Outlook on Windows renders through Word, which
+ * ignores padding on a block element, and the button would collapse to bare
+ * underlined text. The table is the shape every email framework converges on
+ * for the same reason.
+ *
+ * The URL is escaped like any other attribute value and is only ever emitted
+ * when it is an http(s) URL - the same rule the linkifier applies, enforced
+ * here separately because this one lands in an `href` the reader is being
+ * invited to click.
  */
-export function renderEmailHtml(subject: string, body: string): string {
+function ctaButton(cta: { url: string; label: string }): string {
+  if (!/^https?:\/\//i.test(cta.url)) return '';
+  const href = escapeHtml(cta.url);
+  const label = escapeHtml(cta.label);
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;">
+<tr><td style="border-radius:8px;background:#1a56db;">
+<a href="${href}" style="display:inline-block;padding:13px 24px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px;">${label}</a>
+</td></tr>
+</table>`;
+}
+
+/**
+ * Wrap a rendered notification (subject + plain-text body, and optionally one
+ * call to action) in a minimal, client-safe HTML document. Inline styles only -
+ * Gmail strips `<style>` blocks in some contexts and no email client can be
+ * relied on for external CSS.
+ *
+ * The button does NOT replace the plain link in the body: both are rendered, so
+ * a reader whose client blocks the button - or who is reading the text part -
+ * still has a URL they can copy.
+ */
+export function renderEmailHtml(message: {
+  subject: string;
+  body: string;
+  cta?: { url: string; label: string };
+}): string {
+  const { subject, body, cta } = message;
   const safeSubject = escapeHtml(subject);
+  const button = cta ? ctaButton(cta) : '';
   return `<!doctype html>
 <html>
 <head>
@@ -62,6 +97,7 @@ export function renderEmailHtml(subject: string, body: string): string {
 <body style="margin:0;padding:0;background:#f5f6f8;">
 <div style="max-width:600px;margin:0 auto;padding:24px 20px 40px;color:#1a1a1a;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Inter,Arial,sans-serif;font-size:15px;line-height:1.55;">
 <h1 style="margin:0 0 16px;font-size:20px;font-weight:600;">${safeSubject}</h1>
+${button}
 ${paragraphs(escapeHtml(body))}
 <p style="margin:32px 0 0;font-size:12px;color:#6b7280;">CarSalePro</p>
 </div>

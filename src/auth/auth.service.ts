@@ -169,12 +169,62 @@ export class AuthService {
     });
   }
 
-  /** Email the freshly-registered user their single-use verification link. */
-  async sendVerificationEmail(userId: string, grant: VerificationGrant): Promise<void> {
-    await this.notifications.notify(userId, 'auth.verify_email', {
-      verifyUrl: this.buildWebUrl('/verify', grant.rawToken),
-      expiresAt: grant.expiresAt.toISOString(),
+  /**
+   * Email the freshly-registered user their single-use verification link.
+   *
+   * The locale is pinned to English (DEN-200) rather than taken from
+   * `User.locale`. That is the client's instruction, and it is also the only
+   * defensible default here: this is the one letter sent before the account
+   * means anything, `User.locale` defaults to `de` for anyone who did not say
+   * otherwise, and the template catalog covers three languages against the
+   * site's thirty-five - so "the reader's own language" is a promise this layer
+   * cannot keep anyway. English is the one it can.
+   */
+  async sendVerificationEmail(
+    userId: string,
+    email: string,
+    grant: VerificationGrant,
+  ): Promise<void> {
+    await this.notifications.notify(
+      userId,
+      'auth.verify_email',
+      {
+        email,
+        verifyUrl: this.buildWebUrl('/verify', grant.rawToken),
+        expiresAt: grant.expiresAt.toISOString(),
+      },
+      { locale: 'en' },
+    );
+  }
+
+  /**
+   * Send another confirmation link to `email`, if there is anything to send.
+   *
+   * Always resolves void and does the same observable work either way - an
+   * unknown address, a deleted account and an already-confirmed one are
+   * indistinguishable from outside. Same contract as
+   * `requestPasswordResetAndNotify`, and for the same reason: an endpoint that
+   * answered differently for a registered address would be an account-existence
+   * oracle, and this one is unauthenticated.
+   *
+   * The old token is NOT invalidated. Two live links are harmless - both point
+   * at the same address and both expire - and revoking on re-send breaks the
+   * commonest case there is: a reader who clicks "send it again", then finds
+   * the first letter and opens that one.
+   */
+  async resendVerificationEmail(email: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() },
     });
+    if (!user || user.deletedAt || user.emailVerified) return;
+
+    const grant = await this.createVerificationToken(
+      user.id,
+      user.email,
+      'verify_email',
+      60 * 24,
+    );
+    await this.sendVerificationEmail(user.id, user.email, grant);
   }
 
   private buildWebUrl(path: string, token: string): string {
