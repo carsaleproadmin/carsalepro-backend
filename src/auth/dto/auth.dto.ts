@@ -94,6 +94,16 @@ export class VerifyEmailDto {
   token!: string;
 }
 
+/**
+ * Ask for another confirmation link (DEN-200). The address is the only input:
+ * the endpoint is unauthenticated, because the reader who needs it is often the
+ * one whose session has gone.
+ */
+export class ResendVerificationDto {
+  @IsEmail({}, { message: CODE.email })
+  email!: string;
+}
+
 export class OAuthUpsertDto {
   @IsEmail({}, { message: CODE.email })
   email!: string;

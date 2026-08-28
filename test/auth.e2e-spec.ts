@@ -453,5 +453,104 @@ describe('Auth + users (e2e)', () => {
         .send({ token })
         .expect(400);
     });
+
+    /*
+     * DEN-200. Asking for the letter again.
+     *
+     * The route is unauthenticated, because the reader who needs it is usually
+     * the one who cannot get in - so every test here is really about the same
+     * property: it answers the same thing to everyone, and only ever sends to
+     * an address that is already registered and still unconfirmed.
+     */
+    it('19. a re-send delivers a SECOND working link, and the first still works', async () => {
+      const email = uniqueEmail();
+      const reg = await request(app.getHttpServer())
+        .post('/api/v1/auth/register')
+        .send({ email, password, gdprConsent: true })
+        .expect(201);
+      const userId = reg.body.user.id as string;
+      const first = await linkFromNotification(userId, 'auth.verify_email', 'verifyUrl');
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-email/resend')
+        .send({ email })
+        .expect(200)
+        .expect({ ok: true });
+
+      const second = await linkFromNotification(userId, 'auth.verify_email', 'verifyUrl');
+      expect(second).not.toBe(first);
+
+      /*
+       * The first link is deliberately NOT revoked. The commonest sequence
+       * there is: click "send it again", then find the original letter and
+       * open THAT one. Revoking on re-send breaks exactly that reader.
+       */
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-email')
+        .send({ token: first })
+        .expect(200);
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      expect(user?.emailVerified).toBeInstanceOf(Date);
+    });
+
+    it('20. a re-send says the same thing about an unknown address as a known one', async () => {
+      // Otherwise this endpoint is an account-existence oracle, and it needs no
+      // credentials to ask.
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-email/resend')
+        .send({ email: uniqueEmail() })
+        .expect(200)
+        .expect({ ok: true });
+    });
+
+    it('21. a re-send to a confirmed address sends nothing', async () => {
+      const email = uniqueEmail();
+      const reg = await request(app.getHttpServer())
+        .post('/api/v1/auth/register')
+        .send({ email, password, gdprConsent: true })
+        .expect(201);
+      const userId = reg.body.user.id as string;
+
+      const token = await linkFromNotification(userId, 'auth.verify_email', 'verifyUrl');
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-email')
+        .send({ token })
+        .expect(200);
+
+      const before = await prisma.notification.count({
+        where: { userId, type: 'auth.verify_email' },
+      });
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-email/resend')
+        .send({ email })
+        .expect(200)
+        .expect({ ok: true });
+
+      // Same answer as every other case, and no second letter behind it.
+      const after = await prisma.notification.count({
+        where: { userId, type: 'auth.verify_email' },
+      });
+      expect(after).toBe(before);
+    });
+
+    it('22. the confirmation letter is in English whatever the account locale says', async () => {
+      /*
+       * The client's instruction (DEN-200), pinned end to end rather than at
+       * the template: the locale is chosen by AuthService, and a caller that
+       * stopped passing it would silently fall back to German.
+       */
+      const email = uniqueEmail();
+      const reg = await request(app.getHttpServer())
+        .post('/api/v1/auth/register')
+        .send({ email, password, gdprConsent: true, locale: 'ru' })
+        .expect(201);
+
+      const row = await prisma.notification.findFirst({
+        where: { userId: reg.body.user.id, type: 'auth.verify_email', channel: 'email' },
+        orderBy: { createdAt: 'desc' },
+      });
+      const payload = row?.payload as Record<string, unknown>;
+      expect(payload._title).toBe('Confirm your email address');
+    });
   });
 });

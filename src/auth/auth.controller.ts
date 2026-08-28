@@ -20,6 +20,7 @@ import {
   PasswordResetConfirmDto,
   PasswordResetRequestDto,
   RegisterDto,
+  ResendVerificationDto,
   VerifyEmailDto,
 } from './dto/auth.dto';
 
@@ -45,7 +46,7 @@ export class AuthController {
     // The raw verification token goes to the notification layer and NOWHERE
     // else. It used to be returned here, which handed anyone who could call
     // this endpoint a working single-use credential. See SECURITY.md.
-    await this.auth.sendVerificationEmail(auth.user.id, verification);
+    await this.auth.sendVerificationEmail(auth.user.id, auth.user.email, verification);
     return { token: auth.token, user: auth.user };
   }
 
@@ -79,6 +80,26 @@ export class AuthController {
   @ApiOperation({ summary: 'Confirm a password reset' })
   async confirmReset(@Body() dto: PasswordResetConfirmDto) {
     await this.auth.confirmPasswordReset(dto.token, dto.password);
+    return { ok: true };
+  }
+
+  /**
+   * Send the confirmation link again (DEN-200).
+   *
+   * Throttled harder than the rest of this controller: every call that finds
+   * something to do sends a real email to an address the caller named, so the
+   * bucket is the abuse control, not the response. Five a minute is generous
+   * for a person clicking a button and useless for anything else.
+   */
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @HttpCode(200)
+  @Post('verify-email/resend')
+  @ApiOperation({ summary: 'Send the confirmation link again (no account disclosure)' })
+  async resendVerification(@Body() dto: ResendVerificationDto) {
+    // Same answer for a registered address, an unknown one and one that is
+    // already confirmed — see requestReset above for why that matters.
+    await this.auth.resendVerificationEmail(dto.email);
     return { ok: true };
   }
 
