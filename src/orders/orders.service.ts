@@ -31,7 +31,13 @@ import {
   QuoteOrderDto,
 } from './dto/order.dto';
 import { ATTACHABLE_REPORT_ORDER_STATUSES, canTransition } from './order-state-machine';
-import { PriceBreakdown, computePrice, describeStoredFare } from './order-pricing';
+import {
+  PriceBreakdown,
+  PricingTariff,
+  computePrice,
+  describeStoredFare,
+} from './order-pricing';
+import { effectiveBaseFeeCents } from './inspector-base-fee';
 import { RegionalOverrides, exceedsCap, resolveTariff } from './tariff-resolution';
 import { MONEY_RETRY_MAX_ATTEMPTS, planRetry } from './retry-schedule';
 import {
@@ -297,6 +303,54 @@ export class OrdersService {
    * whose row points at no band, is not an error: both levels stay silent and
    * the global tariff answers.
    */
+  /**
+   * The global tariff, without the routing settings the quote also reads.
+   *
+   * Dispatch needs the tariff and nothing else, and re-pricing a candidate has
+   * to use the SAME numbers the quote used or the two would disagree about what
+   * an order costs.
+   */
+  private async loadGlobalTariff(): Promise<PricingTariff> {
+    const [
+      baseFeeCents,
+      ratePerKmCents,
+      ratePerMinuteCents,
+      minimumFareCents,
+      platformFeePercent,
+      surgeMultiplier,
+      peakMultiplier,
+      peakStartHour,
+      peakEndHour,
+      returnTripFactor,
+      freeRadiusKm,
+    ] = await Promise.all([
+      this.settings.getCents('orderBaseFeeEur'),
+      this.settings.getCents('orderRatePerKmEur'),
+      this.settings.getCents('orderRatePerMinuteEur'),
+      this.settings.getCents('orderMinimumFareEur'),
+      this.settings.getNumber('platformFeePercent'),
+      this.settings.getNumber('orderSurgeMultiplier'),
+      this.settings.getNumber('orderPeakMultiplier'),
+      this.settings.getNumber('orderPeakStartHour'),
+      this.settings.getNumber('orderPeakEndHour'),
+      this.settings.getNumber('orderReturnTripFactor'),
+      this.settings.getNumber('orderFreeRadiusKm'),
+    ]);
+    return {
+      baseFeeCents,
+      ratePerKmCents,
+      ratePerMinuteCents,
+      minimumFareCents,
+      platformFeePercent,
+      surgeMultiplier,
+      peakMultiplier,
+      peakStartHour,
+      peakEndHour,
+      returnTripFactor,
+      freeRadiusKm,
+    };
+  }
+
   private async loadRegionalOverrides(
     countryCode: string,
   ): Promise<{ zone: RegionalOverrides | null; country: RegionalOverrides | null }> {
@@ -385,7 +439,7 @@ export class OrdersService {
       this.settings.getNumber('orderRoutingCacheHours'),
     ]);
 
-    const globalTariff = {
+    const globalTariff: PricingTariff = {
       baseFeeCents,
       ratePerKmCents,
       ratePerMinuteCents,
@@ -460,13 +514,40 @@ export class OrdersService {
       nearest,
       candidates,
       routingSource: route.source,
+      /*
+       * DEN-213. Priced on the NEAREST inspector's own base fee.
+       *
+       * The customer is shown ONE price and is never charged more than it. The
+       * order that follows authorises exactly this total, and dispatch will not
+       * offer the job to anybody who costs more (`dispatch`), so the number on
+       * the screen is a ceiling as well as a quote.
+       */
       price: computePrice({
         distanceKm: route.distanceKm,
         durationMin: route.durationMin,
         scheduledAt,
-        tariff,
+        tariff: await this.tariffForInspector(tariff, nearest.userId),
       }),
     };
+  }
+
+  /**
+   * The tariff as this inspector prices it - their base fee, held inside the
+   * platform's bounds, over the regional tariff for everything else.
+   *
+   * A profile that says nothing is priced on the platform base, which is what
+   * every profile said before DEN-213.
+   */
+  private async tariffForInspector(
+    tariff: PricingTariff,
+    inspectorUserId: string,
+  ): Promise<PricingTariff> {
+    const profile = await this.prisma.inspectorProfile.findUnique({
+      where: { userId: inspectorUserId },
+      select: { baseFeeCents: true },
+    });
+    const baseFeeCents = effectiveBaseFeeCents(profile?.baseFeeCents, tariff.baseFeeCents);
+    return baseFeeCents === tariff.baseFeeCents ? tariff : { ...tariff, baseFeeCents };
   }
 
   /**
@@ -689,7 +770,7 @@ export class OrdersService {
    * with uncaptured money.** Every path that assigns an inspector calls this
    * first and refuses the assignment unless it comes back captured.
    */
-  async captureOrderPayment(orderId: string): Promise<CaptureOutcome> {
+  async captureOrderPayment(orderId: string, amountCents?: number): Promise<CaptureOutcome> {
     const payment = await this.prisma.payment.findUnique({ where: { orderId } });
     if (!payment) return { status: 'fatal', detail: 'order has no payment' };
     if (payment.status === 'succeeded') return { status: 'already_captured' };
@@ -722,7 +803,20 @@ export class OrdersService {
     }
 
     try {
-      await this.stripe.capturePaymentIntent(payment.stripePaymentIntentId, payment.id);
+      /*
+       * `amountCents` is the offer's own price when the accepting inspector
+       * charges less than the quote (DEN-213). Stripe can capture LESS than an
+       * authorisation and never more, which is why dispatch refuses to offer a
+       * job above the authorised total in the first place.
+       *
+       * Undefined captures the whole hold, which is every path except an
+       * inspector priced below the quote.
+       */
+      await this.stripe.capturePaymentIntent(
+        payment.stripePaymentIntentId,
+        payment.id,
+        amountCents,
+      );
     } catch (err) {
       const failure = classifyStripeError(err);
       // `payment_intent_unexpected_state` is ambiguous: Stripe says it both when
@@ -826,6 +920,20 @@ export class OrdersService {
   // ============================================================
 
   /**
+   * How far down the candidate list dispatch may look for somebody the order
+   * can pay for (DEN-213).
+   *
+   * It used to ask for exactly one. With inspector-set base fees the nearest
+   * candidate may cost more than the customer authorised, and stopping there
+   * would mark the order UNASSIGNED while three affordable inspectors stood a
+   * few kilometres further away. Five, not fifty: each one costs a profile read,
+   * and an order that cannot be filled by the five nearest is an order the
+   * search window should be allowed to expire rather than one to grind through
+   * the whole country for.
+   */
+  private static readonly DISPATCH_CANDIDATE_LIMIT = 5;
+
+  /**
    * Offer the order to the nearest eligible inspector not already offered or
    * declined for it. Creates a PENDING OrderOffer (expiresAt = now +
    * offerTimeoutMinutes). If nobody is left → UNASSIGNED.
@@ -848,24 +956,36 @@ export class OrdersService {
     });
     const excluded = prior.map((o) => o.inspectorId);
 
+    /*
+     * DEN-213. More than one candidate, because some of them may now be
+     * unaffordable.
+     *
+     * Dispatch still offers the job to ONE inspector at a time, but an
+     * inspector whose base fee prices the job above what the customer
+     * authorised cannot be that one - the money is already held, and there is
+     * no second card to ask. So the search returns several and this walks down
+     * them until one fits.
+     */
     const candidates = await this.geo.findNearestInspectors({
       lat,
       lng,
       radiusKm,
-      limit: 1,
+      limit: OrdersService.DISPATCH_CANDIDATE_LIMIT,
       excludeUserIds: excluded,
       // F-13: never offer the order to the account that placed it.
       excludeCustomerId: order.customerId,
     });
 
-    if (candidates.length === 0) {
+    const affordable = await this.firstAffordableCandidate(order, candidates);
+
+    if (!affordable) {
       if (order.status !== OrderStatus.UNASSIGNED) {
         await this.transition(orderId, OrderStatus.UNASSIGNED, 'system');
       }
       return;
     }
 
-    const nearest = candidates[0];
+    const { candidate: nearest, price } = affordable;
     const timeoutMinutes = await this.settings.getNumber('offerTimeoutMinutes');
     const expiresAt = new Date(Date.now() + timeoutMinutes * 60_000);
     await this.prisma.orderOffer.create({
@@ -877,6 +997,15 @@ export class OrdersService {
         // How far THIS inspector is, which is not what the order was priced on
         // once dispatch has walked past the first candidate.
         straightLineKm: new Prisma.Decimal(nearest.distanceKm.toFixed(2)),
+        /*
+         * The price is frozen HERE, when the offer is sent - the client's
+         * decision, and the right one: an inspector who could raise their base
+         * while looking at a live offer would be pricing a job they have
+         * already seen.
+         */
+        priceCents: price.totalCents,
+        platformFeeCents: price.platformFeeCents,
+        inspectorShareCents: price.inspectorShareCents,
       },
     });
     await this.writeEvent(orderId, 'system', 'offer_sent', null, null, {
@@ -889,9 +1018,88 @@ export class OrdersService {
       orderNumber: order.number,
       make: order.make,
       model: order.model,
-      inspectorShareCents: order.inspectorShareCents,
+      // What THIS offer pays, which is not the order's figure once an
+      // inspector prices themselves below the quote.
+      inspectorShareCents: price.inspectorShareCents,
       expiresAt: expiresAt.toISOString(),
     });
+  }
+
+  /**
+   * The first candidate this order can actually pay for, with the price it
+   * would be offered at.
+   *
+   * The ceiling is the order's own total: that is the sum authorised on the
+   * customer's card, and Stripe can capture LESS than an authorisation but
+   * never more. An inspector who costs more is skipped rather than offered a
+   * job that could not be paid for - and rather than quietly paid the lower
+   * figure, which would be the platform pocketing the difference.
+   *
+   * A candidate priced BELOW the quote is offered at their own lower price and
+   * the customer is charged that, so the quote is a ceiling and not a target.
+   */
+  private async firstAffordableCandidate(
+    order: Order,
+    candidates: Array<{ userId: string; distanceKm: number }>,
+  ): Promise<{ candidate: { userId: string; distanceKm: number }; price: PriceBreakdown } | null> {
+    if (candidates.length === 0) return null;
+
+    const base = await this.tariffForStoredOrder(order);
+
+    for (const candidate of candidates) {
+      const tariff = await this.tariffForInspector(base.tariff, candidate.userId);
+      const price = computePrice({
+        distanceKm: base.distanceKm,
+        durationMin: base.durationMin,
+        scheduledAt: order.scheduledAt,
+        tariff,
+      });
+      if (price.totalCents <= order.totalCents) return { candidate, price };
+    }
+    return null;
+  }
+
+  /**
+   * The tariff and the trip an order was priced on, recovered from the order
+   * row itself.
+   *
+   * Recovered rather than re-measured: routing the trip again would cost a
+   * provider request per dispatch attempt and could answer differently from the
+   * number the customer was charged on. `describeStoredFare` inverts the
+   * return-trip factor and the free radius that the stored columns already
+   * carry, and the region comes from the order's own `countryCode`, so
+   * re-pricing an unchanged inspector reproduces the order's own total exactly
+   * - which is what the e2e suite asserts.
+   */
+  private async tariffForStoredOrder(order: {
+    countryCode: string;
+    baseFeeCents: number;
+    distanceKm: Prisma.Decimal;
+    returnTripFactor: Prisma.Decimal;
+    freeRadiusKm: Prisma.Decimal;
+    durationMin: number | null;
+  }): Promise<{ tariff: PricingTariff; distanceKm: number; durationMin: number }> {
+    const globalTariff = await this.loadGlobalTariff();
+    const region = await this.loadRegionalOverrides(order.countryCode);
+    const resolved = resolveTariff(
+      globalTariff,
+      Number(order.freeRadiusKm),
+      region.zone,
+      region.country,
+    );
+
+    const fare = describeStoredFare({
+      billedDistanceKm: Number(order.distanceKm),
+      billedDurationMin: order.durationMin,
+      returnTripFactor: Number(order.returnTripFactor),
+      freeRadiusKm: Number(order.freeRadiusKm),
+    });
+
+    return {
+      tariff: resolved.tariff,
+      distanceKm: fare.distanceKm ?? 0,
+      durationMin: fare.durationMin ?? 0,
+    };
   }
 
   // ============================================================
@@ -971,7 +1179,21 @@ export class OrdersService {
       data: { status: 'ACCEPTED' },
     });
 
-    const capture = await this.captureOrderPayment(order.id);
+    /*
+     * DEN-213. The customer is charged what THIS offer was made at.
+     *
+     * The offer's price is frozen when it is sent and can only be lower than
+     * the order's total, because dispatch never offers a job above what was
+     * authorised. So the customer pays the quote or less, and the difference on
+     * a cheaper inspector goes back to the customer rather than to the
+     * platform - keeping it would be the platform quietly pocketing a spread
+     * the customer was never told about.
+     */
+    const chargeCents = Math.min(offer.priceCents ?? order.totalCents, order.totalCents);
+    const capture = await this.captureOrderPayment(
+      order.id,
+      chargeCents === order.totalCents ? undefined : chargeCents,
+    );
 
     if (capture.status === 'retryable') {
       // Transient. Put everything back exactly as it was — the offer is still
@@ -1025,6 +1247,28 @@ export class OrdersService {
       where: { orderId: order.id, status: 'PENDING' },
       data: { status: 'EXPIRED' },
     });
+
+    /*
+     * The order's money now describes what was actually taken, not what was
+     * quoted. Left alone, the invoice, the payout and the admin finance pages
+     * would all report the higher figure while the customer's statement showed
+     * the lower one.
+     */
+    if (chargeCents !== order.totalCents) {
+      await this.prisma.order.update({
+        where: { id: order.id },
+        data: {
+          totalCents: chargeCents,
+          platformFeeCents: offer.platformFeeCents ?? order.platformFeeCents,
+          inspectorShareCents: offer.inspectorShareCents ?? order.inspectorShareCents,
+        },
+      });
+      await this.writeEvent(order.id, userId, 'price_lowered_by_inspector', null, null, {
+        offerId,
+        quotedCents: order.totalCents,
+        chargedCents: chargeCents,
+      });
+    }
 
     await this.transition(order.id, OrderStatus.ASSIGNED, userId);
     return { orderId: order.id, status: OrderStatus.ASSIGNED };

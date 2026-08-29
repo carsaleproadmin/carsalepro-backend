@@ -40,3 +40,4 @@ prisma/dev.db-journal
 
 # AI Kit temp
 .ai-kit/tmp
+demo-photos/

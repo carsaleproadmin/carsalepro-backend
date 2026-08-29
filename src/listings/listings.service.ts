@@ -44,6 +44,7 @@ import {
   mirroredPhotoKey,
   photoLocation,
 } from './listing-photo-urls';
+import { listingSearchColumns } from './listing-search-columns';
 
 export { MAX_LISTING_PHOTOS };
 
@@ -116,6 +117,8 @@ export class ListingsService {
           priceCents: 0,
           city: '',
           ...this.columnsFromReport(report),
+          // DEN-205. Derived last, from the values actually being written.
+          ...listingSearchColumns({ city: '', make: report.make, model: report.model }),
         },
       });
     } catch (err) {
@@ -197,6 +200,8 @@ export class ListingsService {
         contactPhone: dto.contactPhone ?? null,
         contactEmail: dto.contactEmail ?? null,
         ...columns,
+        // DEN-205. Derived last, from the values actually being written.
+        ...listingSearchColumns({ city: dto.city, make: columns.make, model: columns.model }),
         ...(vehicleData ? { vehicleData: vehicleData as Prisma.InputJsonValue } : {}),
       },
     });
@@ -262,9 +267,26 @@ export class ListingsService {
       };
     }
 
+    /*
+     * DEN-205. A partial update must move the searchable columns with the ones
+     * they mirror, and must leave them ALONE otherwise: a listing whose price
+     * changed must not lose its city index, and a listing whose city changed
+     * must not stay findable under the old name and invisible under the new.
+     */
+    const searchPatch = {
+      ...(dto.city !== undefined ? { citySearch: listingSearchColumns({ city: dto.city }).citySearch } : {}),
+      ...(vehiclePatch
+        ? {
+            makeSearch: listingSearchColumns({ make: vehiclePatch.make as string | null }).makeSearch,
+            modelSearch: listingSearchColumns({ model: vehiclePatch.model as string | null }).modelSearch,
+          }
+        : {}),
+    };
+
     return this.prisma.listing.update({
       where: { id },
       data: {
+        ...searchPatch,
         ...(dto.priceCents !== undefined ? { priceCents: dto.priceCents } : {}),
         ...(dto.city !== undefined ? { city: dto.city } : {}),
         ...(dto.countryCode !== undefined ? { countryCode: dto.countryCode } : {}),
