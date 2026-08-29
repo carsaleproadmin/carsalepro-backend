@@ -4,6 +4,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { R2Service } from '../src/r2/r2.service';
 import { mirroredPhotoKey } from '../src/listings/listing-photo-urls';
 import { createTestApp } from './helpers/test-app';
+import { listingSearchColumns } from '../src/listings/listing-search-columns';
 
 describe('Public showroom + report check (e2e)', () => {
   let app: INestApplication;
@@ -57,9 +58,11 @@ describe('Public showroom + report check (e2e)', () => {
         color: 'black',
         // BE-S2: search reads the LISTING's denormalised columns, not the
         // report relation, so a fixture must populate them the way the claim
-        // path (and the migration backfill) does.
+        // path does - including the folded copies the filters actually match
+        // on (DEN-205), which is what `listingSearchColumns` is for.
         make: 'BMW',
         model: '320d',
+        ...listingSearchColumns({ city: 'Berlin', make: 'BMW', model: '320d' }),
         year: 2019,
         mileageKm: 84500,
         publishedAt: new Date(),
@@ -207,6 +210,7 @@ describe('Public showroom + report check (e2e)', () => {
           city: 'Dresden',
           make: 'Opel',
           model: 'Astra',
+          ...listingSearchColumns({ city: 'Dresden', make: 'Opel', model: 'Astra' }),
           year: 2016,
           mileageKm: 132000,
           fuelType: 'petrol',
@@ -306,6 +310,7 @@ describe('Public showroom + report check (e2e)', () => {
           countryCode: 'DE',
           make: 'Skoda',
           model: 'Octavia',
+          ...listingSearchColumns({ city: 'Leipzig', make: 'Skoda', model: 'Octavia' }),
           publishedAt: new Date(),
         },
       });
@@ -319,6 +324,7 @@ describe('Public showroom + report check (e2e)', () => {
           countryCode: 'AT',
           make: 'Skoda',
           model: 'Octavia',
+          ...listingSearchColumns({ city: 'Wien', make: 'Skoda', model: 'Octavia' }),
           publishedAt: new Date(),
         },
       });
@@ -382,6 +388,7 @@ describe('Public showroom + report check (e2e)', () => {
         sellerId, reportId: stdReport.id, source: 'report', status: 'ACTIVE', package: 'standard',
         priceCents: 1000000, city: 'Berlin', publishedAt: new Date(),
         make: 'BMW', model: '318i', year: 2017,
+        ...listingSearchColumns({ city: 'Berlin', make: 'BMW', model: '318i' }),
         expiresAt: new Date(Date.now() + 30 * 86400000),
       },
     });

@@ -232,6 +232,18 @@ model InspectorProfile {
   /// platform had before the field went live; somebody who does not want a
   /// five-hour drive now has a control that works.
   searchRadiusKm  Int                                    @default(300) @map("search_radius_km")
+  /// What THIS inspector charges as the base fee, in cents (DEN-213).
+  ///
+  /// NULL means "has not said", which resolves to the platform base - not to
+  /// zero, and not to a number this column invented. Only the base is theirs to
+  /// move: the kilometre and minute rates describe the drive, and the kilometre
+  /// rate is anchored to a published tax figure nobody renegotiates alone.
+  ///
+  /// Held inside +/-30 % of the platform base at every read
+  /// (`effectiveBaseFeeCents`), because the bound moves - a regional tariff
+  /// changes, an operator edits the tolerance - and a value that was legal when
+  /// it was typed must not drop the inspector out of dispatch weeks later.
+  baseFeeCents    Int?                                   @map("base_fee_cents")
   available       Boolean                                @default(true)
   stripeAccountId String?                                @unique @map("stripe_account_id")
   stripeOnboarded Boolean                                @default(false) @map("stripe_onboarded")
@@ -456,6 +468,19 @@ model OrderOffer {
   /// ranks the same way. Null for offers made before this column existed, and
   /// for an offer minted by an admin assignment, where no candidate search ran.
   straightLineKm Decimal? @map("straight_line_km") @db.Decimal(7, 2)
+
+  /// The price THIS offer was made at, frozen when it was sent (DEN-213).
+  ///
+  /// Frozen, and not read from the profile at acceptance, for one reason: an
+  /// inspector who could raise their base while looking at a live offer would
+  /// be pricing a job they have already seen. What was offered is what is
+  /// charged.
+  ///
+  /// Null for offers made before this column existed, and for an offer minted
+  /// by an admin assignment; both fall back to the order's own total.
+  priceCents          Int? @map("price_cents")
+  platformFeeCents    Int? @map("platform_fee_cents")
+  inspectorShareCents Int? @map("inspector_share_cents")
 
   order     Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
   inspector InspectorProfile @relation(fields: [inspectorId], references: [userId])
@@ -763,6 +788,16 @@ model Listing {
   package                String        @default("standard") // standard | gold
   priceCents             Int           @map("price_cents")
   city                   String
+  /// `city`, folded for search: lower case, diacritics stripped, Cyrillic
+  /// transliterated to Latin (DEN-205). Written by `normalizeSearchText`, never
+  /// by hand. A buyer types "Берлин" and a seller stored "Berlin"; this column
+  /// is where those two meet. Null = not normalized yet.
+  citySearch             String?       @map("city_search")
+  /// `make` and `model`, folded AND stripped of separators (DEN-205), so
+  /// "Mercedes-Benz" answers "mercedes benz" and "C 220" answers "C220".
+  /// Written by `normalizeCompact`, never by hand.
+  makeSearch             String?       @map("make_search")
+  modelSearch            String?       @map("model_search")
   /// ISO 3166-1 alpha-2, upper case. The showroom is worldwide, so the search
   /// starts with the country — and a city name alone cannot answer it (there is
   /// a Frankfurt in Germany and a Frankfort in Kentucky). Nullable because every
@@ -792,6 +827,18 @@ model Listing {
   driveType              String?       @map("drive_type")
   /// Structured seller-declared payload (ListingVehicleV1Dto). Manual only.
   vehicleData            Json?         @map("vehicle_data")
+  /// A listing the PLATFORM created to fill the showroom, not a car anybody is
+  /// selling (DEN-216).
+  ///
+  /// A real column and not a marker in the description, because the difference
+  /// has to be readable by code as well as by a person: the showroom can hide
+  /// it, the sitemap can skip it, and a sweep can find every one of them. A
+  /// sentence in free text is invisible to all three.
+  ///
+  /// Demo rows are ALWAYS self-declared. Fabricating an inspection report would
+  /// be a claim about a car nobody looked at, which is the one thing this
+  /// platform sells.
+  isDemo                 Boolean       @default(false) @map("is_demo")
   viewsCount             Int           @default(0) @map("views_count")
   /// When the showroom subset of a REPORT-backed listing's photos was copied
   /// into the public bucket. Report photos live in the private reports bucket
@@ -811,6 +858,8 @@ model Listing {
   @@index([sellerId])
   @@index([make, model, year])
   @@index([countryCode, city])
+  @@index([citySearch])
+  @@index([makeSearch, modelSearch])
   @@map("listing")
 }
 

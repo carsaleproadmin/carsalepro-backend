@@ -24,6 +24,8 @@ import {
   type ConnectAccountRequest,
 } from './connect-account-params';
 import { UpdateInspectorProfileDto } from './dto/inspector-profile.dto';
+import { inspectorBaseFeeBounds } from '../orders/inspector-base-fee';
+import { SettingsService } from '../settings/settings.service';
 import {
   normalizeTelegramUsername,
   resolveContact,
@@ -56,6 +58,10 @@ export interface InspectorProfileView {
   vatId: string | null;
   searchRadiusKm: number;
   available: boolean;
+  /** What this inspector charges as the base, in cents. Null = the platform base. */
+  baseFeeCents: number | null;
+  /** The window the base fee must stay inside, and the platform's own figure. */
+  baseFee: { minCents: number; maxCents: number; platformCents: number };
   stripeOnboarded: boolean;
   /** Payout-account country (ISO 3166-1 alpha-2) and legal form; null until chosen. */
   stripeCountry: string | null;
@@ -143,6 +149,7 @@ export class InspectorService {
     private readonly prisma: PrismaService,
     private readonly geo: GeoService,
     private readonly stripe: StripeService,
+    private readonly settings: SettingsService,
     config: ConfigService<AppConfig, true>,
   ) {
     const stripeCfg = config.get('stripe', { infer: true });
@@ -171,6 +178,16 @@ export class InspectorService {
     // which `??` alone would store as an empty field.
     const contactPhone = this.normalizeContactPhone(dto.contactPhone);
     const contactEmail = blankToNull(dto.contactEmail);
+    /*
+     * DEN-213. The bound is REFUSED here and only clamped at pricing time.
+     *
+     * This is the one place a person is present to be told, so a number outside
+     * the window comes back as an error naming the window rather than being
+     * silently changed into a different price than the one they typed. Pricing
+     * clamps instead, because the window moves and a value that was legal when
+     * it was typed must not drop an inspector out of dispatch weeks later.
+     */
+    const baseFeeCents = await this.checkedBaseFeeCents(dto.baseFeeCents ?? null);
     const contactTelegram = this.normalizeContactTelegram(dto.contactTelegram);
 
     await this.prisma.inspectorProfile.upsert({
@@ -188,6 +205,7 @@ export class InspectorService {
         contactTelegram,
         searchRadiusKm: dto.searchRadiusKm ?? undefined,
         available: dto.available ?? undefined,
+        baseFeeCents: dto.baseFeeCents === undefined ? undefined : baseFeeCents,
       },
       update: {
         companyName: dto.companyName ?? existing?.companyName ?? null,
@@ -201,6 +219,9 @@ export class InspectorService {
         contactTelegram: dto.contactTelegram === undefined ? undefined : contactTelegram,
         searchRadiusKm: dto.searchRadiusKm ?? undefined,
         available: dto.available ?? undefined,
+        // An absent key keeps what is stored; an explicit null returns this
+        // inspector to the platform base.
+        baseFeeCents: dto.baseFeeCents === undefined ? undefined : baseFeeCents,
       },
     });
 
@@ -638,6 +659,37 @@ export class InspectorService {
     return username;
   }
 
+  /**
+   * The platform base fee for the bound, and the bound itself.
+   *
+   * The GLOBAL base, not a regional one: an inspector's window has to be a
+   * number they can be shown in their own profile, and they work across
+   * whichever regions their radius reaches. Pricing resolves the regional
+   * tariff and clamps again there, so a regional base that moves the window is
+   * still honoured at the moment it matters.
+   */
+  private async baseFeeBounds(): Promise<{ minCents: number; maxCents: number; platformCents: number }> {
+    const platformCents = await this.settings.getCents('orderBaseFeeEur');
+    return { ...inspectorBaseFeeBounds(), platformCents };
+  }
+
+  /** Refuse a fee outside the window, naming the window. */
+  private async checkedBaseFeeCents(value: number | null): Promise<number | null> {
+    if (value === null) return null;
+    const { minCents, maxCents } = await this.baseFeeBounds();
+    if (value < minCents || value > maxCents) {
+      throw new BadRequestException({
+        error: {
+          code: 'base_fee_out_of_range',
+          message: `The base fee must be between ${(minCents / 100).toFixed(2)} and ${(maxCents / 100).toFixed(2)} EUR.`,
+        },
+        minCents,
+        maxCents,
+      });
+    }
+    return value;
+  }
+
   private async toView(
     userId: string,
     profile: {
@@ -654,6 +706,7 @@ export class InspectorService {
       stripeOnboarded: boolean;
       stripeCountry: string | null;
       stripeBusinessType: string | null;
+      baseFeeCents: number | null;
     },
   ): Promise<InspectorProfileView> {
     const user = await this.prisma.user.findUnique({
@@ -661,6 +714,7 @@ export class InspectorService {
       select: { id: true, name: true, email: true, phone: true, deletedAt: true, kycVerified: true },
     });
     const hasLocation = await this.geo.inspectorHasLocation(userId);
+    const baseFeeBounds = await this.baseFeeBounds();
     const kycVerified = user?.kycVerified ?? false;
     return {
       exists: true,
@@ -671,6 +725,14 @@ export class InspectorService {
       vatId: profile.vatId,
       searchRadiusKm: profile.searchRadiusKm,
       available: profile.available,
+      baseFeeCents: profile.baseFeeCents,
+      /*
+       * The window travels WITH the value, so the form can state the bound
+       * rather than hardcode 30 % of a number it would have to fetch
+       * separately - and so the bound the client shows is the bound the API
+       * will enforce a second later.
+       */
+      baseFee: baseFeeBounds,
       stripeOnboarded: profile.stripeOnboarded,
       stripeCountry: profile.stripeCountry,
       // Read through the guard rather than cast: the column is a plain string,

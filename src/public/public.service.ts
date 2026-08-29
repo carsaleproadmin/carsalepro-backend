@@ -3,15 +3,56 @@ import { Listing, Prisma, Report } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import { SettingsService } from '../settings/settings.service';
-import { ListingQueryDto } from './dto/listing-query.dto';
+import { ListingQueryDto, ListingSort, PAGE_SIZES } from './dto/listing-query.dto';
 import {
   MAX_LISTING_PHOTOS,
   manifestPhotoRefs,
   mirroredPhotoKey,
   photoLocation,
 } from '../listings/listing-photo-urls';
+import { citySearchKeys, normalizeCompact, normalizeSearchText } from '../common/search-text';
 
-const PAGE_SIZE = 12;
+/*
+ * DEN-211. The reader chooses how many cards a page carries, out of the closed
+ * set in the DTO. 20 is the default because it is the middle of that set and
+ * the size the showroom's two-up layout is built around; the previous 12 is
+ * not offered, so a bookmarked `?page=` cannot land on a page that no longer
+ * exists at any offered size.
+ */
+const DEFAULT_PAGE_SIZE = 20;
+
+/**
+ * The eight orders the showroom offers.
+ *
+ * Two things are the same in every one of them, and both are deliberate:
+ *
+ *  - `package: 'asc'` first. 'gold' sorts before 'standard', so a paid listing
+ *    ranks above a free one in EVERY order, including "cheapest first". That is
+ *    a commercial rule, not a sorting bug - it predates this change and is left
+ *    exactly as it was. It does mean the cheapest car on the page is not always
+ *    the first card.
+ *  - `id: 'asc'` last, the tiebreaker from DEN-205. Without a total order rows
+ *    repeat across pages and others are never shown.
+ *
+ * `year` and `mileageKm` are NULLABLE, so both directions ask for nulls last.
+ * The default in Postgres puts them first on a descending sort, which would
+ * open "newest year first" with the cars whose year nobody filled in.
+ */
+function orderFor(sort: ListingSort | undefined): Prisma.ListingOrderByWithRelationInput[] {
+  const gold: Prisma.ListingOrderByWithRelationInput = { package: 'asc' };
+  const tiebreak: Prisma.ListingOrderByWithRelationInput = { id: 'asc' };
+  const by: Record<ListingSort, Prisma.ListingOrderByWithRelationInput> = {
+    default: { publishedAt: 'desc' },
+    recent: { publishedAt: 'desc' },
+    price_asc: { priceCents: 'asc' },
+    price_desc: { priceCents: 'desc' },
+    year_asc: { year: { sort: 'asc', nulls: 'last' } },
+    year_desc: { year: { sort: 'desc', nulls: 'last' } },
+    mileage_asc: { mileageKm: { sort: 'asc', nulls: 'last' } },
+    mileage_desc: { mileageKm: { sort: 'desc', nulls: 'last' } },
+  };
+  return [gold, by[sort ?? 'default'], tiebreak];
+}
 
 type ListingWithReport = Prisma.ListingGetPayload<{ include: { report: true } }>;
 
@@ -65,11 +106,50 @@ export class PublicService {
   async searchListings(q: ListingQueryDto) {
     const page = q.page && q.page > 0 ? q.page : 1;
 
+    /*
+     * DEN-205. Every filter below reads a NORMALIZED value, and the reasons are
+     * one bug report each.
+     *
+     * Text is folded on both sides. A seller's city is free text written in
+     * whatever language their geocoder answered in; a buyer types whatever
+     * language they think in. Matching those raw finds the car only when both
+     * happened to choose the same alphabet - the report that opened this was a
+     * Berlin car that "Berlin" found and "Берлин" did not.
+     *
+     * Numbers are tested with `!= null`, never for truthiness. `mileageTo=0` is
+     * a real question ("nothing on the clock") and `0 ? … : {}` dropped the
+     * filter and answered it with the entire table.
+     */
+    const cityKeys = citySearchKeys(q.city);
+    const makeKey = normalizeCompact(q.make);
+    const modelKey = normalizeCompact(q.model);
+    const bodyType = normalizeSearchText(q.bodyType);
+    const driveType = normalizeSearchText(q.driveType);
+
     const where: Prisma.ListingWhereInput = {
       status: 'ACTIVE',
-      // Exclude expired-but-not-yet-swept listings (null expiry = never expires).
-      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-      ...(q.city ? { city: { contains: q.city, mode: 'insensitive' } } : {}),
+      /*
+       * Everything that needs an OR of its own lives in this AND, and nothing
+       * writes a top-level `OR` any more. Two sibling `OR` keys in one object
+       * literal do not combine - the second silently replaces the first - so
+       * the expiry window and the city search would have cancelled each other
+       * out, and whichever was written last would have been the only filter
+       * applied.
+       */
+      AND: [
+        // Exclude expired-but-not-yet-swept listings (null expiry = never expires).
+        { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+        /*
+         * A city matches if ANY spelling of it does. `citySearchKeys` returns
+         * the folded query plus its transliterations and exonyms, so "Берлин",
+         * "Munchen" and "Vienna" reach rows stored "Berlin", "München" and
+         * "Wien". `contains` stays - a buyer half-remembers a city and types
+         * "Frankfurt" for "Frankfurt am Main".
+         */
+        ...(cityKeys.length
+          ? [{ OR: cityKeys.map((key) => ({ citySearch: { contains: key } })) }]
+          : []),
+      ],
       /*
        * The country is an EXACT code, never a `contains`. A city is free text a
        * seller typed and a buyer half-remembers, so it stays fuzzy; a country
@@ -81,20 +161,33 @@ export class PublicService {
        * claimed it is the same defect as backfilling the column.
        */
       ...(q.country ? { countryCode: q.country } : {}),
-      ...(q.bodyType ? { bodyType: q.bodyType } : {}),
-      ...(q.driveType ? { driveType: q.driveType } : {}),
-      ...(q.priceFrom || q.priceTo
+      /*
+       * Case-insensitive, because these arrive from a dropdown on the site but
+       * from a hand-written query string everywhere else, and "SEDAN" finding
+       * nothing while "sedan" finds five reads as a broken filter rather than
+       * as a typo.
+       */
+      ...(bodyType ? { bodyType: { equals: bodyType, mode: 'insensitive' as const } } : {}),
+      ...(driveType ? { driveType: { equals: driveType, mode: 'insensitive' as const } } : {}),
+      ...(q.priceFrom != null || q.priceTo != null
         ? { priceCents: { gte: q.priceFrom ?? undefined, lte: q.priceTo ?? undefined } }
         : {}),
       // Vehicle filters read the LISTING's own columns, not the report relation.
       // A manual listing has no report to join, and `(make, model, year)` is
       // indexed on the listing, so this is both correct and faster.
-      ...(q.make ? { make: { equals: q.make, mode: 'insensitive' as const } } : {}),
-      ...(q.model ? { model: { contains: q.model, mode: 'insensitive' as const } } : {}),
-      ...(q.yearFrom || q.yearTo
+      /*
+       * Both read the SEPARATOR-FREE column, and both are a `contains` rather
+       * than an `equals`. Nobody agrees on the punctuation in a car name: the
+       * table holds "Mercedes-Benz" and "C 220", and buyers type "mercedes
+       * benz", "Mercedes", "C220" and "c-220" meaning the same car. An exact
+       * match on the raw column answered every one of those with nothing.
+       */
+      ...(makeKey ? { makeSearch: { contains: makeKey } } : {}),
+      ...(modelKey ? { modelSearch: { contains: modelKey } } : {}),
+      ...(q.yearFrom != null || q.yearTo != null
         ? { year: { gte: q.yearFrom ?? undefined, lte: q.yearTo ?? undefined } }
         : {}),
-      ...(q.mileageTo ? { mileageKm: { lte: q.mileageTo } } : {}),
+      ...(q.mileageTo != null ? { mileageKm: { lte: q.mileageTo } } : {}),
       // Opt-IN filter. Manual listings are shown by default and badged as
       // self-declared: hiding them would make the showroom look empty for the
       // exact seller segment BE-S2 exists to serve. A buyer who only wants
@@ -102,28 +195,32 @@ export class PublicService {
       ...(q.verifiedOnly ? { reportId: { not: null }, source: 'report' } : {}),
     };
 
-    // Gold listings rank first. 'gold' < 'standard' lexically, so ascending
-    // order on `package` puts Gold ahead of Standard.
-    const orderBy: Prisma.ListingOrderByWithRelationInput[] =
-      q.sort === 'price_asc'
-        ? [{ package: 'asc' }, { priceCents: 'asc' }]
-        : q.sort === 'price_desc'
-          ? [{ package: 'asc' }, { priceCents: 'desc' }]
-          : [{ package: 'asc' }, { publishedAt: 'desc' }];
+    const orderBy = orderFor(q.sort);
+
+    /*
+     * The DTO has already refused a size outside the offered set, so this only
+     * fills in the default. It is written as a membership test rather than a
+     * clamp so the two cannot drift: adding a size to `PAGE_SIZES` is the whole
+     * change.
+     */
+    const pageSize =
+      q.perPage && (PAGE_SIZES as readonly number[]).includes(q.perPage)
+        ? q.perPage
+        : DEFAULT_PAGE_SIZE;
 
     const [rows, total] = await Promise.all([
       this.prisma.listing.findMany({
         where,
         orderBy,
-        skip: (page - 1) * PAGE_SIZE,
-        take: PAGE_SIZE,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
         include: { report: true },
       }),
       this.prisma.listing.count({ where }),
     ]);
 
     const items = await Promise.all(rows.map((l) => this.toCard(l)));
-    return { items, total, page, pageSize: PAGE_SIZE, pages: Math.ceil(total / PAGE_SIZE) };
+    return { items, total, page, pageSize, pages: Math.ceil(total / pageSize) };
   }
 
   async getListing(id: string) {
