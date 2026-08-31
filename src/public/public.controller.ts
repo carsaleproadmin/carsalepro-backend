@@ -34,6 +34,17 @@ export class PublicController {
     return this.publicService.checkReport(query);
   }
 
+  @Get('reports/:code/full')
+  @Throttle({ lookup: { limit: 20, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Full report of a car that is on sale (public, PII-masked)',
+    description:
+      'DEN-224. The findings are free. Answers 404 unless the report backs an ACTIVE, unexpired listing.',
+  })
+  reportFull(@Param() params: ReportCodeParamDto) {
+    return this.publicService.reportFull(params.code);
+  }
+
   @Get('reports/:code/preview')
   @Throttle({ lookup: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Free, PII-masked preview of a report' })

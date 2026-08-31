@@ -94,6 +94,82 @@ export function averagePaintThicknessUm(data: Record<string, unknown>): number |
   return Math.round(mean);
 }
 
+/**
+ * How many report photographs the public page may show.
+ *
+ * The preview showed two, as a taste of a document nobody could read. There is
+ * nothing left to hold back, so the number only has to be large enough for a
+ * full inspection - 17 exterior angles plus the cabin, the odometer and the
+ * VIN plate - and small enough that one page cannot ask R2 to sign a thousand
+ * URLs because a manifest was malformed.
+ */
+const MAX_REPORT_PHOTOS = 60;
+
+/**
+ * Keys that never leave the building, at any depth.
+ *
+ * `reportData` is free-form JSON written by the mobile app, so its shape is
+ * not ours to promise. A blocklist rather than a whitelist is deliberate: a
+ * whitelist would silently drop the next section the app starts sending, and
+ * the client asked for the WHOLE report. The cost of that choice is that this
+ * list has to be maintained - anything the app adds that names a person has to
+ * be added here.
+ *
+ * The signature is the clearest case. `signoff` itself is a FINDING - the
+ * rating, the OBD result, whether the car is accident-free - and stays; what
+ * goes is the inspector's drawn signature and their contact details inside it.
+ */
+const PII_KEYS = new Set([
+  'signature',
+  'signatureurl',
+  'signatureimage',
+  'inspectorsignature',
+  'customersignature',
+  'ownersignature',
+  'customer',
+  'client',
+  'owner',
+  'seller',
+  'contact',
+  'contacts',
+  'phone',
+  'phonenumber',
+  'email',
+  'address',
+  'street',
+  'postaladdress',
+  'iban',
+  'taxid',
+  'personalid',
+  'idnumber',
+  'passport',
+  'licenseplate',
+  'plate',
+  'vin',
+]);
+
+/**
+ * `reportData` with every PII-bearing key removed, at any depth.
+ *
+ * Recursive, because the app nests: a phone number under `signoff.inspector`
+ * is the same leak as one at the top level. Arrays are walked as well - the
+ * damages list is an array of objects, and a note field inside one of them is
+ * reached the same way.
+ */
+function publicReportData(value: unknown, dropTopLevel: string[] = []): unknown {
+  if (Array.isArray(value)) return value.map((item) => publicReportData(item));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (PII_KEYS.has(key.toLowerCase())) continue;
+      if (dropTopLevel.includes(key)) continue;
+      out[key] = publicReportData(child);
+    }
+    return out;
+  }
+  return value ?? null;
+}
+
 @Injectable()
 export class PublicService {
   constructor(
@@ -320,6 +396,69 @@ export class PublicService {
       unlockPriceCents: await this.settings.getCents('payPerViewPriceEur'),
       currency: 'EUR',
       // PII (signatures, addresses, phones) is intentionally never included here.
+    };
+  }
+
+  /**
+   * The WHOLE report, free, for a car that is on sale - DEN-224.
+   *
+   * The report used to be sold per view: the page showed a summary and the
+   * findings were behind a payment. That is reversed on the client's decision,
+   * and this route is what makes it possible - the authed
+   * `GET /reports/:id/full` answers 403 to anyone who has not bought the
+   * report, so an anonymous reader could not reach it at all.
+   *
+   * THE GATE IS THE LISTING, NOT THE REPORT. A report becomes public because
+   * its car is publicly for sale, so the same conditions the showroom applies
+   * apply here: ACTIVE and not expired. A report whose owner never published a
+   * car, or whose listing was taken down, stays unreachable - free to read is
+   * a property of a listing on the market, not of every report we hold.
+   */
+  async reportFull(code: string) {
+    const listing = await this.prisma.listing.findFirst({
+      where: {
+        status: 'ACTIVE',
+        source: 'report',
+        report: { code, deletedAt: null },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      include: { report: true },
+    });
+    const report = listing?.report;
+    if (!report) {
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
+    }
+
+    return {
+      code: report.code,
+      date: report.createdAt.toISOString(),
+      qualityScore: report.qualityScore,
+      tier: report.tier,
+      vehicle: this.vehicle(report),
+      /*
+       * MASKED, exactly as in the preview beside it. The findings are free
+       * now; the identifier that lets a stranger pull the car's registration,
+       * finance and insurance records elsewhere is a separate thing, and
+       * nothing in "show the report for free" asks for it. The buyer who is
+       * actually standing in front of the car reads it off the windscreen.
+       */
+      vinMasked: report.vin ? this.maskVin(report.vin) : null,
+      /*
+       * `photos` is dropped out of the payload, and it is not a finding being
+       * withheld. It is the app's own manifest - kind, angle, position, pixel
+       * size - and the photographs themselves are delivered signed in the
+       * field below. Left in, the generic renderer prints it as a section of
+       * forty rows reading "Angle: exterior-left, Position: 1", underneath the
+       * pictures it describes.
+       */
+      reportData: publicReportData(report.reportData, ['photos']),
+      photos: await this.signPhotos(report.photosManifest, MAX_REPORT_PHOTOS),
+      /*
+       * NO PDF. The document is the inspector's own file: it carries the
+       * signature image, the full VIN and whatever else the mobile app put on
+       * the page, none of which passes through the masking above. Publishing
+       * the findings does not publish the paperwork.
+       */
     };
   }
 
