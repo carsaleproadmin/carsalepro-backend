@@ -148,6 +148,66 @@ describe('Public showroom + report check (e2e)', () => {
     expect(res.body.address).toBeUndefined();
   });
 
+  // DEN-224 - the report stopped being a purchase. These four tests are the
+  // whole contract of that change: everything is returned, the two things that
+  // are not findings are still withheld, and the gate is the LISTING.
+  describe('DEN-224: the full report is public', () => {
+    it('10-1. returns the findings in full, with no payment and no token', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      expect(res.body.code).toBe(code);
+      expect(res.body.qualityScore).toBe(82);
+      expect(res.body.reportData.damages).toHaveLength(2);
+      expect(res.body.reportData.damages[0].part).toBe('door');
+    });
+
+    it('10-2. masks the VIN and never sends the PDF', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      expect(res.body.vin).toBeUndefined();
+      expect(res.body.vinMasked).toMatch(/^WAU\*+/);
+      // The document carries the signature and the unmasked VIN, neither of
+      // which passes through the masking above. Free to read is not free to
+      // download the paperwork.
+      expect(res.body.pdf).toBeUndefined();
+    });
+
+    it('10-3. strips PII out of the free-form payload at any depth', async () => {
+      await prisma.report.update({
+        where: { id: reportId },
+        data: {
+          reportData: {
+            damages: [{ part: 'door', owner: 'Anna Muster' }],
+            signoff: { rating: 3, signature: 'data:image/png;base64,AAA', phone: '+49301234567' },
+          },
+        },
+      });
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      // The finding stays; the person does not.
+      expect(res.body.reportData.signoff.rating).toBe(3);
+      expect(res.body.reportData.signoff.signature).toBeUndefined();
+      expect(res.body.reportData.signoff.phone).toBeUndefined();
+      expect(res.body.reportData.damages[0].part).toBe('door');
+      expect(res.body.reportData.damages[0].owner).toBeUndefined();
+      await prisma.report.update({
+        where: { id: reportId },
+        data: { reportData: { damages: [{ part: 'door' }, { part: 'bumper' }] } },
+      });
+    });
+
+    it('10-4. 404s once the car is off the market', async () => {
+      await prisma.listing.update({ where: { id: listingId }, data: { status: 'HIDDEN' } });
+      await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(404);
+      await prisma.listing.update({ where: { id: listingId }, data: { status: 'ACTIVE' } });
+    });
+  });
+
   it('10. preview 404s for an unknown code', async () => {
     await request(app.getHttpServer()).get('/api/v1/public/reports/CSP-000002/preview').expect(404);
   });
