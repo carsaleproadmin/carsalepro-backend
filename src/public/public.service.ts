@@ -458,13 +458,23 @@ export class PublicService {
         status: 'ACTIVE',
         source: 'report',
         /*
-         * `uploaded` is the flag `POST /reports/:id/complete` sets, and
-         * `checkReport` above has always tested it. This route did not, so a
-         * report whose upload never finished was published as a finished
-         * document - with a photo manifest that may name objects R2 does not
-         * hold.
+         * NOT gated on `uploaded`, and that is deliberate - review finding 8
+         * asked for it and the flag does not mean what the finding assumes.
+         *
+         * `uploaded` is set by `POST /reports/:id/complete`, which verifies
+         * that THE PDF exists in R2. It says nothing about `reportData` or the
+         * photo manifest, and this route serves no PDF. The paid route
+         * (`ReportAccessService.getFull`) does not test it either: it returns
+         * the findings and signs the PDF only when the flag is true.
+         *
+         * Requiring it here would make the free route stricter than the paid
+         * one and would hide reports whose findings are complete because a
+         * document nobody is being offered was never finished uploading.
+         *
+         * `checkReport` does test it, for a different question: it answers
+         * "is there a report to buy", and what was for sale was the PDF.
          */
-        report: { code, deletedAt: null, uploaded: true },
+        report: { code, deletedAt: null },
         OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       },
       include: { report: true },

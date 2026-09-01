@@ -236,13 +236,20 @@ describe('Public showroom + report check (e2e)', () => {
       });
     });
 
-    it('10-3b. 404s while the report upload has not completed', async () => {
-      // `checkReport` has always tested `uploaded`; this route did not, and a
-      // half-uploaded report was served as a finished document.
+    it('10-3b. serves the findings even when the PDF upload never finished', async () => {
+      /*
+       * `uploaded` is about the PDF, which this route does not serve. The paid
+       * route does not test it either - it returns the findings and signs the
+       * document only when the flag is true. Gating here would hide a report
+       * whose findings are complete, so this test pins the decision rather
+       * than the reverse.
+       */
       await prisma.report.update({ where: { id: reportId }, data: { uploaded: false } });
-      await request(app.getHttpServer())
+      const res = await request(app.getHttpServer())
         .get(`/api/v1/public/reports/${code}/full`)
-        .expect(404);
+        .expect(200);
+      expect(res.body.reportData.damages).toHaveLength(2);
+      expect(res.body.pdf).toBeUndefined();
       await prisma.report.update({ where: { id: reportId }, data: { uploaded: true } });
     });
 
