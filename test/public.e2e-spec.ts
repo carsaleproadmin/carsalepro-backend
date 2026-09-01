@@ -199,6 +199,43 @@ describe('Public showroom + report check (e2e)', () => {
       });
     });
 
+    it('10-3a. removes every person-bearing field the DTO defines', async () => {
+      // Not a guess at what PII looks like: these are the fields
+      // `ReportDataV1Dto` actually declares that can hold a person, plus the
+      // recipient rows. The first blocklist missed all of them.
+      await prisma.report.update({
+        where: { id: reportId },
+        data: {
+          reportData: {
+            vehicle: {
+              make: 'BMW',
+              company: 'AutoCheck GmbH',
+              branch: 'Berlin Mitte',
+              responsible: 'Klaus Muster',
+            },
+            recipients: [{ name: 'Anna Muster', email: 'anna@example.com' }],
+            damages: [{ part: 'door' }],
+          },
+        },
+      });
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain('Anna Muster');
+      expect(body).not.toContain('Klaus Muster');
+      expect(body).not.toContain('AutoCheck GmbH');
+      expect(body).not.toContain('Berlin Mitte');
+      expect(res.body.reportData.recipients).toBeUndefined();
+      // The findings around them are untouched.
+      expect(res.body.reportData.vehicle.make).toBe('BMW');
+      expect(res.body.reportData.damages[0].part).toBe('door');
+      await prisma.report.update({
+        where: { id: reportId },
+        data: { reportData: { damages: [{ part: 'door' }, { part: 'bumper' }] } },
+      });
+    });
+
     it('10-4. 404s once the car is off the market', async () => {
       await prisma.listing.update({ where: { id: listingId }, data: { status: 'HIDDEN' } });
       await request(app.getHttpServer())

@@ -115,9 +115,24 @@ const MAX_REPORT_PHOTOS = 60;
  * list has to be maintained - anything the app adds that names a person has to
  * be added here.
  *
+ * WHERE THIS LIST COMES FROM. Not from imagination: `ReportDataV1Dto` is the
+ * contract the mobile app writes to, and every field on it that can hold a
+ * person is named below. The first version of this list was guessed from the
+ * obvious words - signature, phone, email - and missed four fields that were
+ * right there in the DTO: `vehicle.company`, `vehicle.branch`,
+ * `vehicle.responsible` ("Responsible inspector display name") and the whole
+ * `recipients` array, whose rows carry `name` beside the address. The generic
+ * renderer prints every unknown key, so the customer's name and the
+ * inspector's name were both on a public page. Read the DTO before adding a
+ * section here.
+ *
  * The signature is the clearest case. `signoff` itself is a FINDING - the
  * rating, the OBD result, whether the car is accident-free - and stays; what
  * goes is the inspector's drawn signature and their contact details inside it.
+ *
+ * `company` and `branch` are the inspection firm rather than a private person,
+ * and they still go: naming the firm that signed a report we publish for free
+ * is a claim about that firm, made without asking it.
  */
 const PII_KEYS = new Set([
   'signature',
@@ -146,6 +161,20 @@ const PII_KEYS = new Set([
   'licenseplate',
   'plate',
   'vin',
+  // From ReportDataV1Dto - see the note above.
+  'recipients',
+  'responsible',
+  'company',
+  'branch',
+  // A bare `name` is a person far more often than not in this payload, and the
+  // catalogue ids the report is actually built from (`part`, `kind`, `angle`)
+  // never travel under it.
+  'name',
+  'firstname',
+  'lastname',
+  'fullname',
+  'mobile',
+  'tel',
 ]);
 
 /**
