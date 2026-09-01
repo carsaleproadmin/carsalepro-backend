@@ -236,6 +236,16 @@ describe('Public showroom + report check (e2e)', () => {
       });
     });
 
+    it('10-3b. 404s while the report upload has not completed', async () => {
+      // `checkReport` has always tested `uploaded`; this route did not, and a
+      // half-uploaded report was served as a finished document.
+      await prisma.report.update({ where: { id: reportId }, data: { uploaded: false } });
+      await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(404);
+      await prisma.report.update({ where: { id: reportId }, data: { uploaded: true } });
+    });
+
     it('10-4. 404s once the car is off the market', async () => {
       await prisma.listing.update({ where: { id: listingId }, data: { status: 'HIDDEN' } });
       await request(app.getHttpServer())

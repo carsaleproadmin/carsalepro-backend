@@ -98,12 +98,21 @@ export function averagePaintThicknessUm(data: Record<string, unknown>): number |
  * How many report photographs the public page may show.
  *
  * The preview showed two, as a taste of a document nobody could read. There is
- * nothing left to hold back, so the number only has to be large enough for a
- * full inspection - 17 exterior angles plus the cabin, the odometer and the
- * VIN plate - and small enough that one page cannot ask R2 to sign a thousand
- * URLs because a manifest was malformed.
+ * nothing left to hold back, so this is a guard against a malformed manifest
+ * rather than an editorial choice - and it has to sit ABOVE the real work.
+ *
+ * 60 was the first number here and it was too low: `ReportDataV1Dto` accepts
+ * 600 and says a thorough report runs to roughly 100-120 photographs - 17
+ * exterior angles, 17 interior, 13 thickness stations, four wheels, the
+ * odometer and VIN plate, and several shots per damage. The gallery orders
+ * damage photographs LAST, so a cap below the real count cut exactly the
+ * evidence a buyer opens the report for, and said nothing about it.
+ *
+ * 300 rather than the DTO's own 600: it clears the documented ceiling of the
+ * work by a wide margin, and still refuses to sign six hundred URLs for one
+ * page load if a manifest is nonsense.
  */
-const MAX_REPORT_PHOTOS = 60;
+const MAX_REPORT_PHOTOS = 300;
 
 /**
  * Keys that never leave the building, at any depth.
@@ -448,7 +457,14 @@ export class PublicService {
       where: {
         status: 'ACTIVE',
         source: 'report',
-        report: { code, deletedAt: null },
+        /*
+         * `uploaded` is the flag `POST /reports/:id/complete` sets, and
+         * `checkReport` above has always tested it. This route did not, so a
+         * report whose upload never finished was published as a finished
+         * document - with a photo manifest that may name objects R2 does not
+         * hold.
+         */
+        report: { code, deletedAt: null, uploaded: true },
         OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       },
       include: { report: true },
