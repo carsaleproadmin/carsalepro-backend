@@ -47,9 +47,12 @@ export interface LegalContent {
 // and nothing more (FE-J1 / DEN-37). Keep them in step with
 // `carsalepro-frontend/messages/{ru,en,de}.json` -> `legal.imprint`, which is
 // the website's own copy of the same text.
+// EMAIL became the company's own domain on 2026-09-02, on the client's
+// instruction. The mailbox is real: carsalepro.net publishes Cloudflare Email
+// Routing MX records and an SPF record.
 const COMPANY = 'CarSalePro LLC';
 const ADDRESS = '1023 E Lincolnway, Cheyenne, WY 82001, USA';
-const EMAIL = 'carsaleproadmin@gmail.com';
+const EMAIL = 'support@carsalepro.net';
 
 const PRIVACY: Record<LegalLang, LegalContent> = {
   en: {
