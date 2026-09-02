@@ -99,6 +99,31 @@ export function mirroredPhotoKey(listingId: string, sourceKey: string): string {
 }
 
 /**
+ * Slot kinds that must never reach a public surface, whatever a manifest says.
+ *
+ * `passport` holds the pages of the vehicle registration document, which carry
+ * the name and the address of the owner. Three separate locks already stand in
+ * front of it: the mobile app does not upload it (`sync_providers.dart` skips
+ * `PhotoKind.passport`), it is not drawn into the PDF, and the website removes
+ * it again in `lib/report-photos.ts`. All three are on a different machine from
+ * this one. This is the lock on the surface that PUBLISHES - the only place
+ * where a leak is a leak rather than a mistake in a client.
+ *
+ * Matched by PREFIX as well as in full. The app takes up to three pages, and a
+ * later build that numbers them `passport-2` must not walk past a rule written
+ * for a single slot.
+ */
+const NEVER_PUBLIC_KINDS = ['passport'] as const;
+
+/** True when a slot kind must not be published, at any index. */
+export function isNeverPublicKind(kind: string | null | undefined): boolean {
+  const value = (kind ?? '').toLowerCase();
+  return NEVER_PUBLIC_KINDS.some(
+    (banned) => value === banned || value.startsWith(`${banned}-`) || value.startsWith(`${banned}_`),
+  );
+}
+
+/**
  * The showroom subset of a report's photo manifest.
  *
  * `photosManifest` is a `Json` column, so it can be anything at all: null for an
@@ -119,8 +144,19 @@ export function mirroredPhotoKey(listingId: string, sourceKey: string): string {
  * `angle` is filled in from `kind` for the same reason: the field is only
  * written by the current mirror, so on an older manifest it is absent, and the
  * website would show an uncaptioned gallery until the report was touched.
+ *
+ * `includeNeverPublic` is for ERASURE and for nothing else. The default drops
+ * the kinds that must never be published, which is what every read path and the
+ * mirror want. The GDPR pass wants the opposite: it computes the keys to DELETE
+ * from the public bucket, so a kind an OLD build mirrored before this rule
+ * existed has to stay in that list, or the erasure would walk past the one
+ * object it most needs to remove.
  */
-export function manifestPhotoRefs(manifest: unknown, limit: number): ManifestPhotoRef[] {
+export function manifestPhotoRefs(
+  manifest: unknown,
+  limit: number,
+  options: { includeNeverPublic?: boolean } = {},
+): ManifestPhotoRef[] {
   if (!Array.isArray(manifest) || limit <= 0) return [];
   const parsed: ManifestPhotoRef[] = [];
   for (const entry of manifest) {
@@ -128,6 +164,7 @@ export function manifestPhotoRefs(manifest: unknown, limit: number): ManifestPho
     const ref = entry as Partial<ManifestPhotoRef>;
     if (typeof ref.s3Key !== 'string' || ref.s3Key.length === 0) continue;
     const kind = typeof ref.kind === 'string' ? ref.kind : undefined;
+    if (!options.includeNeverPublic && isNeverPublicKind(kind)) continue;
     const angle = typeof ref.angle === 'string' ? ref.angle : angleForKind(kind);
     parsed.push({
       s3Key: ref.s3Key,
