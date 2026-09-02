@@ -865,13 +865,17 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       const buyer = await makeCustomer();
       const report = await seedReport();
 
-      // Buy it.
-      const checkout = await request(app.getHttpServer())
-        .post('/api/v1/payments/ppv')
-        .set('Authorization', `Bearer ${buyer.token}`)
-        .send({ reportCode: report.code })
-        .expect(201);
-      expect(typeof checkout.body.checkoutUrl).toBe('string');
+      /*
+       * Bought through the SERVICE, not the route.
+       *
+       * DEN-224 closed `POST /payments/ppv` with a 410 - the report is free
+       * now and nothing new can be sold. What this test is about survives
+       * that: money taken before the deploy can still be refunded, and a
+       * refund still has to take the access with it. So the purchase is made
+       * where the webhook and the archive still reach it.
+       */
+      const checkout = await payments.createPpvCheckout(buyer.userId, report.code);
+      expect(typeof checkout.checkoutUrl).toBe('string');
 
       const firstPayment = await prisma.payment.findFirstOrThrow({
         where: { userId: buyer.userId, purpose: 'ppv' },
@@ -913,13 +917,9 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       // Buy it AGAIN. @@unique([userId, reportId]) makes the row eternal, so
       // without reviving it a refund locked this buyer out of this report for
       // good: "already owned" on the way in, 403 on the way out.
-      const second = await request(app.getHttpServer())
-        .post('/api/v1/payments/ppv')
-        .set('Authorization', `Bearer ${buyer.token}`)
-        .send({ reportCode: report.code })
-        .expect(201);
-      expect(second.body.alreadyOwned).toBeUndefined();
-      expect(typeof second.body.checkoutUrl).toBe('string');
+      const second = await payments.createPpvCheckout(buyer.userId, report.code);
+      expect(second.alreadyOwned).toBeUndefined();
+      expect(typeof second.checkoutUrl).toBe('string');
 
       const secondPayment = await prisma.payment.findFirstOrThrow({
         where: { userId: buyer.userId, purpose: 'ppv', status: 'pending' },
