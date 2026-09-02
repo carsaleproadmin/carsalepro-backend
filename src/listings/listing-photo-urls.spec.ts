@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   MAX_LISTING_PHOTOS,
+  isNeverPublicKind,
   manifestPhotoRefs,
   mirroredPhotoKey,
   photoLocation,
@@ -166,5 +167,54 @@ describe('manifestPhotoRefs', () => {
     // took 32 below the guided count.
     expect(MAX_LISTING_PHOTOS).toBe(40);
     expect(MAX_LISTING_PHOTOS).toBeGreaterThanOrEqual(17 + 17);
+  });
+});
+
+describe('isNeverPublicKind — the registration document', () => {
+  it('drops the slot the registration document uses', () => {
+    expect(isNeverPublicKind('passport')).toBe(true);
+  });
+
+  it('drops the numbered pages of it', () => {
+    // The app takes up to three pages. A rule written for one slot must not
+    // walk past `passport-2` and publish page two of the owner's address.
+    expect(isNeverPublicKind('passport-2')).toBe(true);
+    expect(isNeverPublicKind('passport_back')).toBe(true);
+    expect(isNeverPublicKind('PASSPORT-3')).toBe(true);
+  });
+
+  it('keeps every kind the report is actually made of', () => {
+    for (const kind of ['exterior-front', 'interior-1', 'vin', 'odometer', 'damage-1']) {
+      expect(isNeverPublicKind(kind)).toBe(false);
+    }
+  });
+
+  it('says nothing about a kind that is absent', () => {
+    expect(isNeverPublicKind(null)).toBe(false);
+    expect(isNeverPublicKind(undefined)).toBe(false);
+  });
+});
+
+describe('manifestPhotoRefs — the never-public rule', () => {
+  const manifest = [
+    { s3Key: 'a.jpg', kind: 'exterior-front' },
+    { s3Key: 'b.jpg', kind: 'passport' },
+    { s3Key: 'c.jpg', kind: 'passport-2' },
+  ];
+
+  it('leaves the registration document out by default', () => {
+    const keys = manifestPhotoRefs(manifest, 10).map((ref) => ref.s3Key);
+    expect(keys).toEqual(['a.jpg']);
+  });
+
+  it('returns it for an erasure, which has to delete it', () => {
+    // The GDPR pass computes the keys to REMOVE from the public bucket. A
+    // build older than this rule could have mirrored one, and skipping it here
+    // would leave the one object the erasure most needs to take away.
+    const keys = manifestPhotoRefs(manifest, 10, { includeNeverPublic: true }).map(
+      (ref) => ref.s3Key,
+    );
+    expect(keys).toContain('b.jpg');
+    expect(keys).toContain('c.jpg');
   });
 });

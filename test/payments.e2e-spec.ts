@@ -76,19 +76,39 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
     });
   }
 
-  it('1. POST /api/v1/payments/ppv (mock mode) returns checkoutUrl and records the purchase', async () => {
-    const { token, userId } = await registerUser(app);
-    const code = uniqueCode();
-    const report = await seedReport({ code });
-
+  /*
+   * DEN-224 CLOSED THE ROUTE, NOT THE MODEL.
+   *
+   * The report is free now, so `POST /api/v1/payments/ppv` answers 410 and
+   * nobody can open a Checkout for it. Everything BEHIND the route is still
+   * live and still has to work: sessions opened before the deploy have to
+   * settle, and the people who already paid keep their access for ever.
+   *
+   * So the tests below buy through `PaymentsService` directly. They are the
+   * same assertions they always were - what changed is that the purchase is
+   * now made the way the webhook and the archive still reach it, rather than
+   * through a door that is shut.
+   */
+  it('1. the route is closed, and says so rather than 404ing', async () => {
+    const { token } = await registerUser(app);
     const res = await request(app.getHttpServer())
       .post('/api/v1/payments/ppv')
       .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
+      .send({ reportCode: uniqueCode() })
+      .expect(410);
+    // 410 rather than 404: an old build has to be told the offer is withdrawn,
+    // not that it has the address wrong.
+    expect(res.body.error.code).toBe('offer_withdrawn');
+  });
 
-    expect(typeof res.body.checkoutUrl).toBe('string');
-    expect(res.body.mock).toBe(true);
+  it('1b. a purchase records a succeeded ppv payment', async () => {
+    const { userId } = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code });
+
+    const res = await payments.createPpvCheckout(userId, code);
+    expect(typeof res.checkoutUrl).toBe('string');
+    expect(res.mock).toBe(true);
 
     const purchase = await prisma.reportPurchase.findUnique({
       where: { userId_reportId: { userId, reportId: report.id } },
@@ -100,24 +120,16 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
     expect(payment!.purpose).toBe('ppv');
   });
 
-  it('2. second ppv for the same report returns alreadyOwned and creates no duplicate', async () => {
-    const { token, userId } = await registerUser(app);
+  it('2. a second purchase of the same report returns alreadyOwned and creates no duplicate', async () => {
+    const { userId } = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code });
 
-    await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
+    await payments.createPpvCheckout(userId, code);
 
-    const res = await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
-    expect(res.body.alreadyOwned).toBe(true);
-    expect(res.body.checkoutUrl).toBeUndefined();
+    const res = await payments.createPpvCheckout(userId, code);
+    expect(res.alreadyOwned).toBe(true);
+    expect(res.checkoutUrl).toBeUndefined();
 
     const count = await prisma.reportPurchase.count({
       where: { userId, reportId: report.id },
@@ -125,17 +137,16 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
     expect(count).toBe(1);
   });
 
-  it('3. ppv for an unknown code returns 404 not_found', async () => {
-    const { token } = await registerUser(app);
-    const res = await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: 'CSP-999999' })
-      .expect(404);
-    expect(res.body.error.code).toBe('not_found');
+  it('3. a purchase of an unknown code is refused', async () => {
+    const { userId } = await registerUser(app);
+    await expect(payments.createPpvCheckout(userId, 'CSP-999999')).rejects.toMatchObject({
+      status: 404,
+    });
   });
 
-  it('4. ppv without a token returns 401', async () => {
+  it('4. the closed route still refuses an anonymous caller first', async () => {
+    // The guard runs before the handler, so an unauthenticated call gets 401
+    // and learns nothing about what is or is not on sale.
     await request(app.getHttpServer())
       .post('/api/v1/payments/ppv')
       .send({ reportCode: uniqueCode() })
@@ -143,15 +154,11 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
   });
 
   it('5. GET /api/v1/reports/:id/full as the purchaser returns 200 with reportData + vehicle', async () => {
-    const { token } = await registerUser(app);
+    const { token, userId } = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code });
 
-    await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
+    await payments.createPpvCheckout(userId, code);
 
     const res = await request(app.getHttpServer())
       .get(`/api/v1/reports/${report.id}/full`)
@@ -213,15 +220,11 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
   });
 
   it('8. GET /api/v1/reports/:id/download as purchaser returns 200 {signedUrl} (or 503 if R2 off)', async () => {
-    const { token } = await registerUser(app);
+    const { token, userId } = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code });
 
-    await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
+    await payments.createPpvCheckout(userId, code);
 
     const res = await request(app.getHttpServer())
       .get(`/api/v1/reports/${report.id}/download`)
@@ -252,15 +255,11 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
   // the caller only learns the truth from R2's NoSuchKey. Both readers must
   // refuse on `uploaded` instead.
   it('8c. GET /download for a report whose PDF was never uploaded returns 409 report_not_uploaded', async () => {
-    const { token } = await registerUser(app);
+    const { token, userId } = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code, uploaded: false });
 
-    await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
+    await payments.createPpvCheckout(userId, code);
 
     const res = await request(app.getHttpServer())
       .get(`/api/v1/reports/${report.id}/download`)
@@ -276,15 +275,11 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
   });
 
   it('5b. GET /full for a report whose PDF was never uploaded returns pdf.downloadUrl null', async () => {
-    const { token } = await registerUser(app);
+    const { token, userId } = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code, uploaded: false });
 
-    await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
+    await payments.createPpvCheckout(userId, code);
 
     const res = await request(app.getHttpServer())
       .get(`/api/v1/reports/${report.id}/full`)
@@ -296,15 +291,11 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
   });
 
   it('9. GET /api/v1/me/report-purchases lists the purchase', async () => {
-    const { token } = await registerUser(app);
+    const { token, userId } = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code });
 
-    await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
+    await payments.createPpvCheckout(userId, code);
 
     const res = await request(app.getHttpServer())
       .get('/api/v1/me/report-purchases')
@@ -328,11 +319,7 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
     const code = uniqueCode();
     const report = await seedReport({ code });
 
-    await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
+    await payments.createPpvCheckout(userId, code);
     await request(app.getHttpServer())
       .get(`/api/v1/reports/${report.id}/full`)
       .set('Authorization', `Bearer ${token}`)
@@ -359,12 +346,8 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
     // And the buyer is not locked out for ever: `@@unique([userId, reportId])`
     // means the revoked row IS the buyer's history with this report, so a new
     // purchase has to revive it rather than insert beside it.
-    const again = await request(app.getHttpServer())
-      .post('/api/v1/payments/ppv')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ reportCode: code })
-      .expect(201);
-    expect(again.body.alreadyOwned).toBeUndefined();
+    const again = await payments.createPpvCheckout(userId, code);
+    expect(again.alreadyOwned).toBeUndefined();
 
     await request(app.getHttpServer())
       .get(`/api/v1/reports/${report.id}/full`)
