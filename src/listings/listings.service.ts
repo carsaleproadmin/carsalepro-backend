@@ -980,9 +980,12 @@ export class ListingsService {
     const keys = [
       ...rows.map((r) => r.r2Key),
       ...listings.flatMap((l) =>
-        manifestPhotoRefs(l.report?.photosManifest, Number.MAX_SAFE_INTEGER).map((ref) =>
-          mirroredPhotoKey(l.id, ref.s3Key),
-        ),
+        manifestPhotoRefs(l.report?.photosManifest, Number.MAX_SAFE_INTEGER, {
+          // Including the kinds that must never be published. They should not
+          // be in the public bucket at all, but a build that predates the rule
+          // could have mirrored one, and this pass is what removes it.
+          includeNeverPublic: true,
+        }).map((ref) => mirroredPhotoKey(l.id, ref.s3Key)),
       ),
     ];
 
