@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { R2Service } from '../src/r2/r2.service';
 import { mirroredPhotoKey } from '../src/listings/listing-photo-urls';
@@ -13,6 +14,7 @@ describe('Public showroom + report check (e2e)', () => {
   const code = `CSP-${Math.floor(Math.random() * 900000 + 100000)}`;
   const vin = 'WAUZZZ8V8MA012345';
   let reportId: string;
+  let manifestAtStart: Prisma.InputJsonValue;
   let listingId: string;
   let sellerId: string;
 
@@ -44,6 +46,7 @@ describe('Public showroom + report check (e2e)', () => {
       },
     });
     reportId = report.id;
+    manifestAtStart = report.photosManifest as Prisma.InputJsonValue;
     const listing = await prisma.listing.create({
       data: {
         sellerId,
@@ -146,6 +149,226 @@ describe('Public showroom + report check (e2e)', () => {
     expect(res.body.vinMasked).toMatch(/^WAU\*+/);
     expect(res.body.signature).toBeUndefined();
     expect(res.body.address).toBeUndefined();
+  });
+
+  // DEN-224 - the report stopped being a purchase. These four tests are the
+  // whole contract of that change: everything is returned, the two things that
+  // are not findings are still withheld, and the gate is the LISTING.
+  describe('DEN-224: the full report is public', () => {
+    /*
+     * The repair runs here, not at the end of each test.
+     *
+     * These tests write to the one report the whole file shares. Putting the
+     * old value back on the last line of the test only works while the test
+     * PASSES: a failed assertion throws, the repair is skipped, and every test
+     * after it reads modified data - so one real failure arrives as five, and
+     * none of them points at the cause.
+     */
+    afterEach(async () => {
+      await prisma.report.update({
+        where: { id: reportId },
+        data: {
+          uploaded: true,
+          reportData: { damages: [{ part: 'door' }, { part: 'bumper' }] },
+          photosManifest: manifestAtStart,
+        },
+      });
+      await prisma.listing.update({
+        where: { id: listingId },
+        data: { status: 'ACTIVE', expiresAt: null },
+      });
+    });
+
+    it('10-1. returns the findings in full, with no payment and no token', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      expect(res.body.code).toBe(code);
+      expect(res.body.qualityScore).toBe(82);
+      expect(res.body.reportData.damages).toHaveLength(2);
+      expect(res.body.reportData.damages[0].part).toBe('door');
+    });
+
+    it('10-2. masks the VIN and never sends the PDF', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      expect(res.body.vin).toBeUndefined();
+      expect(res.body.vinMasked).toMatch(/^WAU\*+/);
+      // The document carries the signature and the unmasked VIN, neither of
+      // which passes through the masking above. Free to read is not free to
+      // download the paperwork.
+      expect(res.body.pdf).toBeUndefined();
+    });
+
+    it('10-3. strips PII out of the free-form payload at any depth', async () => {
+      await prisma.report.update({
+        where: { id: reportId },
+        data: {
+          reportData: {
+            damages: [{ part: 'door', owner: 'Anna Muster' }],
+            signoff: { rating: 3, signature: 'data:image/png;base64,AAA', phone: '+49301234567' },
+          },
+        },
+      });
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      // The finding stays; the person does not.
+      expect(res.body.reportData.signoff.rating).toBe(3);
+      expect(res.body.reportData.signoff.signature).toBeUndefined();
+      expect(res.body.reportData.signoff.phone).toBeUndefined();
+      expect(res.body.reportData.damages[0].part).toBe('door');
+      expect(res.body.reportData.damages[0].owner).toBeUndefined();
+    });
+
+    it('10-3a. removes every person-bearing field the DTO defines', async () => {
+      // Not a guess at what PII looks like: these are the fields
+      // `ReportDataV1Dto` actually declares that can hold a person, plus the
+      // recipient rows. The first blocklist missed all of them.
+      await prisma.report.update({
+        where: { id: reportId },
+        data: {
+          reportData: {
+            vehicle: {
+              make: 'BMW',
+              company: 'AutoCheck GmbH',
+              branch: 'Berlin Mitte',
+              responsible: 'Klaus Muster',
+            },
+            recipients: [{ name: 'Anna Muster', email: 'anna@example.com' }],
+            damages: [{ part: 'door' }],
+          },
+        },
+      });
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain('Anna Muster');
+      expect(body).not.toContain('Klaus Muster');
+      expect(body).not.toContain('AutoCheck GmbH');
+      expect(body).not.toContain('Berlin Mitte');
+      expect(res.body.reportData.recipients).toBeUndefined();
+      // The findings around them are untouched.
+      expect(res.body.reportData.vehicle.make).toBe('BMW');
+      expect(res.body.reportData.damages[0].part).toBe('door');
+    });
+
+    it('10-3b. serves the findings even when the PDF upload never finished', async () => {
+      /*
+       * `uploaded` is about the PDF, which this route does not serve. The paid
+       * route does not test it either - it returns the findings and signs the
+       * document only when the flag is true. Gating here would hide a report
+       * whose findings are complete, so this test pins the decision rather
+       * than the reverse.
+       */
+      await prisma.report.update({ where: { id: reportId }, data: { uploaded: false } });
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      expect(res.body.reportData.damages).toHaveLength(2);
+      expect(res.body.pdf).toBeUndefined();
+    });
+
+    it('10-4. 404s once the car is off the market', async () => {
+      await prisma.listing.update({ where: { id: listingId }, data: { status: 'HIDDEN' } });
+      await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(404);
+    });
+
+    it('10-5. 404s once the listing has expired', async () => {
+      /*
+       * The other half of the gate. ACTIVE is not sufficient on its own - a
+       * listing keeps that status after `expiresAt` goes by, and the showroom
+       * stops showing it at that moment. The report has to stop with it, or a
+       * bookmarked code would outlive the advertisement it belongs to.
+       */
+      await prisma.listing.update({
+        where: { id: listingId },
+        data: { expiresAt: new Date(Date.now() - 60_000) },
+      });
+      await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(404);
+    });
+
+    it('10-6. removes a person from a key that only CONTAINS a person word', async () => {
+      /*
+       * The blocklist used to compare the complete key, so `customer` went and
+       * `customerName` stayed. The app writes both forms, and the website
+       * prints every key it does not recognise - so one new field put a name
+       * on a public page with nobody in the loop.
+       */
+      await prisma.report.update({
+        where: { id: reportId },
+        data: {
+          reportData: {
+            signoff: {
+              rating: 4,
+              customerName: 'Anna Muster',
+              inspectorEmail: 'klaus@example.com',
+              owner_phone: '+49301234567',
+              ownerAddress: 'Musterstrasse 1',
+            },
+            damages: [{ part: 'door', partName: 'Front door', repairMethodName: 'Respray' }],
+          },
+        },
+      });
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain('Anna Muster');
+      expect(body).not.toContain('klaus@example.com');
+      expect(body).not.toContain('+49301234567');
+      expect(body).not.toContain('Musterstrasse');
+      /*
+       * And the report is still a report. `partName` and `repairMethodName`
+       * are catalogue labels - they are the findings a buyer came to read, and
+       * a rule that dropped every key holding the word "name" would empty the
+       * document to protect nobody.
+       */
+      expect(res.body.reportData.signoff.rating).toBe(4);
+      expect(res.body.reportData.damages[0].partName).toBe('Front door');
+      expect(res.body.reportData.damages[0].repairMethodName).toBe('Respray');
+    });
+
+    it('10-7. never signs a photograph of the registration document', async () => {
+      /*
+       * The pages of the registration document carry the name and the address
+       * of the owner. The mobile app does not upload them and the website
+       * removes them again, but both of those locks are on another machine.
+       * This is the lock on the surface that publishes.
+       */
+      await prisma.report.update({
+        where: { id: reportId },
+        data: {
+          photosManifest: [
+            { s3Key: 'reports/x/exterior-front.jpg', kind: 'exterior-front' },
+            { s3Key: 'reports/x/passport.jpg', kind: 'passport' },
+            { s3Key: 'reports/x/passport-2.jpg', kind: 'passport-2' },
+          ],
+        },
+      });
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/reports/${code}/full`)
+        .expect(200);
+      const kinds = (res.body.photos as { kind?: string }[]).map((photo) => photo.kind);
+      expect(kinds).not.toContain('passport');
+      expect(kinds).not.toContain('passport-2');
+      expect(JSON.stringify(res.body.photos)).not.toContain('passport');
+      /*
+       * And the route did in fact sign something. Without this the three
+       * assertions above hold just as well on an empty list, which is what an
+       * unconfigured R2 returns - the test would then pass while proving
+       * nothing at all.
+       */
+      if (app.get(R2Service).isConfigured()) {
+        expect(kinds).toContain('exterior-front');
+      }
+    });
   });
 
   it('10. preview 404s for an unknown code', async () => {

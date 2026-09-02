@@ -94,6 +94,222 @@ export function averagePaintThicknessUm(data: Record<string, unknown>): number |
   return Math.round(mean);
 }
 
+/**
+ * How many report photographs the public page may show.
+ *
+ * The preview showed two, as a taste of a document nobody could read. There is
+ * nothing left to hold back, so this is a guard against a malformed manifest
+ * rather than an editorial choice - and it has to sit ABOVE the real work.
+ *
+ * 60 was the first number here and it was too low: `ReportDataV1Dto` accepts
+ * 600 and says a thorough report runs to roughly 100-120 photographs - 17
+ * exterior angles, 17 interior, 13 thickness stations, four wheels, the
+ * odometer and VIN plate, and several shots per damage. The gallery orders
+ * damage photographs LAST, so a cap below the real count cut exactly the
+ * evidence a buyer opens the report for, and said nothing about it.
+ *
+ * 300 rather than the DTO's own 600: it clears the documented ceiling of the
+ * work by a wide margin, and still refuses to sign six hundred URLs for one
+ * page load if a manifest is nonsense.
+ */
+const MAX_REPORT_PHOTOS = 300;
+
+/**
+ * Keys that never leave the building, at any depth.
+ *
+ * `reportData` is free-form JSON written by the mobile app, so its shape is
+ * not ours to promise. A blocklist rather than a whitelist is deliberate: a
+ * whitelist would silently drop the next section the app starts sending, and
+ * the client asked for the WHOLE report. The cost of that choice is that this
+ * list has to be maintained - anything the app adds that names a person has to
+ * be added here.
+ *
+ * WHERE THIS LIST COMES FROM. Not from imagination: `ReportDataV1Dto` is the
+ * contract the mobile app writes to, and every field on it that can hold a
+ * person is named below. The first version of this list was guessed from the
+ * obvious words - signature, phone, email - and missed four fields that were
+ * right there in the DTO: `vehicle.company`, `vehicle.branch`,
+ * `vehicle.responsible` ("Responsible inspector display name") and the whole
+ * `recipients` array, whose rows carry `name` beside the address. The generic
+ * renderer prints every unknown key, so the customer's name and the
+ * inspector's name were both on a public page. Read the DTO before adding a
+ * section here.
+ *
+ * The signature is the clearest case. `signoff` itself is a FINDING - the
+ * rating, the OBD result, whether the car is accident-free - and stays; what
+ * goes is the inspector's drawn signature and their contact details inside it.
+ *
+ * `company` and `branch` are the inspection firm rather than a private person,
+ * and they still go: naming the firm that signed a report we publish for free
+ * is a claim about that firm, made without asking it.
+ */
+const PII_KEYS = new Set([
+  'signature',
+  'signatureurl',
+  'signatureimage',
+  'inspectorsignature',
+  'customersignature',
+  'ownersignature',
+  'customer',
+  'client',
+  'owner',
+  'seller',
+  'contact',
+  'contacts',
+  'phone',
+  'phonenumber',
+  'email',
+  'address',
+  'street',
+  'postaladdress',
+  'iban',
+  'taxid',
+  'personalid',
+  'idnumber',
+  'passport',
+  'licenseplate',
+  'plate',
+  'vin',
+  // From ReportDataV1Dto - see the note above.
+  'recipients',
+  'responsible',
+  'company',
+  'branch',
+  // A bare `name` is a person far more often than not in this payload, and the
+  // catalogue ids the report is actually built from (`part`, `kind`, `angle`)
+  // never travel under it.
+  'name',
+  'firstname',
+  'lastname',
+  'fullname',
+  'mobile',
+  'tel',
+]);
+
+/**
+ * `reportData` with every PII-bearing key removed, at any depth.
+ *
+ * Recursive, because the app nests: a phone number under `signoff.inspector`
+ * is the same leak as one at the top level. Arrays are walked as well - the
+ * damages list is an array of objects, and a note field inside one of them is
+ * reached the same way.
+ */
+/**
+ * Words that make a key a person, wherever they appear inside it.
+ *
+ * The list above matches a COMPLETE key, and that was the hole: the mobile app
+ * writes `customerName` as readily as `customer`, and `inspectorEmail` as
+ * readily as `email`. Neither is in the list above, and the website prints
+ * every key it does not recognise, so one new field in the app put a name on a
+ * public page with nobody in the loop.
+ *
+ * These match a TOKEN of the key instead - `customerName` splits into
+ * `customer` and `name`, and the first is enough. Token equality, not a
+ * substring: `platform` does not contain the token `plate`, and `telemetry`
+ * does not contain `tel`.
+ */
+const PII_PERSON_WORDS = new Set([
+  'customer',
+  'client',
+  'owner',
+  'seller',
+  'buyer',
+  'person',
+  'recipient',
+  'recipients',
+  'responsible',
+  'company',
+  'branch',
+]);
+
+/** Words that make a key a way to REACH or IDENTIFY a person. */
+const PII_CONTACT_WORDS = new Set([
+  'signature',
+  'phone',
+  'telephone',
+  'mobile',
+  'tel',
+  'fax',
+  'email',
+  'mail',
+  'address',
+  'street',
+  'postcode',
+  'iban',
+  'taxid',
+  'vatid',
+  'personalid',
+  'idnumber',
+  'passport',
+  'plate',
+  'licenseplate',
+  'vin',
+]);
+
+/**
+ * Words that turn a bare `name` into a person's name.
+ *
+ * `name` on its own cannot be a token rule. The report is BUILT out of names:
+ * `partName`, `panelName`, `methodName`, `colourName` are catalogue labels and
+ * they are the findings a buyer came to read. So `name` is dropped only when
+ * the key is exactly `name`, or when another token says whose name it is.
+ *
+ * `inspector` is here rather than in `PII_PERSON_WORDS` on purpose. An
+ * inspector's NOTE is a finding and has to stay; an inspector's NAME does not.
+ */
+const PII_NAME_HOLDERS = new Set([
+  ...PII_PERSON_WORDS,
+  'inspector',
+  'first',
+  'last',
+  'full',
+  'middle',
+  'maiden',
+  'given',
+  'family',
+]);
+
+/** `customer_phone`, `customerPhone` and `CUSTOMERPhone` all give the same list. */
+function keyTokens(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .map((token) => token.toLowerCase())
+    .filter((token) => token.length > 0);
+}
+
+/**
+ * True when a key must not leave the building.
+ *
+ * Three rules, in order of confidence: the exact list above, then a person or
+ * contact word anywhere in the key, then `name` with something beside it that
+ * says whose.
+ */
+export function isPiiKey(key: string): boolean {
+  if (PII_KEYS.has(key.toLowerCase())) return true;
+  const tokens = keyTokens(key);
+  if (tokens.some((token) => PII_PERSON_WORDS.has(token) || PII_CONTACT_WORDS.has(token))) {
+    return true;
+  }
+  if (!tokens.includes('name')) return false;
+  return tokens.length === 1 || tokens.some((token) => PII_NAME_HOLDERS.has(token));
+}
+
+function publicReportData(value: unknown, dropTopLevel: string[] = []): unknown {
+  if (Array.isArray(value)) return value.map((item) => publicReportData(item));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (isPiiKey(key)) continue;
+      if (dropTopLevel.includes(key)) continue;
+      out[key] = publicReportData(child);
+    }
+    return out;
+  }
+  return value ?? null;
+}
+
 @Injectable()
 export class PublicService {
   constructor(
@@ -323,6 +539,95 @@ export class PublicService {
     };
   }
 
+  /**
+   * The WHOLE report, free, for a car that is on sale - DEN-224.
+   *
+   * The report used to be sold per view: the page showed a summary and the
+   * findings were behind a payment. That is reversed on the client's decision,
+   * and this route is what makes it possible - the authed
+   * `GET /reports/:id/full` answers 403 to anyone who has not bought the
+   * report, so an anonymous reader could not reach it at all.
+   *
+   * THE GATE IS THE LISTING, NOT THE REPORT. A report becomes public because
+   * its car is publicly for sale, so the same conditions the showroom applies
+   * apply here: ACTIVE and not expired. A report whose owner never published a
+   * car, or whose listing was taken down, stays unreachable - free to read is
+   * a property of a listing on the market, not of every report we hold.
+   */
+  async reportFull(code: string) {
+    const listing = await this.prisma.listing.findFirst({
+      where: {
+        status: 'ACTIVE',
+        source: 'report',
+        /*
+         * NOT gated on `uploaded`, and that is deliberate - review finding 8
+         * asked for it and the flag does not mean what the finding assumes.
+         *
+         * `uploaded` is set by `POST /reports/:id/complete`, which verifies
+         * that THE PDF exists in R2. It says nothing about `reportData` or the
+         * photo manifest, and this route serves no PDF. The paid route
+         * (`ReportAccessService.getFull`) does not test it either: it returns
+         * the findings and signs the PDF only when the flag is true.
+         *
+         * Requiring it here would make the free route stricter than the paid
+         * one and would hide reports whose findings are complete because a
+         * document nobody is being offered was never finished uploading.
+         *
+         * `checkReport` does test it, for a different question: it answers
+         * "is there a report to buy", and what was for sale was the PDF.
+         */
+        report: { code, deletedAt: null },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      /*
+       * One report can back more than one listing - a car taken down and put
+       * back up writes a second row. Without an order the row that answers is
+       * whatever the database hands back first, so the GATE was not stable
+       * even though the payload is: the same request could pass one moment and
+       * 404 the next. Oldest first, which is the listing that has been on the
+       * market longest.
+       */
+      orderBy: { id: 'asc' },
+      include: { report: true },
+    });
+    const report = listing?.report;
+    if (!report) {
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
+    }
+
+    return {
+      code: report.code,
+      date: report.createdAt.toISOString(),
+      qualityScore: report.qualityScore,
+      tier: report.tier,
+      vehicle: this.vehicle(report),
+      /*
+       * MASKED, exactly as in the preview beside it. The findings are free
+       * now; the identifier that lets a stranger pull the car's registration,
+       * finance and insurance records elsewhere is a separate thing, and
+       * nothing in "show the report for free" asks for it. The buyer who is
+       * actually standing in front of the car reads it off the windscreen.
+       */
+      vinMasked: report.vin ? this.maskVin(report.vin) : null,
+      /*
+       * `photos` is dropped out of the payload, and it is not a finding being
+       * withheld. It is the app's own manifest - kind, angle, position, pixel
+       * size - and the photographs themselves are delivered signed in the
+       * field below. Left in, the generic renderer prints it as a section of
+       * forty rows reading "Angle: exterior-left, Position: 1", underneath the
+       * pictures it describes.
+       */
+      reportData: publicReportData(report.reportData, ['photos']),
+      photos: await this.signPhotos(report.photosManifest, MAX_REPORT_PHOTOS),
+      /*
+       * NO PDF. The document is the inspector's own file: it carries the
+       * signature image, the full VIN and whatever else the mobile app put on
+       * the page, none of which passes through the masking above. Publishing
+       * the findings does not publish the paperwork.
+       */
+    };
+  }
+
   private vehicle(r: Report) {
     return {
       make: r.make,
@@ -482,20 +787,33 @@ export class PublicService {
   ): Promise<{ url: string; kind?: string; angle?: string }[]> {
     if (!this.r2.isConfigured()) return [];
     const refs = manifestPhotoRefs(manifest, limit);
-    const out: { url: string; kind?: string; angle?: string }[] = [];
-    for (const ref of refs) {
-      try {
-        const { url } = await this.r2.createPresignedDownloadUrl(ref.s3Key);
-        out.push({
-          url,
-          ...(ref.kind ? { kind: ref.kind } : {}),
-          ...(ref.angle ? { angle: ref.angle } : {}),
-        });
-      } catch {
-        /* skip unsignable */
-      }
-    }
-    return out;
+    /*
+     * Together, not one after the other. The cap is 300 on the free report and
+     * the route needs no authentication, so a serial loop made the response
+     * time the SUM of three hundred signatures instead of the longest one.
+     * A signature is local work, so this costs no extra connection.
+     *
+     * A reference that cannot be signed is dropped, exactly as before -
+     * `Promise.all` would reject the whole page for one bad key, so each
+     * signature settles on its own.
+     */
+    const signed = await Promise.all(
+      refs.map(async (ref) => {
+        try {
+          const { url } = await this.r2.createPresignedDownloadUrl(ref.s3Key);
+          return {
+            url,
+            ...(ref.kind ? { kind: ref.kind } : {}),
+            ...(ref.angle ? { angle: ref.angle } : {}),
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return signed.filter((photo): photo is { url: string; kind?: string; angle?: string } =>
+      photo !== null,
+    );
   }
 
   private maskVin(vin: string): string {
