@@ -53,6 +53,8 @@ interface StubOptions {
   allowSharedKycBucket?: boolean;
   corsOrigins?: string[];
   stripeSecretKey?: string;
+  stripeWebhookSecret?: string;
+  stripeConnectWebhookSecret?: string;
   mapboxToken?: string;
   r2?: Record<string, unknown>;
   iap?: Record<string, unknown>;
@@ -71,7 +73,11 @@ function buildConfig(opts: StubOptions): ConfigService<AppConfig, true> {
       corsOrigins: opts.corsOrigins ?? ['https://www.carsalepro.de'],
       appEnv: 'production',
     },
-    stripe: { secretKey: opts.stripeSecretKey ?? '' },
+    stripe: {
+      secretKey: opts.stripeSecretKey ?? '',
+      webhookSecret: opts.stripeWebhookSecret ?? 'whsec_platform',
+      connectWebhookSecret: opts.stripeConnectWebhookSecret ?? 'whsec_connect',
+    },
     mapbox: { token: opts.mapboxToken ?? '' },
     vinHistory: { provider: 'mock', apiKey: '', allowSyntheticSale: false },
     // Absent unless a case exercises it, like every other optional block here.
@@ -295,6 +301,61 @@ describe('StartupCheckService', () => {
       const report = await build().run();
       expect(findingsFor(report, 'stripe')[0].severity).toBe('error');
       expect(report.counts.fatal).toBe(0);
+    });
+
+    /*
+     * The webhook secrets, which fail in a way nothing else reports.
+     *
+     * A missing Connect secret refuses `account.updated`, which is the only
+     * event that sets `stripeOnboarded` - so no inspector becomes eligible for
+     * an order, the dispatch finds nobody, and every surface reports the truth
+     * it was given. The refusals are visible in the Stripe dashboard, and only
+     * if somebody opens it.
+     */
+    it('reports a missing Connect webhook secret, which nothing else would', async () => {
+      const report = await build({
+        stripeSecretKey: 'sk_live_x',
+        stripeConnectWebhookSecret: '',
+      }).run();
+      const messages = findingsFor(report, 'stripe').map((finding) => finding.message);
+      expect(messages.some((m) => m.includes('STRIPE_CONNECT_WEBHOOK_SECRET is unset'))).toBe(true);
+      expect(report.counts.fatal).toBe(0);
+    });
+
+    it('reports a missing platform webhook secret', async () => {
+      const report = await build({
+        stripeSecretKey: 'sk_live_x',
+        stripeWebhookSecret: '',
+      }).run();
+      const messages = findingsFor(report, 'stripe').map((finding) => finding.message);
+      expect(messages.some((m) => m.includes('STRIPE_WEBHOOK_SECRET is unset'))).toBe(true);
+    });
+
+    /*
+     * Stripe issues one secret per endpoint, so the same value in both fields
+     * means one endpoint was read twice in the dashboard - and that endpoint
+     * is refusing everything it sends. It is the same defect as an unset
+     * secret, wearing a value.
+     */
+    it('reports two webhook secrets that are the same value', async () => {
+      const report = await build({
+        stripeSecretKey: 'sk_live_x',
+        stripeWebhookSecret: 'whsec_same',
+        stripeConnectWebhookSecret: 'whsec_same',
+      }).run();
+      const messages = findingsFor(report, 'stripe').map((finding) => finding.message);
+      expect(messages.some((m) => m.includes('equals STRIPE_WEBHOOK_SECRET'))).toBe(true);
+    });
+
+    it('says nothing about the secrets outside production', async () => {
+      const report = await build({
+        nodeEnv: 'development',
+        stripeSecretKey: 'sk_test_x',
+        stripeWebhookSecret: '',
+        stripeConnectWebhookSecret: '',
+      }).run();
+      const messages = findingsFor(report, 'stripe').map((finding) => finding.message);
+      expect(messages.some((m) => m.includes('WEBHOOK_SECRET'))).toBe(false);
     });
 
     it('reports a rejected Mapbox token as an error and never echoes it', async () => {

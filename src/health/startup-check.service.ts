@@ -433,7 +433,52 @@ export class StartupCheckService implements OnApplicationBootstrap {
    * briefly unreachable must not loop the deploy.
    */
   private async checkStripe(raw: RawFinding[], production: boolean): Promise<void> {
-    const { secretKey } = this.config.get('stripe', { infer: true });
+    const { secretKey, webhookSecret, connectWebhookSecret } = this.config.get('stripe', {
+      infer: true,
+    });
+
+    /*
+     * The two webhook secrets are checked BEFORE the key, because their
+     * failure is silent in a way the key's is not.
+     *
+     * A missing platform secret refuses payment events; a missing Connect
+     * secret refuses `account.updated`, which is the only event that sets
+     * `stripeOnboarded` - so no inspector becomes eligible for an order, the
+     * dispatch finds nobody, and every surface reports the truth it was given.
+     * Nothing raises its voice. The dashboard shows the refusals, and only if
+     * somebody opens it.
+     *
+     * They must also be DIFFERENT. Stripe issues one secret per endpoint, so
+     * the same value in both means one endpoint was read twice - which is the
+     * defect this check was written for, back in the shape where both
+     * endpoints pointed at one route.
+     */
+    if (secretKey && production) {
+      if (!webhookSecret) {
+        raw.push({
+          id: 'stripe',
+          intended: 'error',
+          message: 'STRIPE_WEBHOOK_SECRET is unset - payment events are refused unverified.',
+        });
+      }
+      if (!connectWebhookSecret) {
+        raw.push({
+          id: 'stripe',
+          intended: 'error',
+          message:
+            'STRIPE_CONNECT_WEBHOOK_SECRET is unset - account.updated is refused, so no ' +
+            'inspector becomes eligible for an order.',
+        });
+      } else if (connectWebhookSecret === webhookSecret) {
+        raw.push({
+          id: 'stripe',
+          intended: 'error',
+          message:
+            'STRIPE_CONNECT_WEBHOOK_SECRET equals STRIPE_WEBHOOK_SECRET - Stripe gives each ' +
+            'endpoint its own, so one of the two endpoints is refusing every event.',
+        });
+      }
+    }
 
     if (!secretKey) {
       raw.push({

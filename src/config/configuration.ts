@@ -158,6 +158,15 @@ export interface AppConfig {
     secretKey: string;
     publishableKey: string;
     webhookSecret: string;
+    /**
+     * The signing secret of the CONNECT endpoint, which is a different one.
+     *
+     * Stripe gives every webhook endpoint its own secret, and connected-account
+     * events (`account.updated`) can only be delivered by a Connect endpoint.
+     * Two endpoints therefore cannot share one route: whichever secret the
+     * route holds, the other endpoint's events fail the signature check.
+     */
+    connectWebhookSecret: string;
     connectRefreshUrl: string;
     connectReturnUrl: string;
     /** ISO 3166-1 alpha-2, upper case. Where a connected account lands by default. */
@@ -315,6 +324,7 @@ export default (): AppConfig => ({
     secretKey: process.env.STRIPE_SECRET_KEY ?? '',
     publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? '',
+    connectWebhookSecret: process.env.STRIPE_CONNECT_WEBHOOK_SECRET ?? '',
     connectRefreshUrl: process.env.STRIPE_CONNECT_REFRESH_URL ?? '',
     connectReturnUrl: process.env.STRIPE_CONNECT_RETURN_URL ?? '',
     /*
