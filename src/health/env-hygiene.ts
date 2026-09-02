@@ -168,6 +168,22 @@ export const CRITICAL_ENV_VARS: EnvVarSpec[] = [
     requiredInProduction: true,
     impact: 'paid orders never advance past PENDING',
   },
+  {
+    /*
+     * The CONNECT endpoint signs with a secret of its own, and a byte-order
+     * mark in front of it is invisible everywhere except here.
+     *
+     * The startup check beside this list reports the secret when it is EMPTY.
+     * It cannot report a value that is perfect apart from three bytes the
+     * terminal does not draw - and such a value fails every signature, which
+     * is the same outcome as no secret at all: no inspector becomes eligible
+     * for an order. That is the defect DEN-235 corrects, and leaving this
+     * variable out of the list is how it would come back.
+     */
+    name: 'STRIPE_CONNECT_WEBHOOK_SECRET',
+    requiredInProduction: true,
+    impact: 'account.updated is refused, so no inspector becomes eligible for an order',
+  },
   { name: 'STRIPE_CONNECT_REFRESH_URL', impact: 'inspector Connect onboarding' },
   { name: 'STRIPE_CONNECT_RETURN_URL', impact: 'inspector Connect onboarding' },
 

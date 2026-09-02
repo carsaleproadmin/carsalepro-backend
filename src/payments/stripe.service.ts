@@ -205,12 +205,14 @@ export class StripeService implements OnModuleInit {
   private readonly logger = new Logger(StripeService.name);
   private client?: Stripe.Stripe;
   private webhookSecret = '';
+  private connectWebhookSecret = '';
 
   constructor(private readonly config: ConfigService<AppConfig, true>) {}
 
   onModuleInit(): void {
     const stripe = this.config.get('stripe', { infer: true });
     this.webhookSecret = stripe.webhookSecret;
+    this.connectWebhookSecret = stripe.connectWebhookSecret;
     // Force mock mode under tests so e2e is deterministic and offline even when
     // a real key is present in the environment.
     if (!stripe.secretKey || process.env.NODE_ENV === 'test') {
@@ -593,5 +595,28 @@ export class StripeService implements OnModuleInit {
   /** Verify and parse a Stripe webhook payload from its raw body + signature. */
   constructWebhookEvent(rawBody: Buffer | string, signature: string): StripeEvent {
     return this.requireClient().webhooks.constructEvent(rawBody, signature, this.webhookSecret);
+  }
+
+  /** True once the Connect endpoint has a secret of its own. */
+  get connectWebhookConfigured(): boolean {
+    return this.connectWebhookSecret.length > 0;
+  }
+
+  /**
+   * The same, for the CONNECT endpoint, which signs with a different secret.
+   *
+   * Stripe issues one secret per webhook endpoint, and connected-account
+   * events are only delivered by a Connect endpoint - so the two cannot share
+   * a route. They did, both pointing at `POST /webhooks/stripe`, and the route
+   * verified against the platform secret alone: every `account.updated` was
+   * refused with 400. That is the only event that sets `stripeOnboarded`, so
+   * in production no inspector ever became eligible for an order.
+   */
+  constructConnectWebhookEvent(rawBody: Buffer | string, signature: string): StripeEvent {
+    return this.requireClient().webhooks.constructEvent(
+      rawBody,
+      signature,
+      this.connectWebhookSecret,
+    );
   }
 }

@@ -75,6 +75,7 @@ export const envValidationSchema = Joi.object({
   STRIPE_SECRET_KEY: Joi.string().allow('').default(''),
   STRIPE_PUBLISHABLE_KEY: Joi.string().allow('').default(''),
   STRIPE_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+  STRIPE_CONNECT_WEBHOOK_SECRET: Joi.string().allow('').default(''),
   STRIPE_CONNECT_REFRESH_URL: Joi.string().uri().allow('').default(''),
   STRIPE_CONNECT_RETURN_URL: Joi.string().uri().allow('').default(''),
   /*
