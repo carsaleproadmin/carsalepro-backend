@@ -387,4 +387,24 @@ describe('Payments — Reports Store / pay-per-view (e2e)', () => {
       .expect(200);
     expect(res.body.skipped).toBe(true);
   });
+
+  /*
+   * The Connect endpoint has a route of its own - DEN-235.
+   *
+   * Stripe issues one signing secret per webhook endpoint, and a route can
+   * verify against one secret. Both endpoints used to post to /webhooks/stripe,
+   * so `account.updated` was refused with 400 on every delivery: the route held
+   * the platform secret and the Connect endpoint signs with its own. That event
+   * is the only thing that sets `stripeOnboarded`, so no inspector in
+   * production could ever be dispatched an order.
+   */
+  it('10b. POST /webhooks/stripe/connect answers on its own route', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/webhooks/stripe/connect')
+      .set('stripe-signature', 't=1,v1=deadbeef')
+      .send({ id: 'evt_test', type: 'account.updated' })
+      .expect(200);
+    // Mock mode here, as above: the suite runs with no Stripe key.
+    expect(res.body.skipped).toBe(true);
+  });
 });
