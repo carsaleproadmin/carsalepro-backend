@@ -194,12 +194,114 @@ const PII_KEYS = new Set([
  * damages list is an array of objects, and a note field inside one of them is
  * reached the same way.
  */
+/**
+ * Words that make a key a person, wherever they appear inside it.
+ *
+ * The list above matches a COMPLETE key, and that was the hole: the mobile app
+ * writes `customerName` as readily as `customer`, and `inspectorEmail` as
+ * readily as `email`. Neither is in the list above, and the website prints
+ * every key it does not recognise, so one new field in the app put a name on a
+ * public page with nobody in the loop.
+ *
+ * These match a TOKEN of the key instead - `customerName` splits into
+ * `customer` and `name`, and the first is enough. Token equality, not a
+ * substring: `platform` does not contain the token `plate`, and `telemetry`
+ * does not contain `tel`.
+ */
+const PII_PERSON_WORDS = new Set([
+  'customer',
+  'client',
+  'owner',
+  'seller',
+  'buyer',
+  'person',
+  'recipient',
+  'recipients',
+  'responsible',
+  'company',
+  'branch',
+]);
+
+/** Words that make a key a way to REACH or IDENTIFY a person. */
+const PII_CONTACT_WORDS = new Set([
+  'signature',
+  'phone',
+  'telephone',
+  'mobile',
+  'tel',
+  'fax',
+  'email',
+  'mail',
+  'address',
+  'street',
+  'postcode',
+  'iban',
+  'taxid',
+  'vatid',
+  'personalid',
+  'idnumber',
+  'passport',
+  'plate',
+  'licenseplate',
+  'vin',
+]);
+
+/**
+ * Words that turn a bare `name` into a person's name.
+ *
+ * `name` on its own cannot be a token rule. The report is BUILT out of names:
+ * `partName`, `panelName`, `methodName`, `colourName` are catalogue labels and
+ * they are the findings a buyer came to read. So `name` is dropped only when
+ * the key is exactly `name`, or when another token says whose name it is.
+ *
+ * `inspector` is here rather than in `PII_PERSON_WORDS` on purpose. An
+ * inspector's NOTE is a finding and has to stay; an inspector's NAME does not.
+ */
+const PII_NAME_HOLDERS = new Set([
+  ...PII_PERSON_WORDS,
+  'inspector',
+  'first',
+  'last',
+  'full',
+  'middle',
+  'maiden',
+  'given',
+  'family',
+]);
+
+/** `customer_phone`, `customerPhone` and `CUSTOMERPhone` all give the same list. */
+function keyTokens(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .map((token) => token.toLowerCase())
+    .filter((token) => token.length > 0);
+}
+
+/**
+ * True when a key must not leave the building.
+ *
+ * Three rules, in order of confidence: the exact list above, then a person or
+ * contact word anywhere in the key, then `name` with something beside it that
+ * says whose.
+ */
+export function isPiiKey(key: string): boolean {
+  if (PII_KEYS.has(key.toLowerCase())) return true;
+  const tokens = keyTokens(key);
+  if (tokens.some((token) => PII_PERSON_WORDS.has(token) || PII_CONTACT_WORDS.has(token))) {
+    return true;
+  }
+  if (!tokens.includes('name')) return false;
+  return tokens.length === 1 || tokens.some((token) => PII_NAME_HOLDERS.has(token));
+}
+
 function publicReportData(value: unknown, dropTopLevel: string[] = []): unknown {
   if (Array.isArray(value)) return value.map((item) => publicReportData(item));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (PII_KEYS.has(key.toLowerCase())) continue;
+      if (isPiiKey(key)) continue;
       if (dropTopLevel.includes(key)) continue;
       out[key] = publicReportData(child);
     }
@@ -477,6 +579,15 @@ export class PublicService {
         report: { code, deletedAt: null },
         OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       },
+      /*
+       * One report can back more than one listing - a car taken down and put
+       * back up writes a second row. Without an order the row that answers is
+       * whatever the database hands back first, so the GATE was not stable
+       * even though the payload is: the same request could pass one moment and
+       * 404 the next. Oldest first, which is the listing that has been on the
+       * market longest.
+       */
+      orderBy: { id: 'asc' },
       include: { report: true },
     });
     const report = listing?.report;
@@ -676,20 +787,33 @@ export class PublicService {
   ): Promise<{ url: string; kind?: string; angle?: string }[]> {
     if (!this.r2.isConfigured()) return [];
     const refs = manifestPhotoRefs(manifest, limit);
-    const out: { url: string; kind?: string; angle?: string }[] = [];
-    for (const ref of refs) {
-      try {
-        const { url } = await this.r2.createPresignedDownloadUrl(ref.s3Key);
-        out.push({
-          url,
-          ...(ref.kind ? { kind: ref.kind } : {}),
-          ...(ref.angle ? { angle: ref.angle } : {}),
-        });
-      } catch {
-        /* skip unsignable */
-      }
-    }
-    return out;
+    /*
+     * Together, not one after the other. The cap is 300 on the free report and
+     * the route needs no authentication, so a serial loop made the response
+     * time the SUM of three hundred signatures instead of the longest one.
+     * A signature is local work, so this costs no extra connection.
+     *
+     * A reference that cannot be signed is dropped, exactly as before -
+     * `Promise.all` would reject the whole page for one bad key, so each
+     * signature settles on its own.
+     */
+    const signed = await Promise.all(
+      refs.map(async (ref) => {
+        try {
+          const { url } = await this.r2.createPresignedDownloadUrl(ref.s3Key);
+          return {
+            url,
+            ...(ref.kind ? { kind: ref.kind } : {}),
+            ...(ref.angle ? { angle: ref.angle } : {}),
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return signed.filter((photo): photo is { url: string; kind?: string; angle?: string } =>
+      photo !== null,
+    );
   }
 
   private maskVin(vin: string): string {
