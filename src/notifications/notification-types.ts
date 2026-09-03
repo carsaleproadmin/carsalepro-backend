@@ -22,6 +22,7 @@ export type NotificationType =
   | 'payout.delayed'
   | 'payout.failed'
   | 'refund.failed'
+  | 'kyc.submitted'
   | 'kyc.approved'
   | 'kyc.rejected'
   | 'ppv.purchased'
@@ -76,6 +77,7 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
    * opposite ends of the ledger.
    */
   'refund.failed': ['inapp', 'email'],
+  'kyc.submitted': ['inapp', 'email'],
   'kyc.approved': ['inapp', 'email'],
   'kyc.rejected': ['inapp', 'email'],
   'ppv.purchased': ['inapp', 'email'],

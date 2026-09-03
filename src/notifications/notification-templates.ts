@@ -394,6 +394,28 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Возврат ${str(p, 'orderNumber')} не прошёл.`,
     }),
   },
+  /**
+   * Sent when an application waits for an admin instead of being approved by
+   * the platform (DEN-239): the applicant was rejected before. It must not
+   * promise a result, and it must not repeat the wording of `kyc.approved`.
+   */
+  'kyc.submitted': {
+    de: () => ({
+      subject: `Verifizierung eingegangen`,
+      body: `Ihre Unterlagen sind eingegangen und werden von unserem Team geprüft. Sie erhalten eine Nachricht, sobald entschieden ist. Bis dahin können Sie keine Aufträge annehmen.`,
+      short: `KYC eingegangen — Prüfung durch das Team.`,
+    }),
+    en: () => ({
+      subject: `Verification received`,
+      body: `Your documents were received and our team will look at them. You get a message when the decision is made. Until then you cannot accept jobs.`,
+      short: `KYC received — the team will review it.`,
+    }),
+    ru: () => ({
+      subject: `Заявка получена`,
+      body: `Ваши документы получены, их рассмотрит наша команда. Мы напишем, когда решение будет принято. До этого принимать заказы нельзя.`,
+      short: `KYC получена — рассмотрит команда.`,
+    }),
+  },
   'kyc.approved': {
     de: () => ({
       subject: `Verifizierung genehmigt`,

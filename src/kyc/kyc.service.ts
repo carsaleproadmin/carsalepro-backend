@@ -17,6 +17,7 @@ import { R2Service } from '../r2/r2.service';
 import {
   ACTIVE_KYC_STATUSES,
   KYC_AUTO_REVIEWER,
+  KYC_MANUAL_REVIEW_AFTER_STATUSES,
   KYC_QUEUE_DEFAULT_LIMIT,
   KYC_QUEUE_DEFAULT_STATUSES,
   KYC_TRANSITIONS,
@@ -234,6 +235,13 @@ export class KycService {
    * `KYC_TRANSITIONS`. Approval that cannot be revoked is what makes an
    * automatic grant dangerous, rather than the grant itself.
    *
+   * **AUTOMATIC APPROVAL IS NOT GIVEN TO AN APPLICANT WHO WAS REJECTED BEFORE**
+   * (DEN-239). Such an application stops at SUBMITTED and waits for an admin,
+   * because the alternative is that a revoked inspector re-applies with the
+   * same four files and is let back in by the machine, which would leave the
+   * revocation entirely under the control of the person it was used against.
+   * See `KYC_MANUAL_REVIEW_AFTER_STATUSES`.
+   *
    * `submittedAt` and `reviewedAt` are the same instant here, and both are
    * stamped: they mean different things (when the applicant acted, when the
    * decision was taken) and a reader must not have to infer one from the other.
@@ -257,6 +265,37 @@ export class KycService {
     }
 
     const submittedAt = new Date();
+
+    // Any earlier decision against this applicant, not only the last one: the
+    // count is over the user's whole history, so a rejection cannot be aged out
+    // by creating drafts, and the query excludes the row being submitted.
+    const priorRejections = await this.prisma.kycApplication.count({
+      where: {
+        userId,
+        id: { not: applicationId },
+        status: { in: KYC_MANUAL_REVIEW_AFTER_STATUSES },
+      },
+    });
+
+    if (priorRejections > 0) {
+      const held = await this.prisma.kycApplication.update({
+        where: { id: applicationId },
+        data: { status: KycStatus.SUBMITTED, submittedAt },
+      });
+      // `user.kycVerified` is deliberately NOT touched. `reject` cleared it,
+      // and only an admin's `approve` may set it again on this path.
+      await this.notifications.notify(userId, 'kyc.submitted', { applicationId });
+      this.logger.log(
+        `KYC application ${applicationId} submitted, HELD FOR REVIEW ` +
+          `(prior rejections=${priorRejections}) user=${this.mask(userId)}`,
+      );
+      return {
+        id: held.id,
+        status: held.status,
+        submittedAt: submittedAt.toISOString(),
+      };
+    }
+
     // One transaction, as in `approve`: the application's status and the user's
     // flag are one fact. Split, a failure between them leaves an APPROVED
     // application whose owner cannot be dispatched, and nothing says why.
@@ -304,8 +343,9 @@ export class KycService {
   // ============================================================
 
   /**
-   * Review queue. Defaults to SUBMITTED + IN_REVIEW; an optional status filter
-   * narrows it. Includes the applicant's email/name and the document kinds.
+   * Review queue. Defaults to `KYC_QUEUE_DEFAULT_STATUSES` (SUBMITTED +
+   * IN_REVIEW + APPROVED, and that constant says why APPROVED is in the default
+   * set); an optional status filter narrows it. Includes the applicant's email/name and the document kinds.
    */
   async listQueue(status?: KycStatus, limit?: number): Promise<AdminKycQueueDto> {
     const where: Prisma.KycApplicationWhereInput = status
