@@ -16,6 +16,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import {
   ACTIVE_KYC_STATUSES,
+  KYC_AUTO_REVIEWER,
+  KYC_QUEUE_DEFAULT_LIMIT,
+  KYC_QUEUE_DEFAULT_STATUSES,
   KYC_TRANSITIONS,
   KycDocumentKind,
   REQUIRED_KYC_KINDS,
@@ -213,11 +216,33 @@ export class KycService {
   }
 
   /**
-   * Submit a DRAFT application for review. Requires all REQUIRED_KYC_KINDS
-   * documents present. Transitions DRAFT→SUBMITTED and stamps submittedAt.
+   * Submit a DRAFT application. Requires all REQUIRED_KYC_KINDS documents
+   * present, then APPROVES IT IMMEDIATELY - DRAFT→APPROVED in one step.
+   *
+   * **What this method verifies is that four files exist. Nothing reads them.**
+   * That was true before this change too: `submitApplication` only ever counted
+   * kinds, and the judgement of what the documents actually showed lived with
+   * the admin who opened them. Removing the admin removes the judgement with
+   * him - whoever uploads four images becomes an inspector, and an inspector is
+   * dispatched to strangers' vehicles and paid out of escrow. That is a
+   * decision of the platform owner (2026-09-03, DEN-236), not an oversight, and
+   * it must not be reworded into something that sounds verified: the applicant
+   * is notified through `kyc.approved`, whose wording must not claim that
+   * documents were checked.
+   *
+   * The path back is `reject`, which is why APPROVED→REJECTED exists in
+   * `KYC_TRANSITIONS`. Approval that cannot be revoked is what makes an
+   * automatic grant dangerous, rather than the grant itself.
+   *
+   * `submittedAt` and `reviewedAt` are the same instant here, and both are
+   * stamped: they mean different things (when the applicant acted, when the
+   * decision was taken) and a reader must not have to infer one from the other.
    */
   async submitApplication(userId: string, applicationId: string): Promise<SubmitKycResultDto> {
     const application = await this.requireOwnedApplication(userId, applicationId);
+    // Guarded against SUBMITTED rather than APPROVED so a DRAFT is still the
+    // only state that may be submitted; DRAFT→APPROVED is what actually gets
+    // written, and the transition table allows both moves out of DRAFT.
     this.assertTransition(application.status, KycStatus.SUBMITTED);
 
     const present = new Set(application.documents.map((d) => d.kind));
@@ -232,11 +257,31 @@ export class KycService {
     }
 
     const submittedAt = new Date();
-    const updated = await this.prisma.kycApplication.update({
-      where: { id: applicationId },
-      data: { status: KycStatus.SUBMITTED, submittedAt },
-    });
-    this.logger.log(`KYC application ${applicationId} submitted by user=${this.mask(userId)}`);
+    // One transaction, as in `approve`: the application's status and the user's
+    // flag are one fact. Split, a failure between them leaves an APPROVED
+    // application whose owner cannot be dispatched, and nothing says why.
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.kycApplication.update({
+        where: { id: applicationId },
+        data: {
+          status: KycStatus.APPROVED,
+          submittedAt,
+          reviewedBy: KYC_AUTO_REVIEWER,
+          reviewedAt: submittedAt,
+        },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { kycVerified: true },
+      }),
+    ]);
+
+    // Same event as a manual approval - the inspector's experience is that the
+    // application was accepted, and it was.
+    await this.notifications.notify(userId, 'kyc.approved', { applicationId });
+    this.logger.log(
+      `KYC application ${applicationId} submitted and AUTO-APPROVED user=${this.mask(userId)}`,
+    );
     return {
       id: updated.id,
       status: updated.status,
@@ -262,14 +307,28 @@ export class KycService {
    * Review queue. Defaults to SUBMITTED + IN_REVIEW; an optional status filter
    * narrows it. Includes the applicant's email/name and the document kinds.
    */
-  async listQueue(status?: KycStatus): Promise<AdminKycQueueDto> {
+  async listQueue(status?: KycStatus, limit?: number): Promise<AdminKycQueueDto> {
     const where: Prisma.KycApplicationWhereInput = status
       ? { status }
-      : { status: { in: [KycStatus.SUBMITTED, KycStatus.IN_REVIEW] } };
+      : { status: { in: KYC_QUEUE_DEFAULT_STATUSES } };
 
     const applications = await this.prisma.kycApplication.findMany({
       where,
-      orderBy: [{ submittedAt: 'asc' }, { createdAt: 'asc' }],
+      /*
+       * NEWEST FIRST, reversed on 2026-09-03 with automatic approval (DEN-236).
+       *
+       * Oldest-first is right for a backlog someone works through, and that is
+       * what this list used to be. It is now mostly a record of who has been
+       * granted access, and the applicant an admin needs — the one who just
+       * joined, or the one just reported — is the most recent. Ascending order
+       * would bury every new entry behind every inspector ever approved.
+       *
+       * `createdAt` breaks the tie rather than being a fallback: `submittedAt`
+       * is set on every row this list shows, but a DRAFT reached through
+       * `?status=DRAFT` has none, and a null must not sort arbitrarily.
+       */
+      orderBy: [{ submittedAt: 'desc' }, { createdAt: 'desc' }],
+      take: limit ?? KYC_QUEUE_DEFAULT_LIMIT,
       include: { documents: true, user: true },
     });
 
@@ -281,6 +340,15 @@ export class KycService {
         documentKinds: a.documents.map((d) => d.kind),
         submittedAt: a.submittedAt ? a.submittedAt.toISOString() : null,
         createdAt: a.createdAt.toISOString(),
+        /*
+         * Who decided, exposed so the list can say it out loud.
+         *
+         * `KYC_AUTO_REVIEWER` here means nobody looked at the documents. An
+         * admin about to act on an applicant is owed that distinction, and
+         * without it every row looks equally reviewed.
+         */
+        reviewedBy: a.reviewedBy,
+        reviewedAt: a.reviewedAt ? a.reviewedAt.toISOString() : null,
       })),
     };
   }
@@ -383,21 +451,45 @@ export class KycService {
     };
   }
 
-  /** Reject an application: →REJECTED with a reason. */
+  /**
+   * Reject an application: →REJECTED with a reason, and CLEAR `kycVerified`.
+   *
+   * **This is the revocation path**, and since applications are approved
+   * automatically it is the only one. Rejecting an application that is already
+   * APPROVED is legal (see `KYC_TRANSITIONS`) and is how an inspector who
+   * should not have been granted access is switched off.
+   *
+   * `kycVerified: false` is written on every rejection, not only on the ones
+   * that follow an approval. Setting it unconditionally cannot be wrong - a
+   * rejected applicant has no verified standing by definition - while making it
+   * conditional on the previous status would leave the flag standing after any
+   * path the condition failed to anticipate. `approve` sets the flag, so `reject`
+   * clears it; anything else is an approval that only pretends to be reversible.
+   *
+   * The write is one transaction with the status change for the same reason
+   * approval is: a rejected application whose owner still passes the
+   * eligibility filter is worse than either outcome alone.
+   */
   async reject(applicationId: string, adminId: string, reason: string): Promise<AdminKycDecisionDto> {
     const application = await this.requireApplication(applicationId);
     this.assertTransition(application.status, KycStatus.REJECTED);
 
     const reviewedAt = new Date();
-    const updated = await this.prisma.kycApplication.update({
-      where: { id: applicationId },
-      data: {
-        status: KycStatus.REJECTED,
-        rejectReason: reason,
-        reviewedBy: adminId,
-        reviewedAt,
-      },
-    });
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.kycApplication.update({
+        where: { id: applicationId },
+        data: {
+          status: KycStatus.REJECTED,
+          rejectReason: reason,
+          reviewedBy: adminId,
+          reviewedAt,
+        },
+      }),
+      this.prisma.user.update({
+        where: { id: application.userId },
+        data: { kycVerified: false },
+      }),
+    ]);
 
     // E11: notify the inspector their KYC was rejected, with the reason (non-throwing).
     await this.notifications.notify(application.userId, 'kyc.rejected', {
