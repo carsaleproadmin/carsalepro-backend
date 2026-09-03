@@ -576,6 +576,61 @@ describe('KYC verification (e2e)', () => {
     expect(dbUser!.kycVerified).toBe(false);
   });
 
+  /**
+   * DEN-239. This is the test that the revocation work depends on.
+   *
+   * Without it the whole APPROVED→REJECTED path is decorative: the applicant
+   * simply applies again and the platform approves them again, so the admin's
+   * decision holds only until the person it was used against notices.
+   */
+  it('9c. a revoked inspector who re-applies is HELD for a person, not auto-approved', async () => {
+    const user = await makeUser();
+    const admin = await makeAdminUser();
+    const firstId = await createWithDocs(user);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${firstId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Documents do not show the applicant.' })
+      .expect(201);
+    expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(false);
+
+    // The same four files again, exactly as the applicant would send them.
+    const secondId = await createWithDocs(user);
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${secondId}/submit`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('SUBMITTED');
+    const second = await prisma.kycApplication.findUnique({ where: { id: secondId } });
+    expect(second!.status).toBe(KycStatus.SUBMITTED);
+    expect(second!.reviewedBy).toBeNull();
+    expect(second!.submittedAt).not.toBeNull();
+    // The access stays off until an admin says otherwise.
+    expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(false);
+
+    // And the held application is where an admin will find it.
+    const queue = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(queue.body.items.map((i: { id: string }) => i.id)).toContain(secondId);
+
+    // An admin can still let them back in, and that grant is a person's.
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${secondId}/approve`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(201);
+    const decided = await prisma.kycApplication.findUnique({ where: { id: secondId } });
+    expect(decided!.reviewedBy).toBe(admin.userId);
+    expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(true);
+  });
+
   it('10. illegal transitions return 409 (submit a SUBMITTED, approve an APPROVED)', async () => {
     const user = await makeUser();
     const admin = await makeAdminUser();

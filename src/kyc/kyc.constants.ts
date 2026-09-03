@@ -26,6 +26,24 @@ export const ACTIVE_KYC_STATUSES: KycStatus[] = [
   KycStatus.IN_REVIEW,
 ];
 
+/**
+ * Statuses of an EARLIER application that send the next one to a person.
+ *
+ * A rejection is the only way an admin can take an inspector's access away
+ * (DEN-236). Automatic approval gives the applicant the other half of that
+ * control back: after a rejection the same person creates a new application,
+ * uploads the same four files, and the machine grants access again in under a
+ * minute (DEN-239). The revocation would then hold for exactly as long as the
+ * inspector allowed it.
+ *
+ * A rejected applicant is therefore not blocked from applying again - the
+ * rejection may have been a mistake, and a permanent lock has no way out - but
+ * the next application stops at SUBMITTED and waits for an admin. The reader
+ * that automatic approval removed is put back at the one point where the
+ * platform has already said no.
+ */
+export const KYC_MANUAL_REVIEW_AFTER_STATUSES: KycStatus[] = [KycStatus.REJECTED];
+
 /** Allowed upload content types (an image or a PDF). */
 export const ALLOWED_KYC_CONTENT_TYPE = /^(image\/[\w.+-]+|application\/pdf)$/i;
 
