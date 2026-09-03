@@ -1,7 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { KycStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { KYC_QUEUE_DEFAULT_LIMIT, KYC_QUEUE_MAX_LIMIT } from '../kyc.constants';
 
 export class KycQueueQueryDto {
@@ -30,4 +30,27 @@ export class KycQueueQueryDto {
   @Min(1)
   @Max(KYC_QUEUE_MAX_LIMIT)
   limit?: number;
+
+  @ApiPropertyOptional({
+    minimum: 0,
+    default: 0,
+    description: 'Rows to skip. Use with `limit` and the `total` in the answer to page.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  offset?: number;
+
+  @ApiPropertyOptional({
+    maxLength: 200,
+    description:
+      'Find an applicant by a part of the email address or the name, in any case. An admin who ' +
+      'must revoke one inspector knows who that person is; without this the only way to reach ' +
+      'them is to page through every inspector who was approved after them.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  q?: string;
 }

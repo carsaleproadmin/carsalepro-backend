@@ -347,10 +347,27 @@ export class KycService {
    * IN_REVIEW + APPROVED, and that constant says why APPROVED is in the default
    * set); an optional status filter narrows it. Includes the applicant's email/name and the document kinds.
    */
-  async listQueue(status?: KycStatus, limit?: number): Promise<AdminKycQueueDto> {
+  async listQueue(
+    status?: KycStatus,
+    limit?: number,
+    offset?: number,
+    q?: string,
+  ): Promise<AdminKycQueueDto> {
     const where: Prisma.KycApplicationWhereInput = status
       ? { status }
       : { status: { in: KYC_QUEUE_DEFAULT_STATUSES } };
+
+    // The search is on the applicant, not on the application: an admin who
+    // must switch an inspector off knows the person, and never the id of a row.
+    const term = q?.trim();
+    if (term) {
+      where.user = {
+        OR: [
+          { email: { contains: term, mode: 'insensitive' } },
+          { name: { contains: term, mode: 'insensitive' } },
+        ],
+      };
+    }
 
     const applications = await this.prisma.kycApplication.findMany({
       where,
@@ -369,10 +386,16 @@ export class KycService {
        */
       orderBy: [{ submittedAt: 'desc' }, { createdAt: 'desc' }],
       take: limit ?? KYC_QUEUE_DEFAULT_LIMIT,
+      skip: offset ?? 0,
       include: { documents: true, user: true },
     });
 
+    // Counted with the same `where`, so the number describes the set the caller
+    // asked for rather than the table.
+    const total = await this.prisma.kycApplication.count({ where });
+
     return {
+      total,
       items: applications.map((a) => ({
         id: a.id,
         status: a.status,
