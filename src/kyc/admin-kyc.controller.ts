@@ -31,11 +31,13 @@ export class AdminKycController {
       'Approved applications are in the default set because approval is automatic: nothing waits ' +
       'in SUBMITTED or IN_REVIEW, so a queue of those two is always empty, and revoking an ' +
       'inspector (POST :id/reject on an APPROVED application) starts from this list. Each entry ' +
-      "carries `reviewedBy`, which is 'auto' when no person read the documents.",
+      "carries `reviewedBy`, which is 'auto' when no person read the documents. `total` says how " +
+      'many rows match, thus a caller can tell a full answer from a page of one. `q` finds an ' +
+      'applicant by a part of the email address or the name.',
   })
   @ApiOkResponse({ type: AdminKycQueueDto })
   listQueue(@Query() query: KycQueueQueryDto): Promise<AdminKycQueueDto> {
-    return this.kyc.listQueue(query.status, query.limit);
+    return this.kyc.listQueue(query.status, query.limit, query.offset, query.q);
   }
 
   @Get(':id')

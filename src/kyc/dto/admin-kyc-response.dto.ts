@@ -51,6 +51,17 @@ export class AdminKycQueueItemDto {
 export class AdminKycQueueDto {
   @ApiProperty({ type: [AdminKycQueueItemDto] })
   items!: AdminKycQueueItemDto[];
+
+  /**
+   * How many rows match, before `limit` and `offset`.
+   *
+   * The list is now every approved inspector rather than the few applications
+   * that wait for a decision, so a page of it says nothing about the size of
+   * the set. Without this number a caller cannot tell a complete answer from a
+   * truncated one, and an admin reading the screen cannot either.
+   */
+  @ApiProperty({ example: 137 })
+  total!: number;
 }
 
 /** A document with a short-lived signed view URL (GET /admin/kyc/:id). */

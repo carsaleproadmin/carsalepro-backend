@@ -546,6 +546,58 @@ describe('KYC verification (e2e)', () => {
    * application's label, is what `eligibleForOffers` and the dispatch filter
    * read.
    */
+  /**
+   * DEN-239 / review item K-3. The queue holds every approved inspector now, so
+   * the row an admin needs is often not on the first page. Without a total and
+   * a way to search, a truncated answer is indistinguishable from a complete
+   * one, and an inspector who is not recent cannot be reached at all.
+   */
+  it('6d. the queue says how many rows match, pages, and finds an applicant', async () => {
+    const admin = await makeAdminUser();
+    const users = [];
+    for (let i = 0; i < 3; i += 1) {
+      const user = await makeUser();
+      const appId = await createWithDocs(user);
+      await request(app.getHttpServer())
+        .post(`/api/v1/kyc/applications/${appId}/submit`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(201);
+      users.push(user);
+    }
+
+    const all = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc?status=APPROVED')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(all.body.total).toBeGreaterThanOrEqual(3);
+
+    // A page is smaller than the set, and the total keeps describing the set.
+    const page = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc?status=APPROVED&limit=2')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(page.body.items).toHaveLength(2);
+    expect(page.body.total).toBe(all.body.total);
+
+    const second = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc?status=APPROVED&limit=2&offset=2')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    const firstIds = page.body.items.map((i: { id: string }) => i.id);
+    for (const item of second.body.items as { id: string }[]) {
+      expect(firstIds).not.toContain(item.id);
+    }
+
+    // The applicant is reachable by who they are, in any case.
+    const target = users[0];
+    const found = await request(app.getHttpServer())
+      .get(`/api/v1/admin/kyc?q=${encodeURIComponent(target.email.toUpperCase())}`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(found.body.total).toBe(1);
+    expect(found.body.items[0].user.email).toBe(target.email);
+  });
+
   it('9b. an auto-approved inspector can be revoked, and the flag really clears', async () => {
     const user = await makeUser();
     const admin = await makeAdminUser();
