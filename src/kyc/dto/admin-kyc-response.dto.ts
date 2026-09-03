@@ -32,6 +32,20 @@ export class AdminKycQueueItemDto {
 
   @ApiProperty({ example: '2026-06-14T09:55:00.000Z' })
   createdAt!: string;
+
+  /**
+   * The admin's user id, or the literal `auto` when the platform approved the
+   * application itself and nobody read the documents. Null while undecided.
+   */
+  @ApiProperty({
+    example: 'auto',
+    nullable: true,
+    description: "Admin user id, or 'auto' when approved automatically with no human review.",
+  })
+  reviewedBy!: string | null;
+
+  @ApiProperty({ example: '2026-06-14T11:00:00.000Z', nullable: true })
+  reviewedAt!: string | null;
 }
 
 export class AdminKycQueueDto {

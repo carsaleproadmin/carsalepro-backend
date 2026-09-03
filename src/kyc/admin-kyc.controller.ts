@@ -25,10 +25,17 @@ export class AdminKycController {
   constructor(private readonly kyc: KycService) {}
 
   @Get()
-  @ApiOperation({ summary: 'KYC review queue (SUBMITTED + IN_REVIEW, or a status filter)' })
+  @ApiOperation({
+    summary: 'KYC queue (SUBMITTED + IN_REVIEW + APPROVED, or a status filter)',
+    description:
+      'Approved applications are in the default set because approval is automatic: nothing waits ' +
+      'in SUBMITTED or IN_REVIEW, so a queue of those two is always empty, and revoking an ' +
+      'inspector (POST :id/reject on an APPROVED application) starts from this list. Each entry ' +
+      "carries `reviewedBy`, which is 'auto' when no person read the documents.",
+  })
   @ApiOkResponse({ type: AdminKycQueueDto })
   listQueue(@Query() query: KycQueueQueryDto): Promise<AdminKycQueueDto> {
-    return this.kyc.listQueue(query.status);
+    return this.kyc.listQueue(query.status, query.limit);
   }
 
   @Get(':id')
