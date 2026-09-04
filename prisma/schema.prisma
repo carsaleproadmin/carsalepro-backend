@@ -348,6 +348,18 @@ model KycDocument {
   /// retention window, and it works on a digest rather than on the identity
   /// document itself.
   sha256        String?
+  /// Peppered SHA-256 of "issuing state | document code | document number",
+  /// read out of the document's machine-readable zone (DEN-250).
+  ///
+  /// It answers the question `sha256` cannot: the same passport photographed
+  /// AGAIN is a different file, and the same number. NULL whenever no zone was
+  /// read - an identity card without one, a bad photograph, the recogniser
+  /// switched off - and a NULL matches nothing, so an unreadable document is
+  /// treated exactly as it was before this column existed.
+  ///
+  /// The state and the code are part of the hashed string because a document
+  /// number is unique within a country and not across them.
+  idNumberHash  String?   @map("id_number_hash")
   uploadedAt    DateTime  @default(now())
   purgedAt      DateTime? @map("purged_at")
 
@@ -361,6 +373,7 @@ model KycDocument {
   /// Read on every submit, to find this application's hashes on somebody
   /// else's rejected one.
   @@index([sha256])
+  @@index([idNumberHash])
   @@map("kyc_document")
 }
 

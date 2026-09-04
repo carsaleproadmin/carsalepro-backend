@@ -173,9 +173,14 @@ describe('KYC verification (e2e)', () => {
     appId: string,
     kinds: string[] = ['id_front', 'id_back', 'selfie', 'gewerbeschein'],
     fingerprint?: (kind: string) => string,
+    idNumberHash?: string,
   ): Promise<void> {
     for (const kind of kinds) {
       const sha256 = fingerprint ? fingerprint(kind) : null;
+      // Only the two identity documents carry a number; the service reads no
+      // zone off a Gewerbeschein and the seed must not pretend otherwise.
+      const idHash =
+        idNumberHash && (kind === 'id_front' || kind === 'id_back') ? idNumberHash : null;
       await prisma.kycDocument.upsert({
         where: { applicationId_kind: { applicationId: appId, kind } },
         create: {
@@ -184,8 +189,13 @@ describe('KYC verification (e2e)', () => {
           s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg`,
           bucket: expectedBucket,
           sha256,
+          idNumberHash: idHash,
         },
-        update: { s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg`, sha256 },
+        update: {
+          s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg`,
+          sha256,
+          idNumberHash: idHash,
+        },
       });
     }
   }
@@ -195,13 +205,14 @@ describe('KYC verification (e2e)', () => {
     user: Registered,
     kinds: string[] = ['id_front', 'id_back', 'selfie', 'gewerbeschein'],
     fingerprint?: (kind: string) => string,
+    idNumberHash?: string,
   ): Promise<string> {
     const created = await request(app.getHttpServer())
       .post('/api/v1/kyc/applications')
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
     const appId = created.body.id as string;
-    await seedDocuments(user, appId, kinds, fingerprint);
+    await seedDocuments(user, appId, kinds, fingerprint, idNumberHash);
     return appId;
   }
 
@@ -778,6 +789,109 @@ describe('KYC verification (e2e)', () => {
     expect((await prisma.user.findUnique({ where: { id: stranger.userId } }))!.kycVerified).toBe(
       true,
     );
+  });
+
+  /**
+   * DEN-250. The gap the FILE hash leaves: photograph the same passport a
+   * second time and every byte differs. The number in the machine-readable
+   * zone does not.
+   */
+  it('9g. the same DOCUMENT re-photographed on a new account is held, though the files differ', async () => {
+    const revoked = await makeUser();
+    const admin = await makeAdminUser();
+    const idHash = 'de1250'.padEnd(64, 'b');
+
+    // First account: rejected, and the documents carry the document's number.
+    const firstId = await createWithDocs(
+      revoked,
+      undefined,
+      (kind) => `de1250first${kind.padEnd(15, '0')}`.padEnd(64, 'c'),
+      idHash,
+    );
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .set('Authorization', `Bearer ${revoked.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${firstId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Access revoked.' })
+      .expect(201);
+
+    // Second account, and DIFFERENT FILES - the passport was photographed
+    // again. Every `sha256` here is new, so the file check sees a stranger.
+    const freshAccount = await makeUser();
+    const secondId = await createWithDocs(
+      freshAccount,
+      undefined,
+      (kind) => `de1250second${kind.padEnd(14, '0')}`.padEnd(64, 'd'),
+      idHash,
+    );
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${secondId}/submit`)
+      .set('Authorization', `Bearer ${freshAccount.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('SUBMITTED');
+    expect(
+      (await prisma.user.findUnique({ where: { id: freshAccount.userId } }))!.kycVerified,
+    ).toBe(false);
+
+    // The audit row says which of the three checks held it, and here it is the
+    // document number ALONE: a new account, and files nobody has seen before.
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { entity: 'kyc', entityId: secondId, action: 'kyc.held_for_review' },
+      orderBy: { createdAt: 'desc' },
+    });
+    const held = audit!.after as {
+      priorRejections: number;
+      reusedDocuments: number;
+      reusedIdentity: number;
+    };
+    expect(held.priorRejections).toBe(0);
+    expect(held.reusedDocuments).toBe(0);
+    expect(held.reusedIdentity).toBeGreaterThan(0);
+  });
+
+  /**
+   * The rule that protects honest applicants: a document with no readable zone
+   * - a national identity card that has none, a photograph the recogniser
+   * could not read - stores NULL, and NULL must behave as it did before this
+   * check existed.
+   */
+  it('9h. a document whose number could not be read holds nobody', async () => {
+    const rejected = await makeUser();
+    const admin = await makeAdminUser();
+
+    const firstId = await createWithDocs(
+      rejected,
+      undefined,
+      (kind) => `de1250null${kind.padEnd(15, '0')}`.padEnd(64, 'e'),
+    );
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .set('Authorization', `Bearer ${rejected.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${firstId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Access revoked.' })
+      .expect(201);
+
+    // Another applicant, also with no readable number and with their own files.
+    const other = await makeUser();
+    const ownId = await createWithDocs(
+      other,
+      undefined,
+      (kind) => `de1250other${kind.padEnd(14, '0')}`.padEnd(64, 'f'),
+    );
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${ownId}/submit`)
+      .set('Authorization', `Bearer ${other.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('APPROVED');
+    expect((await prisma.user.findUnique({ where: { id: other.userId } }))!.kycVerified).toBe(true);
   });
 
   /**

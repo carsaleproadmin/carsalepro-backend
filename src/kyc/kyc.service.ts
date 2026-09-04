@@ -8,8 +8,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { KycApplication, KycDocument, KycStatus, Prisma } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import { PhotoProcessingService } from '../common/photo/photo-processing.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -36,6 +37,8 @@ import {
   SubmitKycResultDto,
 } from './dto/kyc-response.dto';
 import { hashKycDocument, KycUploadPart, resolveKycObject } from './kyc-upload';
+import { mrzIdentityKey } from './mrz';
+import { MrzOcrService } from './mrz-ocr.service';
 
 type KycApplicationWithDocs = KycApplication & { documents: KycDocument[] };
 
@@ -52,6 +55,8 @@ export class KycService {
     private readonly notifications: NotificationsService,
     private readonly photoProcessing: PhotoProcessingService,
     private readonly audit: AdminAuditService,
+    private readonly mrzOcr: MrzOcrService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -205,6 +210,17 @@ export class KycService {
     // upload, so an object never lands in the bucket without a fingerprint.
     const sha256 = hashKycDocument(file.buffer);
 
+    // The document's own number, when the document states one a machine can
+    // read. Attempted only on the two identity documents - a Gewerbeschein and
+    // an insurance certificate have no machine-readable zone, and a selfie
+    // certainly does not, so running the recogniser over them would only spend
+    // seconds to find nothing. A failure or a silence is `null`, and `null`
+    // behaves exactly as this method did before (DEN-250).
+    const idNumberHash =
+      kind === 'id_front' || kind === 'id_back'
+        ? await this.readIdNumberHash(file.buffer)
+        : null;
+
     const s3Key = `kyc/${userId}/${applicationId}/${kind}-${randomUUID()}.${plan.extension}`;
 
     // What this upload displaces, captured BEFORE the upsert: the old object is
@@ -221,8 +237,8 @@ export class KycService {
 
     const row = await this.prisma.kycDocument.upsert({
       where: { applicationId_kind: { applicationId, kind } },
-      create: { applicationId, kind, s3Key, bucket, sha256 },
-      update: { s3Key, bucket, sha256, uploadedAt: new Date(), purgedAt: null },
+      create: { applicationId, kind, s3Key, bucket, sha256, idNumberHash },
+      update: { s3Key, bucket, sha256, idNumberHash, uploadedAt: new Date(), purgedAt: null },
     });
 
     if (previous && previous.s3Key !== s3Key) {
@@ -285,6 +301,15 @@ export class KycService {
    * it arrived as, and an application whose files are already on a REJECTED
    * application is held for a person too. It recognises the same FILE, not the
    * same person - see `hashKycDocument`.
+   *
+   * **NOR TO ONE HOLDING A DOCUMENT THAT WAS REJECTED** (DEN-250). The file
+   * hash is defeated by photographing the same passport again, which costs a
+   * minute. `KycDocument.idNumberHash` holds the number the document states in
+   * its machine-readable zone, so the SAME DOCUMENT is recognised however it
+   * was photographed. A document with no readable zone stores NULL and is
+   * treated exactly as it was before the column existed: **an unreadable
+   * document must never hold an application**, or an honest applicant is
+   * refused work for owning the wrong bureaucracy.
    *
    * `submittedAt` and `reviewedAt` are the same instant here, and both are
    * stamped: they mean different things (when the applicant acted, when the
@@ -351,7 +376,29 @@ export class KycService {
             },
           });
 
-    if (priorRejections > 0 || reusedDocuments > 0) {
+    // And of the DOCUMENT NUMBERS (DEN-250). The file hash above is defeated by
+    // photographing the same passport a second time; the number in the
+    // machine-readable zone is not. Rows where no zone could be read hold NULL
+    // and are excluded, so a document without one - or a photograph the
+    // recogniser could not read - behaves as it always did.
+    const idNumberHashes = application.documents
+      .map((d) => d.idNumberHash)
+      .filter((h): h is string => h !== null);
+
+    const reusedIdentity =
+      idNumberHashes.length === 0
+        ? 0
+        : await this.prisma.kycDocument.count({
+            where: {
+              idNumberHash: { in: idNumberHashes },
+              application: {
+                userId: { not: userId },
+                status: { in: KYC_MANUAL_REVIEW_AFTER_STATUSES },
+              },
+            },
+          });
+
+    if (priorRejections > 0 || reusedDocuments > 0 || reusedIdentity > 0) {
       const held = await this.prisma.kycApplication.update({
         where: { id: applicationId },
         data: { status: KycStatus.SUBMITTED, submittedAt },
@@ -365,11 +412,13 @@ export class KycService {
         status: KycStatus.SUBMITTED,
         priorRejections,
         reusedDocuments,
+        reusedIdentity,
       });
       await this.notifications.notify(userId, 'kyc.submitted', { applicationId });
       this.logger.log(
         `KYC application ${applicationId} submitted, HELD FOR REVIEW ` +
-          `(prior rejections=${priorRejections}, reused documents=${reusedDocuments}) ` +
+          `(prior rejections=${priorRejections}, reused documents=${reusedDocuments}, ` +
+          `reused identity=${reusedIdentity}) ` +
           `user=${this.mask(userId)}`,
       );
       return {
@@ -793,6 +842,26 @@ export class KycService {
         },
       });
     }
+  }
+
+  /**
+   * The stored digest of a document's own number, or `null`.
+   *
+   * PEPPERED, and not a bare SHA-256 like the file hash. A document number is
+   * nine or so structured characters: a stolen table of unpeppered digests
+   * could be matched against generated candidates, and after
+   * `purgeOldDocuments` these rows are all that is left of the documents. The
+   * pepper is a server secret and never reaches the database.
+   *
+   * With `KYC_ID_HASH_PEPPER` unset the digest is still computed - it is a
+   * weaker digest, and refusing to store one would silently disable the whole
+   * check on a server whose environment is merely incomplete.
+   */
+  private async readIdNumberHash(image: Buffer): Promise<string | null> {
+    const identity = await this.mrzOcr.read(image);
+    if (!identity) return null;
+    const pepper = this.config.get<string>('kyc.idHashPepper') ?? '';
+    return createHash('sha256').update(`${pepper}|${mrzIdentityKey(identity)}`).digest('hex');
   }
 
   private mask(id: string): string {
