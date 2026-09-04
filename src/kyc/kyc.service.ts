@@ -35,7 +35,7 @@ import {
   KycDocumentUploadResultDto,
   SubmitKycResultDto,
 } from './dto/kyc-response.dto';
-import { KycUploadPart, resolveKycObject } from './kyc-upload';
+import { hashKycDocument, KycUploadPart, resolveKycObject } from './kyc-upload';
 
 type KycApplicationWithDocs = KycApplication & { documents: KycDocument[] };
 
@@ -201,6 +201,10 @@ export class KycService {
         ).data
       : file.buffer;
 
+    // The SOURCE bytes, not `body`: see `hashKycDocument`. Taken before the
+    // upload, so an object never lands in the bucket without a fingerprint.
+    const sha256 = hashKycDocument(file.buffer);
+
     const s3Key = `kyc/${userId}/${applicationId}/${kind}-${randomUUID()}.${plan.extension}`;
 
     // What this upload displaces, captured BEFORE the upsert: the old object is
@@ -217,8 +221,8 @@ export class KycService {
 
     const row = await this.prisma.kycDocument.upsert({
       where: { applicationId_kind: { applicationId, kind } },
-      create: { applicationId, kind, s3Key, bucket },
-      update: { s3Key, bucket, uploadedAt: new Date(), purgedAt: null },
+      create: { applicationId, kind, s3Key, bucket, sha256 },
+      update: { s3Key, bucket, sha256, uploadedAt: new Date(), purgedAt: null },
     });
 
     if (previous && previous.s3Key !== s3Key) {
@@ -274,6 +278,14 @@ export class KycService {
    * revocation entirely under the control of the person it was used against.
    * See `KYC_MANUAL_REVIEW_AFTER_STATUSES`.
    *
+   * **NOR TO ONE WHOSE DOCUMENTS WERE REJECTED UNDER ANOTHER ACCOUNT**
+   * (DEN-249). The rule above is keyed by `userId` and a new registration
+   * resets it, so it held the door shut for exactly as long as the applicant
+   * chose not to sign up twice. Each document carries the SHA-256 of the bytes
+   * it arrived as, and an application whose files are already on a REJECTED
+   * application is held for a person too. It recognises the same FILE, not the
+   * same person - see `hashKycDocument`.
+   *
    * `submittedAt` and `reviewedAt` are the same instant here, and both are
    * stamped: they mean different things (when the applicant acted, when the
    * decision was taken) and a reader must not have to infer one from the other.
@@ -309,21 +321,56 @@ export class KycService {
       },
     });
 
-    if (priorRejections > 0) {
+    // The same question asked of the DOCUMENTS rather than of the account
+    // (DEN-249). `priorRejections` is keyed by `userId`, which a new
+    // registration resets - so a revoked inspector who signs up again is a
+    // first-time applicant to that count and the machine lets him back in.
+    //
+    // A document carries the fingerprint of the bytes it was uploaded with, so
+    // the four files can be recognised on an application the platform has
+    // already refused, whoever now owns the account. Rows written before this
+    // shipped have no hash; they are excluded rather than treated as matching
+    // everything.
+    //
+    // Own history is excluded because `priorRejections` covers it, and a match
+    // there would only say the same thing twice in the audit row.
+    const fingerprints = application.documents
+      .map((d) => d.sha256)
+      .filter((h): h is string => h !== null);
+
+    const reusedDocuments =
+      fingerprints.length === 0
+        ? 0
+        : await this.prisma.kycDocument.count({
+            where: {
+              sha256: { in: fingerprints },
+              application: {
+                userId: { not: userId },
+                status: { in: KYC_MANUAL_REVIEW_AFTER_STATUSES },
+              },
+            },
+          });
+
+    if (priorRejections > 0 || reusedDocuments > 0) {
       const held = await this.prisma.kycApplication.update({
         where: { id: applicationId },
         data: { status: KycStatus.SUBMITTED, submittedAt },
       });
       // `user.kycVerified` is deliberately NOT touched. `reject` cleared it,
       // and only an admin's `approve` may set it again on this path.
+      // Both counts are recorded, and they answer different questions: whether
+      // this ACCOUNT was refused before, and whether these FILES were. An
+      // admin opening a held application is entitled to know which.
       await this.auditDecision(KYC_AUTO_REVIEWER, 'kyc.held_for_review', applicationId, userId, {
         status: KycStatus.SUBMITTED,
         priorRejections,
+        reusedDocuments,
       });
       await this.notifications.notify(userId, 'kyc.submitted', { applicationId });
       this.logger.log(
         `KYC application ${applicationId} submitted, HELD FOR REVIEW ` +
-          `(prior rejections=${priorRejections}) user=${this.mask(userId)}`,
+          `(prior rejections=${priorRejections}, reused documents=${reusedDocuments}) ` +
+          `user=${this.mask(userId)}`,
       );
       return {
         id: held.id,

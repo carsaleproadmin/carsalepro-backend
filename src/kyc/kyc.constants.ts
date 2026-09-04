@@ -41,6 +41,13 @@ export const ACTIVE_KYC_STATUSES: KycStatus[] = [
  * the next application stops at SUBMITTED and waits for an admin. The reader
  * that automatic approval removed is put back at the one point where the
  * platform has already said no.
+ *
+ * The same list answers the same question about the DOCUMENTS (DEN-249). This
+ * check is keyed by `user_id` and a second registration resets it, so it is
+ * read a second time against `KycDocument.sha256`: an application whose files
+ * were already refused under another account is held as well. One list, so the
+ * two questions cannot drift apart - adding a status here holds an application
+ * both ways.
  */
 export const KYC_MANUAL_REVIEW_AFTER_STATUSES: KycStatus[] = [KycStatus.REJECTED];
 
