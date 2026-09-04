@@ -192,36 +192,46 @@ export interface AppConfig {
 
 /**
  * The bundle identifier the app actually ships (see
- * `android/app/build.gradle.kts` and `codemagic.yaml`).
+ * `android/app/build.gradle.kts`, the six iOS PRODUCT_BUNDLE_IDENTIFIER
+ * settings and `codemagic.yaml`).
  */
-const SHIPPED_BUNDLE_ID = 'us.designkey.carsalepro';
+const SHIPPED_BUNDLE_ID = 'net.carsalepro.app';
 
 /**
- * A package that has never existed. It was this project's compiled default
- * until 2026-08-19 and, because `GOOGLE_PLAY_PACKAGE_NAME` falls through to
- * `IAP_BUNDLE_ID`, it pointed BOTH stores' server-side validation at nothing.
+ * Package names that cannot be a correct answer, whatever the environment says.
+ * Exported because the startup check names them in its warning.
+ *
+ * `com.carsalepro.app` has never existed. It was this project's compiled
+ * default until 2026-08-19 and, because `GOOGLE_PLAY_PACKAGE_NAME` falls
+ * through to `IAP_BUNDLE_ID`, it pointed BOTH stores' server-side validation
+ * at nothing.
+ *
+ * `us.designkey.carsalepro` was the shipped id until 2026-09-04, when the app took
+ * the platform's own domain before its first Play upload. Nothing is published
+ * under it, so an environment still holding it would reject every receipt in
+ * exactly the same way - the identical defect, one rename later.
  */
-const RETIRED_BUNDLE_ID = 'com.carsalepro.app';
+export const RETIRED_BUNDLE_IDS = ['com.carsalepro.app', 'us.designkey.carsalepro'];
 
 /**
  * A bundle id from the environment, or `undefined` when it is blank or holds
- * the retired package.
+ * a retired package.
  *
- * The retired value is ignored rather than obeyed or refused. It cannot ever be
- * correct — no such package exists in either store — so honouring it would
- * reject every receipt, and failing the boot over it (which is what shipped)
- * takes the whole API down for a mobile-only feature and can only be repaired
- * from a dashboard. Ignoring it resolves to the id the app really ships, and
- * the startup check reports the stale variable so it still gets cleaned up.
+ * A retired value is ignored rather than obeyed or refused. It cannot ever be
+ * correct - no store publishes it - so honouring it would reject every receipt,
+ * and failing the boot over it (which is what shipped) takes the whole API down
+ * for a mobile-only feature and can only be repaired from a dashboard. Ignoring
+ * it resolves to the id the app really ships, and the startup check reports the
+ * stale variable so it still gets cleaned up.
  */
 const bundleIdFromEnv = (value: string | undefined): string | undefined => {
   const trimmed = value?.trim();
-  if (!trimmed || trimmed === RETIRED_BUNDLE_ID) return undefined;
+  if (!trimmed || RETIRED_BUNDLE_IDS.includes(trimmed)) return undefined;
   return trimmed;
 };
 
 const holdsRetiredBundleId = (value: string | undefined): boolean =>
-  value?.trim() === RETIRED_BUNDLE_ID;
+  RETIRED_BUNDLE_IDS.includes(value?.trim() ?? '');
 
 export default (): AppConfig => ({
   nodeEnv: (process.env.NODE_ENV as AppConfig['nodeEnv']) || 'development',
@@ -260,9 +270,10 @@ export default (): AppConfig => ({
   },
   iap: {
     mode: (process.env.IAP_VALIDATION_MODE as 'client-trust' | 'server') || 'client-trust',
-    // The retired `com.carsalepro.app` is ignored wherever it comes from — see
-    // `bundleIdFromEnv`. Both stores' server-side validation used to point at
-    // it, because `GOOGLE_PLAY_PACKAGE_NAME` falls through to this value.
+    // A retired package is ignored wherever it comes from - see
+    // `RETIRED_BUNDLE_IDS` and `bundleIdFromEnv`. Both stores' server-side
+    // validation used to point at one, because `GOOGLE_PLAY_PACKAGE_NAME`
+    // falls through to this value.
     bundleId: bundleIdFromEnv(process.env.IAP_BUNDLE_ID) ?? SHIPPED_BUNDLE_ID,
     retiredBundleIdInEnv:
       holdsRetiredBundleId(process.env.IAP_BUNDLE_ID) ||
