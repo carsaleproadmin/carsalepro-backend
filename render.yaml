@@ -68,8 +68,6 @@ services:
         value: CarSalePro <no-reply@notifications.carsalepro.de>
       - key: RESEND_API_KEY
         sync: false
-      - key: VIN_HISTORY_ALLOW_SYNTHETIC_SALE
-        sync: false
       - key: SENTRY_DSN
         sync: false
       - key: SENTRY_ENVIRONMENT

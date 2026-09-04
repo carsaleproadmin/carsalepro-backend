@@ -161,7 +161,6 @@ model User {
   notifications       Notification[]
   reports             Report[]
   payments            Payment[]
-  vinHistoryPurchases VinHistoryPurchase[]
   kycApplications     KycApplication[]
   authAccounts        AuthAccount[]
   verificationTokens  VerificationToken[]
@@ -646,7 +645,6 @@ model Payment {
   order              Order?              @relation(fields: [orderId], references: [id])
   user               User                @relation(fields: [userId], references: [id])
   reportPurchase     ReportPurchase?
-  vinHistoryPurchase VinHistoryPurchase?
   refund             Refund?
 
   @@index([userId])
@@ -1035,81 +1033,6 @@ model PlatformSetting {
 /// Providers charge per lookup, so the fetch is cached for `vinHistoryCacheDays`
 /// and SHARED across buyers: two users unlocking the same VIN inside the window
 /// pay twice but the provider is queried once.
-model VinHistoryReport {
-  id          String   @id @default(cuid())
-  vin         String   @db.VarChar(17)
-  /// Provider that produced this payload ('mock' until a real one is wired).
-  provider    String
-  /// Normalised VinHistoryPayloadV1 — the contract the API serves.
-  payload     Json
-  /// LEGACY. The shared archive written before each buyer got their own
-  /// snapshot; new rows leave it null. Kept because purchases fulfilled under
-  /// the old scheme still resolve their download through it.
-  rawS3Key    String?  @map("raw_s3_key")
-  recordCount Int      @default(0) @map("record_count")
-  fetchedAt   DateTime @default(now()) @map("fetched_at")
-  expiresAt   DateTime @map("expires_at")
-
-  purchases VinHistoryPurchase[]
-
-  @@unique([vin, provider])
-  @@index([expiresAt])
-  @@map("vin_history_report")
-}
-
-/// One user's paid unlock of one VIN.
-///
-/// `@@unique([userId, vin])` makes /unlock idempotent: a user cannot be charged
-/// twice for the same VIN, however many times the button is pressed or the
-/// webhook is replayed.
-///
-/// `payload` and `s3Key` are the PAID ARTEFACT: an immutable snapshot of what
-/// this buyer was sold, written once at fulfilment. They are deliberately a copy
-/// of `report.payload` / `report.rawS3Key` rather than a reference, because the
-/// linked `VinHistoryReport` is a SHARED provider cache that the next buyer of
-/// the same VIN overwrites once the cache window lapses. Reads fall back to the
-/// report only for purchases fulfilled before this column existed.
-model VinHistoryPurchase {
-  id            String    @id @default(cuid())
-  userId        String    @map("user_id")
-  vin           String    @db.VarChar(17)
-  reportId      String?   @map("report_id")
-  paymentId     String?   @unique @map("payment_id")
-  /// pending | ready | failed | refunded
-  status        String    @default("pending")
-  provider      String?
-  failureReason String?   @map("failure_reason")
-  /// Immutable snapshot of the payload this buyer paid for.
-  payload       Json?
-  /// R2 key of this buyer's own archived copy, served only via a signed URL.
-  s3Key         String?   @map("s3_key")
-  /// R2 key of the rendered PDF. The key carries the locale, so re-rendering in
-  /// another language adds a document instead of overwriting one.
-  pdfS3Key      String?   @map("pdf_s3_key")
-  pdfLocale     String?   @map("pdf_locale")
-  pdfRenderedAt DateTime? @map("pdf_rendered_at")
-  /// Render attempts, capped — a payload the renderer cannot handle must not
-  /// retry on every download. A render failure never fails the sale: the JSON
-  /// view stays available.
-  pdfAttempts   Int       @default(0) @map("pdf_attempts")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  readyAt       DateTime? @map("ready_at")
-
-  /// Opaque, unguessable token for the public report link, or null when the
-  /// buyer has not shared it. Minting is explicit and revoking sets it back to
-  /// null, so the link is off by default and its whole lifetime is the owner's
-  /// decision. Unique because it is the sole lookup key on a public route.
-  shareToken          String?   @unique @map("share_token")
-  shareTokenCreatedAt DateTime? @map("share_token_created_at")
-
-  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  report  VinHistoryReport? @relation(fields: [reportId], references: [id])
-  payment Payment?          @relation(fields: [paymentId], references: [id])
-
-  @@unique([userId, vin])
-  @@index([userId, createdAt])
-  @@map("vin_history_purchase")
-}
 
 model WaitlistEntry {
   id        String                                 @id @default(cuid())

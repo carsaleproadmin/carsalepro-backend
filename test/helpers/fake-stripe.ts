@@ -4,7 +4,6 @@ import type {
   CreateOrderPaymentIntentParams,
   CreatePpvCheckoutParams,
   CreateTransferParams,
-  CreateVinHistoryCheckoutParams,
   StripeAccount,
   StripeAccountLink,
   StripeBusinessType,
@@ -403,12 +402,6 @@ export class FakeStripeService {
 
   async createGoldCheckout(
     params: CreateGoldCheckoutParams,
-  ): Promise<{ checkoutUrl: string; sessionId: string }> {
-    return this.checkout(params.paymentId);
-  }
-
-  async createVinHistoryCheckout(
-    params: CreateVinHistoryCheckoutParams,
   ): Promise<{ checkoutUrl: string; sessionId: string }> {
     return this.checkout(params.paymentId);
   }

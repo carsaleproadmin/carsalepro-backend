@@ -173,7 +173,6 @@ export class StartupCheckService implements OnApplicationBootstrap {
     await this.checkPublicBucket(raw);
     await this.checkStripe(raw, production);
     await this.checkMapbox(raw, production);
-    this.checkVinHistory(raw, production);
     this.checkIap(raw);
     await this.checkFonts(raw);
 
@@ -643,19 +642,6 @@ export class StartupCheckService implements OnApplicationBootstrap {
           ? ' - carsalepro_pro_lifetime is a one-time managed product and must ' +
             'NOT be listed as a subscription; Play answers 404 for it there.'
           : ''),
-    });
-  }
-
-  private checkVinHistory(raw: RawFinding[], production: boolean): void {
-    const vin = this.config.get('vinHistory', { infer: true });
-    const selling = production && vin.provider === 'mock' && vin.allowSyntheticSale;
-    raw.push({
-      id: 'vin-history',
-      intended: selling ? 'warn' : 'info',
-      message:
-        `VIN history provider=${vin.provider} apiKey=${vin.apiKey ? 'set' : 'MISSING'} ` +
-        `allowSyntheticSale=${vin.allowSyntheticSale}` +
-        (selling ? ' - the MOCK provider is selling generated data in production.' : ''),
     });
   }
 
