@@ -57,6 +57,21 @@ describe('parseMrz', () => {
     });
   });
 
+  /*
+   * REGRESSION. `readTd2` used to accept a second line of 28 characters, and a
+   * TD1 line is 30 - so every identity card reached the TD2 reader, and
+   * `parseMrz` runs all TD2 reads BEFORE any TD1 read. At the TD2 offsets a
+   * TD1 second line holds the dates, thus the "document number" was cut out of
+   * the date of birth. The check digits refused nearly all of these, which is
+   * why the case above passed by luck rather than by design. `readTd2` now asks
+   * for the true TD2 width of 36.
+   */
+  it('does not read a TD1 card as a TD2 document', () => {
+    const identity = parseMrz(TD1.join('\n'));
+    expect(identity!.format).toBe('TD1');
+    expect(identity!.documentNumber).toBe('D23145890');
+  });
+
   it('finds the zone among the rest of the page the recogniser returned', () => {
     const page = ['BUNDESREPUBLIK DEUTSCHLAND', '', ...TD1, 'some footer'].join('\n');
     expect(parseMrz(page)!.documentNumber).toBe('D23145890');

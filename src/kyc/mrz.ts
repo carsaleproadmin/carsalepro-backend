@@ -174,7 +174,18 @@ function readTd2(lines: string[], i: number): MrzIdentity | null {
   const first = lines[i];
   const second = lines[i + 1];
   if (!first || !second) return null;
-  if (first.length < 5 || second.length < 28) return null;
+  // 36, the true TD2 width, and NOT the 28 characters this reader actually
+  // touches. A TD1 line is 30 characters, so a prefix rule of 28 let an
+  // identity card reach this reader - and `parseMrz` tries every TD2 read
+  // before any TD1 read, so it reached it FIRST. The fields at these offsets
+  // are the dates on a TD1, thus the "document number" came out of the date of
+  // birth. Three check digits refuse almost every such read, but roughly one in
+  // a thousand agrees by chance and the platform then stores and compares an
+  // identity key that belongs to nobody.
+  //
+  // The prefix rule stays for the tail beyond 36, which is where the filler is
+  // and where a recogniser goes wrong (see the note above).
+  if (first.length < 5 || second.length < 36) return null;
 
   const documentNumber = second.slice(0, 9);
   if (!digitMatches(documentNumber, second[9])) return null;

@@ -111,3 +111,21 @@ export const KYC_TRANSITIONS: Record<KycStatus, KycStatus[]> = {
   [KycStatus.APPROVED]: [KycStatus.REJECTED],
   [KycStatus.REJECTED]: [],
 };
+
+/**
+ * Days a decided KYC application's documents are kept, then deleted.
+ *
+ * The nightly `purge-old-kyc` cron enforces it (`KycService.purgeOldDocuments`)
+ * and `GET /api/v1/settings/public` publishes it, because the WEBSITE prints
+ * this number to the applicant at the moment they hand over an identity
+ * document. It used to be a literal 90 in `kyc.service.ts` and a second literal
+ * 90 in the frontend repository, with no shared package and no test between
+ * them - so the number on the screen was a promise about somebody's personal
+ * data that nothing kept once the cron moved.
+ *
+ * The row outlives the object: the purge clears the bucket and stamps
+ * `purgedAt`, keeping `sha256` and `idNumberHash`. That is deliberate and is
+ * what lets a revoked applicant still be recognised after the window - see the
+ * note on `KYC_MANUAL_REVIEW_AFTER_STATUSES`.
+ */
+export const KYC_RETENTION_DAYS = 90;
