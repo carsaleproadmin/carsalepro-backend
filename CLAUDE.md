@@ -1,10 +1,10 @@
 # CLAUDE.md — CarSalePro Backend
 
-Agent-specific guidance. Project overview, stack, endpoints, and run/deploy steps are in @README.md — read it first and don't duplicate it here.
+Agent-specific guidance. Project overview, stack, endpoints, and run/deploy steps are in `README.md` — read it first, and don't duplicate it here. It is deliberately NOT an @-reference: that loaded all 18 KB of it into every session, including the ones that never leave `src/`.
 
 ## What this repo is now
 
-One NestJS service with **two API surfaces** (see @README.md):
+One NestJS service with **two API surfaces** (see `README.md`):
 
 - **Legacy mobile MVP** — root routes (`/vin`, `/quota`, `/reports`, `/me`, `/catalog`, `/legal`, `/health`), `X-Device-Id` auth, **frozen contract** (the shipped Flutter app depends on it byte-for-byte).
 - **Website (Phase 2+)** — `/api/v1/*`, Bearer-JWT auth. The full marketplace / inspection-exchange / payments / KYC / LegalSync / admin / notifications platform was **built in this repo** (extending it in place was a deliberate decision — do NOT suggest moving it to a separate repo).
@@ -124,7 +124,7 @@ The manifest is a root route alongside `/catalog` and `/legal`; the frozen mobil
   - **`ASSIGNED → UNASSIGNED` is deleted from the state machine.** Nothing performed it, and it would return a *captured* order to the search pool where the expiry cron would try to release a hold that no longer exists.
   - **`order.search_expires_at IS NULL` must never be backfilled.** Null means "created before manual capture, money already charged, no hold to release" — it is the only thing protecting those orders from the expiry cron.
   - Stripe must be subscribed to `payment_intent.amount_capturable_updated`, `.canceled` and `.payment_failed`. Under manual capture `payment_intent.succeeded` fires at *capture*, not at payment.
-- **A `Refund` row means money went back, or is still trying to.** `settleRefund` never throws: nothing charged → an `OrderEvent` and no row; an uncaptured hold → released, `authorization_released`, **still no row**; a captured payment → upsert on `(orderId, reason)`, parked with backoff on rejection. A throw here used to abort `cancel` with the money still taken, and left `resolveDispute`'s `Dispute` row OPEN in the admin queue for ever. Refunding also **revokes what was bought** — but only a `VinHistoryPurchase` that reached `ready`, since one that never did granted no access, and overwriting it would destroy `failureReason` and claim a refund that may itself have failed.
+- **A `Refund` row means money went back, or is still trying to.** `settleRefund` never throws: nothing charged → an `OrderEvent` and no row; an uncaptured hold → released, `authorization_released`, **still no row**; a captured payment → upsert on `(orderId, reason)`, parked with backoff on rejection. A throw here used to abort `cancel` with the money still taken, and left `resolveDispute`'s `Dispute` row OPEN in the admin queue for ever. Refunding also **revokes what was bought** — a `ReportPurchase`, and a `VinHistoryPurchase` that reached `ready` (that product is retired, but old rows can still be refunded and must still say so; one that never reached `ready` granted no access, and overwriting it would destroy `failureReason` and claim a refund that may itself have failed).
 - **The order gate asks WHICH elements a report contains, not how good it scores** (since 2026-08-13; `src/reports/report-completeness.ts`, applied by `OrdersService.assertReportComplete` from both `attachReportByCode` and `ReportsService.create`). Required: every exterior angle photographed, all **17** paint panels with a reading **and** a `thickness-<id>` photo, both calibration shots (`zeroproof`, `zeroproof-al`), and 4 wheels each with a photo, `treadMm`, `dot` and `sizeSpec`. A score is a weighted average, so it let a whole missing family be paid for by another — a report with no wheel data at all cleared 90 on the strength of its exterior walk. The evidence is the payload's own `photos[].kind` manifest, because the gate runs inside `POST /reports` before any file is uploaded and no `ReportPhoto` row exists yet.
   - **`report_quality_too_low` no longer exists.** The refusal is **`report_incomplete`** (still 409), and it carries `missing` — the structured gap list — plus `exteriorAngleCount`, `qualityScore` and `minQualityScore` beside `error`, which `AllExceptionsFilter` spreads onto the wire. A bare code the client cannot turn into "the rear and one wheel" sends the inspector back to the car with nothing to go on. `report_quality_unknown` is unchanged in code and meaning but its **trigger moved**: it now fires when there is no structured `reportData` at all (an old app build), not when `qualityScore` is null.
   - **`minReportQualityScore` kept its name and now under-describes what it does.** Only its SIGN is read: `> 0` runs the gate, `<= 0` disables it entirely — the same emergency lever as before, and `admin-settings.controller.ts` still bounds it at 100. It is no longer a threshold and nothing compares a score to it; the score is still stored and still displayed. The name survived on purpose, because renaming it would have cost a migration, a seed change, an admin control and an order-DTO field — and would have cost the lever a deploy at exactly the moment it is needed. So **the 87/81 window is gone**: it described a threshold that no longer exists, and the setting's value between 1 and 100 changes nothing.
@@ -140,8 +140,7 @@ The manifest is a root route alongside `/catalog` and `/legal`; the frozen mobil
 - **KYC objects go through the `kyc*` methods on `R2Service`, never the general ones** — `putObject` and `createPresignedDownloadUrl` both hardcode the reports bucket, so a call site that looks correct would put identity documents next to paid PDFs. **The browser never writes to that bucket.** Uploads are multipart through `POST /api/v1/kyc/applications/:id/documents/upload`; the presigned route is deleted, and CORS must never be added to the KYC bucket — that is a browser-reachable write path into the identity store, not a fix. The content type comes from the multipart part (a body field guarded by `if (contentType && …)` was bypassed by omitting it) and is corroborated against magic bytes. One document per kind, `@@unique([applicationId, kind])`: appending meant every reader picked one non-deterministically, so a reviewer could judge an applicant on a document they had already replaced.
 - **`R2_PUBLIC_URL` is RETIRED and fails the production boot.** It reads like a per-feature setting and is a global short-circuit inside `createPresignedDownloadUrl`: set it and every private object in the reports bucket — paid inspection PDFs included — resolves to a permanent unsigned URL, with nothing logged and nothing broken-looking. Public images come from a **separate bucket** (`R2_PUBLIC_*`), because publicity in R2 is a property of the bucket and a "public prefix" cannot exist. `ListingPhoto.bucket` records where each object lives, so the feature ships dark: unset the vars and everything returns to signed URLs.
 - **A boot-time self-check (`src/health/startup-check.service.ts`) fails the start on a silently-wrong environment** — a BOM or stray quoting in a secret, a KYC bucket equal to the reports bucket, a CORS list with no https origin. Four of the nine blocking production defects were env values, and not one failed a build, a test or `/health`. It never prints a value, only `MISSING` / `set (len 64)` / `has BOM`. A third party being unreachable is deliberately NOT fatal (Render would loop the deploy); `STARTUP_CHECK_STRICT=false` and `ALLOW_SHARED_KYC_BUCKET=true` are the documented escapes. **This reverses the earlier "R2_KYC_* must not fail the boot" decision** — set those vars on Render *before* deploying. `GET /health` is untouched (it is `healthCheckPath`); details live on `GET /health/startup`.
-- **VIN preview counters are `number | null`, and `null` is not `0`.** `0` is a claim the provider made; `null` means it publishes no such number. They were hardcoded zeros because `preview()` returned a type the counters were not part of — fixed in the provider contract, not at the call site.
-  - **`preview()` may now return `null` for the WHOLE summary**, meaning "this provider has no free probe". The response then carries `probed: false` and `summary: null`, and a client must render **no counters and no findings block at all** — not zeros, not dashes in a findings grid. Printing zeros tells a visitor the car is clean on the strength of never having looked, on the card that decides whether they pay.
+- **`null` is not `0`, wherever a count reaches a client.** `0` is a claim somebody made; `null` means no such number is published. The VIN preview is where this was learned - its counters were hardcoded zeros, so a card told visitors a car was clean on the strength of never having looked - and the rule outlived the feature. Fix it in the contract that produces the number, not at the call site.
 
 - **Mobile PRO is a ONE-TIME purchase, and there is no subscription anywhere in the mobile tier (2026-08-19).** The product is `carsalepro_pro_lifetime` — **Non-Consumable** on Apple, a **managed in-app product** on Google. Three things follow, and each is a trap in the opposite direction:
   - **`GOOGLE_PLAY_SUBSCRIPTION_IDS` must stay empty.** `google-validator.ts` routes an id in that list to the subscriptions endpoint and everything else to `/purchases/products/`. A well-meant entry there sends the lifetime id to the wrong endpoint and every purchase 404s. A spec now pins that the lifetime id routes to `/purchases/products/` under the default empty list, so a future env change fails a test instead of a customer.
@@ -152,49 +151,33 @@ The manifest is a root route alongside `/catalog` and `/legal`; the frozen mobil
   - **`COMPANY` / `ADDRESS` / `EMAIL` in `legal.content.ts` are now read by a MOBILE test (2026-09-01), and changing them silently breaks it.** The mobile report grew a letterhead that prints the same three values on every page (`carsalepro-mobile/lib/core/brand/letterhead.dart`, `PlatformIdentity`), and `carsalepro-mobile/test/core/pdf/letterhead_test.dart` parses THIS FILE and fails when the two disagree. There is no shared package between the repos, so a parser over the source is the only coupling available — but the reason for it is not tooling: a report naming a different address from the Imprint the store listings point at is worse than one naming none. If the entity moves, both repos change in the same commit or the mobile suite goes red on the next run.
     - **That is exactly what happened on 2026-09-02**, and the coupling did its job. `EMAIL` became `support@carsalepro.net` on the client's instruction; the mobile change alone would have turned `letterhead_test.dart` red, which is the intended behaviour and not a nuisance. `ADDRESS` was NOT touched - the client's own §1.6 text says `1021 E Lincolnway, 10416` and he decided `1023` is acceptable, so the website Imprint's `Provider` section still disagrees with its own `Mailing address` section. Do not "correct" one of the two here without him.
 
-## Paid VIN history: the provider seam (`src/vin-history/`)
+## Paid VIN history: RETIRED (DEN-245)
 
-`VIN_HISTORY_PROVIDER` selects one provider per process — `mock`, `carsxe`, or **`aggregate`**, which is the real one. Anything else logs loudly and **falls back to the mock**, which refuses paid unlocks in production, so a typo costs a 503 and never a charge. Keep that fall-through whatever else changes; it is why the env var is not a Joi `.valid()` list, which would take the whole API down over one feature.
+`src/vin-history/` is deleted, and so are `VIN_HISTORY_*`, `CARAPI_API_KEY`, the
+three `vinHistory*` platform settings, `vinHistoryCents` in the public price
+catalogue, `createVinHistoryCheckout`, the webhook's `vin_history` branch and
+`vinHistoryCoverage` in `src/vin/vin.util.ts`. The website sends the visitor to
+a partner instead. Do not restore any of it from this file's history without the
+client asking - the removal was the decision, not an accident.
 
-### `aggregate` — several sources, one report
+**Two things deliberately SURVIVE the deletion, and both are about not lying
+about money that changed hands.**
 
-`CompositeVinHistoryProvider` implements the same one-provider interface, so the schema, the R2 layout and the whole money path are untouched. It holds the members that are CONFIGURED, so turning a source on is a key and not a release, and merges their answers in `merge-vin-history.ts`.
+- **The Prisma models stay** - `VinHistoryReport` and `VinHistoryPurchase` are
+  untouched and no migration drops their two tables. They hold the record of
+  purchases that really happened. Dropping them is a separate, irreversible
+  decision and it is not made here (DEN-246). There is no third table: the
+  provider response cache was rows in `VinHistoryReport` under the same
+  `(vin, provider)` key, and `VinCache` belongs to the free NHTSA decode.
+- **`revokeEntitlementsFor` still moves a `ready` purchase to `refunded`.** No
+  new row can ever be written, but an old one can still be refunded, and the
+  row must still say so. It is a plain Prisma update with no dependency on the
+  deleted module.
 
-- **The mock is never a member.** `synthetic` is one flag for a whole report and the merge marks a report synthetic only if EVERY member was, so a mock beside a real source would be sold as fully sourced. No member configured ⇒ `configured: false` ⇒ 503.
-- **Each member is cached under its OWN name** (`ProviderResponseCache`, same `(vin, provider)` table). A warm row for one source does not re-pay the other — which matters when one lookup costs about $5.
-- **Member order is meaningful**: it drives `sources[]` order and which member wins a single-valued section. Most complete first.
-- **Merge rules that are not obvious**: mileage becomes ONE chronological ladder with `suspicious` recomputed across the merged series (a cross-source rollback is only visible after merging); recalls are NOT merged (every source relays the same US authority); valuations are never blended into one number; `theftCoverage.countryCodes` is the union and must never be lost; `summary` is recomputed from the merged arrays, never copied.
-
-- **`provider.name` is a FROZEN LITERAL.** It is half of the `vin_provider` unique key on `VinHistoryReport`, it is stamped on every `VinHistoryPurchase`, and it is baked into the R2 keys of both the archived JSON and the rendered PDF (`vin-history/<provider>/<vin>/…`). Renaming it orphans every cached report, every purchase's provenance and every stored document **silently** — nothing errors, the cache simply never hits again.
-- **Payload v1 and v2 both exist and both must render.** `VinHistoryPurchase.payload` is the immutable artefact a buyer paid for; every already-sold row says `schemaVersion: 1` and always will. v1 is frozen, v2 is a separate type, `VinHistoryPayload` is the union, and every reader branches through `isVinHistoryPayloadV2`. Never widen v1 in place — it would retroactively invalidate every payload already sold.
-- **Three facts are distinct and the types keep them apart**: "we asked and there is nothing" (`covered` + empty), "we asked and the source broke" (`unavailable`), "this source never holds this" (`not_covered`). That is `payload.coverage`, and it is the `null`-is-not-`0` rule applied one level up. Service history is permanently `not_covered` with CarsXE; a buyer must read that, not a blank table that looks like "this car was never serviced".
-
-### CarAPI specifics
-
-Real captured responses live in `test/fixtures/carapi/` with a README explaining what they are evidence FOR. Unlike the CarsXE fixtures, these were observed, not written from documentation.
-
-1. **⚠️ Mileage is KILOMETRES and carries no unit field.** `odometerUnit()` in `carsxe.mapper.ts` reads a blank unit as MILES, so putting CarAPI values through that path turns 239 556 km into 385 527 km. `carapi.mapper.ts` hard-codes km (`CARAPI_MILEAGE_UNIT`) and a test pins that 239 556 stays 239 556. Never share an odometer helper between the two mappers.
-2. **No free probe, and a `400 Invalid VIN` may mean "not in our database".** The API does not distinguish malformed from unknown, and **every call costs a credit including a 400, a 404 and a 503**. `/v1/account` is the only free endpoint. So `preview()` makes no call, and an `empty` decode stops the bundle before five more credits are spent.
-3. **`manufacturer.country` is the BUILD country, never registration.** Nothing in this API says where a vehicle is registered. Rendering it as "registered in Germany" is wrong for every import.
-4. **`stolen-check` covers SK, CZ, SI, HU, RO and nothing else.** `theftCoverage.countryCodes` carries which registers were actually searched, and the report must never let `stolen: false` alone read as clean for a car registered elsewhere.
-5. **`GET /photos/{vin}` is not implemented and must not be.** Its response embeds our API key in every URL it returns. A test asserts no such method exists on the client.
-6. **Calls are sequenced, not parallel** — the limit is 10/minute and a six-call fan-out rate-limits itself.
-
-### The report NEVER names a data source
-
-Which companies stand behind a report is commercial information; what a reader is owed is whether each source answered. `sources[]` keeps the STATUS and the renderers resolve each entry to a neutral position. `provider` is gone from all four rendered DTOs while the DB and R2 columns keep it. `vin-history-report-model.spec.ts` walks the whole built model against a deliberately poisoned payload and asserts no source name survives, in every locale — **that guard is the requirement, not a spot check.**
-
-**`synthetic` is the opposite case and stays fully visible.** Hiding who supplied data is a commercial choice; hiding that data was GENERATED is not.
-
-### CarsXE specifics — three traps
-
-1. **`brandsInformation` is the whole ~80-entry NMVTIS brand DICTIONARY**, returned byte-identical for every VIN, including *Flood, Fire, Salvage, Crushed, Prior Taxi* alongside a "Clear: no brand exists" line. It is a legend, not findings. `carsxe.mapper.ts` admits an entry only with evidence, and carries a second shape-based backstop (`MAX_PLAUSIBLE_APPLIED_BRANDS`) precisely because the schema is unverified. **Never relax either defence** — the failure mode is every car reported as flood-damaged and crushed on a document someone paid for.
-2. **`/v1/recalls` and `/v1/lien-theft` are US-only and do not say so.** Asked about a European VIN they answer `success: true` with zero events, from a database that was never searched. Rendered through, that is "no theft record found" — a false clean bill of health. The provider **skips** them for a non-US-market VIN and marks both sections `not_covered`.
-3. **There is no free probe, and every endpoint is billable.** `preview()` therefore makes no CarsXE call at all. The free pre-check is the VIN check digit plus the NHTSA decode (`VinModule`, consumed **as a service** — `GET /vin/:vin` is a frozen mobile route the website may not call). One unlock costs roughly $8 against €19.99 retail.
-
-- **The selling gate is VIN FORMAT, and nothing else.** It used to be the check digit, which refused European domestic VINs — precisely the cars the second source can describe. `vinHistoryCoverage` in `src/vin/vin.util.ts` still computes the check digit and still carries its long rationale, but its job is now narrower: it decides whether to spend a call on the two US-only endpoints, which answer "success, zero events" for a European VIN from a database that was never searched. **Selling and region-routing are two questions**; answering both with one function is what tied the product's reach to a US titling rule.
-- **A record-less answer is REMEMBERED** (`vinHistoryEmptyCacheDays`, 7 days, against 30 for a real report). It used to be discarded so a VIN gaining its first record would not stay unsellable, which meant every attempt paid the per-lookup fee again to reach the same refund. The short window keeps both properties. `0` disables it.
-- **`unlock` refuses uncovered VINs BEFORE any purchase or payment row exists**, so the refusal is free — nothing charged, nothing to refund, the provider never asked. The preview hiding the button is not the gate; the route is reachable directly and from any stale tab.
+**The free NHTSA decode is a DIFFERENT thing and is untouched.** `NHTSA_BASE_URL`,
+`VinModule` and the frozen mobile route `GET /vin/:vin` all stay - they cost
+nothing, they decode rather than sell, and the shipped Flutter app depends on
+the route byte-for-byte.
 
 ## Migrations
 
@@ -205,8 +188,8 @@ Use `npx prisma migrate deploy` (non-interactive) to apply, and `prisma migrate 
 ```bash
 npx tsc --noEmit -p tsconfig.build.json
 npm run lint                               # ESLint 9 flat config (eslint.config.mjs)
-npm test                                   # 738 unit / 38 suites
-npm run test:e2e -- --forceExit            # 519 e2e / 26 suites must stay green; ONE jest at a time
+npm test                                   # 486 unit / 37 suites
+npm run test:e2e -- --forceExit            # 684 e2e / 26 suites; ONE jest at a time
 ```
 
 **`StripeService` is forced into mock mode by `NODE_ENV=test`, so a suite that wants a real Stripe branch must inject `test/helpers/fake-stripe.ts`** (`createTestApp([{ token: StripeService, useValue: fake }])`). Until `test/refunds` and `test/orders-stripe` did that, not one Stripe code path had ever executed in this repo's tests — capture, cancellation, refund rejection and the webhook lock were all unexercised.
