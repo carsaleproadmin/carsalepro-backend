@@ -1,6 +1,7 @@
 import { Controller, Get, Header } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/auth.decorators';
+import { KYC_RETENTION_DAYS } from '../kyc/kyc.constants';
 import { PriceCatalog } from './price-catalog';
 import { SettingsService } from './settings.service';
 
@@ -12,6 +13,18 @@ import { SettingsService } from './settings.service';
 export interface PublicSettingsResponse {
   [key: string]: number | PriceCatalog;
   prices: PriceCatalog;
+  /**
+   * Days a decided KYC application's documents are kept before the nightly
+   * purge deletes them.
+   *
+   * Not a price, so not in `prices` - but published for the same reason every
+   * price is. The website prints it to the applicant at the moment they hand
+   * over an identity document, and it held its own literal `90` with no shared
+   * package and no test tying it to the cron that enforces the number. A stale
+   * price misinforms a buyer; a stale retention period is a promise about
+   * somebody's personal data that nothing keeps.
+   */
+  kycRetentionDays: number;
 }
 
 @ApiTags('settings')
@@ -34,6 +47,6 @@ export class SettingsController {
       this.settings.getPublic(),
       this.settings.getPriceCatalog(),
     ]);
-    return { ...flat, prices };
+    return { ...flat, prices, kycRetentionDays: KYC_RETENTION_DAYS };
   }
 }

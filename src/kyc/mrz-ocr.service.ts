@@ -49,12 +49,39 @@ import { MrzIdentity, parseMrz } from './mrz';
  * `tesseract.js` fetches `eng.traineddata` from a CDN unless it is given a
  * local path. Set `KYC_MRZ_TESSDATA_PATH` to a directory holding that file to
  * keep the read entirely inside the server. With the variable unset the
- * download is attempted once; if it fails, this service switches itself off
- * for the life of the process and says so once, rather than logging a stack
- * trace per upload.
+ * download is attempted once; if it fails, this service switches itself off for
+ * a cool-down and says so once, rather than logging a stack trace per upload.
  *
  * `KYC_MRZ_OCR_ENABLED=false` turns it off outright.
  */
+
+/**
+ * How long one read may take before it is abandoned.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE READ RUNS INSIDE THE UPLOAD REQUEST, AND ONE WORKER SERVES ALL OF THEM
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Without a deadline a recogniser that never returns holds the applicant's HTTP
+ * request open for ever - and because `tesseract.js` queues every job onto the
+ * single worker this service keeps, it holds every LATER KYC upload in the same
+ * process behind it too. One unlucky photograph would stop the whole intake,
+ * not just its own.
+ *
+ * Twenty seconds is far above what a real read costs (a prepared 2000 px image
+ * is a second or two) and far below any patience an upload has. Passing the
+ * deadline is an ordinary failure: it gives `null`, exactly as an unreadable
+ * document does, and the applicant is not treated differently for it.
+ */
+const READ_DEADLINE_MS = 20_000;
+
+/**
+ * How long the service stays off after the recogniser could not be created.
+ *
+ * See `retryAfter`. Long enough that an absent component is not retried on
+ * every upload, short enough that a blip does not need a deploy to clear.
+ */
+const UNAVAILABLE_COOLDOWN_MS = 10 * 60_000;
 
 /** Text recognition, kept behind an interface so the worker can be faked. */
 export interface MrzRecogniser {
@@ -70,13 +97,25 @@ export class MrzOcrService implements OnModuleDestroy {
   /** Created on first use, then reused: starting a worker costs seconds. */
   private worker: Promise<MrzRecogniser> | null = null;
 
-  /** Set once the recogniser has proved unavailable. Never reset. */
-  private unavailable = false;
+  /**
+   * When the recogniser may be tried again, as a millisecond clock reading.
+   *
+   * It used to be a boolean that was set once and never cleared, so ANY failure
+   * - including a network blip while the language data was fetched the very
+   * first time - switched the OCR off until the process was restarted. A
+   * component that is genuinely absent and one that was briefly unreachable are
+   * not the same thing, and only the first deserves a permanent answer.
+   *
+   * A cool-down gives both what they need: an absent component costs one
+   * attempt per `UNAVAILABLE_COOLDOWN_MS` rather than one per upload, and a
+   * blip heals itself.
+   */
+  private retryAfter = 0;
 
   constructor(private readonly config: ConfigService) {}
 
   isEnabled(): boolean {
-    return this.config.get<boolean>('kyc.mrzOcrEnabled') !== false && !this.unavailable;
+    return this.config.get<boolean>('kyc.mrzOcrEnabled') !== false && Date.now() >= this.retryAfter;
   }
 
   /**
@@ -91,7 +130,7 @@ export class MrzOcrService implements OnModuleDestroy {
     try {
       const recogniser = await this.getWorker();
       const prepared = await this.prepare(image);
-      const text = await recogniser.recognise(prepared);
+      const text = await this.withDeadline(recogniser.recognise(prepared));
       const identity = parseMrz(text);
       this.logger.log(
         `MRZ read ${identity ? `OK (${identity.format}, ${identity.issuingState})` : 'found nothing'}` +
@@ -103,6 +142,41 @@ export class MrzOcrService implements OnModuleDestroy {
       // must not look like a fault in the log of a server that is working.
       this.logger.warn(`MRZ read failed after ${Date.now() - startedAt} ms: ${String(err)}`);
       return null;
+    }
+  }
+
+  /**
+   * Give up on a read that passes `READ_DEADLINE_MS`.
+   *
+   * The recognition itself is not cancelled - `tesseract.js` offers no way to
+   * do that - so the worker may still be busy when this rejects. That is
+   * accepted: the point is to free the REQUEST, and the cost of a worker that
+   * stays busy is paid by the deadline on the next read rather than by a
+   * connection that never closes.
+   */
+  private async withDeadline<T>(work: Promise<T>): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    // The losing side of a race is still a live promise. When the deadline wins
+    // and the recognition rejects afterwards, that rejection has no handler and
+    // Node reports it as unhandled - a crash on the default setting. This
+    // swallows only the LATE failure; the one that arrives in time is still
+    // returned by the race below.
+    work.catch(() => undefined);
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`no answer in ${READ_DEADLINE_MS} ms`)),
+            READ_DEADLINE_MS,
+          );
+          // The process must not be kept alive by a timer that is only waiting
+          // to report a failure.
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -167,13 +241,15 @@ export class MrzOcrService implements OnModuleDestroy {
         },
       };
     } catch (err) {
-      // Switched off for the life of the process. Retrying per upload would
-      // mean a multi-second delay on every one of them for a component that
-      // has already proved absent.
-      this.unavailable = true;
+      // Switched off for a cool-down, not for the life of the process. Retrying
+      // on every upload would mean a multi-second delay on each one for a
+      // component that has already proved absent; retrying never means a blip
+      // at the wrong moment costs a deploy to clear.
+      this.retryAfter = Date.now() + UNAVAILABLE_COOLDOWN_MS;
       this.worker = null;
       this.logger.warn(
-        `MRZ recognition is UNAVAILABLE and is now off for this process: ${String(err)}. ` +
+        `MRZ recognition is UNAVAILABLE: ${String(err)}. ` +
+          `Off for the next ${UNAVAILABLE_COOLDOWN_MS / 60_000} minutes, then tried again. ` +
           'Document numbers will not be compared; nothing else changes.',
       );
       throw err;

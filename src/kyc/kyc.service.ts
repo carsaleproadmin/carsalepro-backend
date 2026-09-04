@@ -22,6 +22,7 @@ import {
   KYC_MANUAL_REVIEW_AFTER_STATUSES,
   KYC_QUEUE_DEFAULT_LIMIT,
   KYC_QUEUE_DEFAULT_STATUSES,
+  KYC_RETENTION_DAYS,
   KYC_TRANSITIONS,
   KycDocumentKind,
   REQUIRED_KYC_KINDS,
@@ -43,7 +44,30 @@ import { MrzOcrService } from './mrz-ocr.service';
 type KycApplicationWithDocs = KycApplication & { documents: KycDocument[] };
 
 /** Number of days after review before approved/rejected documents may be purged. */
-const PURGE_AFTER_DAYS = 90;
+/** @see KYC_RETENTION_DAYS - the number itself lives with the other KYC constants. */
+const PURGE_AFTER_DAYS = KYC_RETENTION_DAYS;
+
+/**
+ * Stamped in front of every `KycDocument.idNumberHash`.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE PEPPER CANNOT BE ROTATED SILENTLY
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * The digest mixes in `KYC_ID_HASH_PEPPER`, and an absent variable reads as an
+ * empty string. So an operator who sets the pepper for the first time, or
+ * changes it, makes every hash already in the table disagree with every hash
+ * written after - the comparison in `submitApplication` then matches nothing,
+ * the application is approved, and NOTHING says why. A protection against a
+ * revoked inspector would switch itself off with no error and no log line.
+ *
+ * A version in front of the digest does not repair old rows, and it is not
+ * meant to: they belong to a pepper nobody has any more. It makes the break
+ * VISIBLE - two versions in one column say plainly that the values were written
+ * under different secrets, and a query can find how many of each. Bump it in
+ * the same change as a rotation.
+ */
+const ID_HASH_VERSION = 'v1';
 
 @Injectable()
 export class KycService {
@@ -517,15 +541,19 @@ export class KycService {
 
     // The search is on the applicant, not on the application: an admin who
     // must switch an inspector off knows the person, and never the id of a row.
+    // An applicant who deleted the account is not a queue entry. Nothing can be
+    // decided about them: `reject` would revoke access that erasure already
+    // took, and `approve` would grant it to a user who is gone.
+    const userWhere: Prisma.UserWhereInput = { deletedAt: null };
+
     const term = q?.trim();
     if (term) {
-      where.user = {
-        OR: [
-          { email: { contains: term, mode: 'insensitive' } },
-          { name: { contains: term, mode: 'insensitive' } },
-        ],
-      };
+      userWhere.OR = [
+        { email: { contains: term, mode: 'insensitive' } },
+        { name: { contains: term, mode: 'insensitive' } },
+      ];
     }
+    where.user = userWhere;
 
     const applications = await this.prisma.kycApplication.findMany({
       where,
@@ -545,7 +573,23 @@ export class KycService {
       orderBy: [{ submittedAt: 'desc' }, { createdAt: 'desc' }],
       take: limit ?? KYC_QUEUE_DEFAULT_LIMIT,
       skip: offset ?? 0,
-      include: { documents: true, user: true },
+      // `select`, and not `include: { user: true }`. The answer carries three
+      // user fields; `include` fetched every column of the row, which means
+      // `passwordHash` and `totpSecret` were read into memory for as many as
+      // KYC_QUEUE_MAX_LIMIT applicants on every page of the admin queue. They
+      // never reached the wire, and they never needed to leave the database
+      // either - a secret that is not selected cannot be logged, serialised by
+      // accident, or caught in a heap dump.
+      select: {
+        id: true,
+        status: true,
+        submittedAt: true,
+        createdAt: true,
+        reviewedBy: true,
+        reviewedAt: true,
+        documents: { select: { kind: true } },
+        user: { select: { id: true, email: true, name: true } },
+      },
     });
 
     // Counted with the same `where`, so the number describes the set the caller
@@ -861,7 +905,10 @@ export class KycService {
     const identity = await this.mrzOcr.read(image);
     if (!identity) return null;
     const pepper = this.config.get<string>('kyc.idHashPepper') ?? '';
-    return createHash('sha256').update(`${pepper}|${mrzIdentityKey(identity)}`).digest('hex');
+    const digest = createHash('sha256')
+      .update(`${pepper}|${mrzIdentityKey(identity)}`)
+      .digest('hex');
+    return `${ID_HASH_VERSION}:${digest}`;
   }
 
   private mask(id: string): string {

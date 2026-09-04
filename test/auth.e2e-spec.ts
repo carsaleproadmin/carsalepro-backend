@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { KYC_RETENTION_DAYS } from '../src/kyc/kyc.constants';
 import request from 'supertest';
 // The same hasher the service uses, so the seeded legacy account is one a real
 // sign-in can verify.
@@ -281,6 +282,21 @@ describe('Auth + users (e2e)', () => {
     expect(res.body.orderSurgeMultiplier).toBeUndefined();
     expect(res.body.orderPeakMultiplier).toBeUndefined();
     expect(res.body.orderPeakStartHour).toBeUndefined();
+  });
+
+  /*
+   * The number the website prints to an applicant beside an upload control, and
+   * the number the nightly purge enforces, must be ONE number. The website held
+   * its own literal until 2026-09-05 and nothing compared the two.
+   */
+  it('12c-bis. settings/public publishes the KYC retention period', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/settings/public')
+      .expect(200);
+
+    expect(res.body.kycRetentionDays).toBe(KYC_RETENTION_DAYS);
+    expect(typeof res.body.kycRetentionDays).toBe('number');
+    expect(res.body.kycRetentionDays).toBeGreaterThan(0);
   });
 
   it('12d. exposes listing package prices without a token', async () => {

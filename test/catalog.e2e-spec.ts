@@ -32,8 +32,10 @@ const REQUIRED_EXTERIOR_ORDER = [
 
 /**
  * The hints fall into FAMILIES that say different things — that difference is
- * the instruction. On a FRONT diagonal the near front wheel is turned outward so
- * the rim reads; on every other flank view the wheels are square; on a boot or
+ * the instruction. On a FRONT diagonal the near front wheel is turned INWARD so
+ * the rim and the brake disc read - turning it out hides the wheel face behind
+ * the arch and shows the tyre sidewall, which is not what the angle documents
+ * (2026-08-19). On every other flank view the wheels are square; on a boot or
  * bonnet angle nothing is visible until something is opened or lifted; five
  * cabin angles are shot from the rear seat, because the console cannot be framed
  * from the driver's door. QA scenario 10 checks exactly that, which is why the
@@ -48,8 +50,14 @@ const REQUIRED_EXTERIOR_ORDER = [
  * defect. The two now hold the straight family's text BYTE-IDENTICALLY, on
  * purpose — that is what stops the change creating a translation unit in each of
  * the 31 sidecars.
+ *
+ * The DIRECTION moved on 2026-08-19 for the front pair, and this file kept the
+ * old word. The constant and its three assertions still read `outward` while
+ * the catalogue read `inward`, so the suite failed against a string that was
+ * deliberately correct. Named for the direction it asserts, so the next change
+ * of direction cannot leave the name describing the opposite of the test.
  */
-const OUTWARD_WHEEL_ANGLES = ['diag_front_left', 'diag_front_right'];
+const INWARD_WHEEL_ANGLES = ['diag_front_left', 'diag_front_right'];
 const WHEELS_SQUARE_ANGLES = [
   'left',
   'right',
@@ -81,7 +89,7 @@ const OPENING_ANGLES = [
   'engine_bay_right',
 ];
 const HINTED_ANGLES = [
-  ...OUTWARD_WHEEL_ANGLES,
+  ...INWARD_WHEEL_ANGLES,
   ...WHEELS_SQUARE_ANGLES,
   ...OPENING_ANGLES,
   ...REAR_SEAT_ANGLES,
@@ -333,11 +341,11 @@ describe('Catalog (e2e)', () => {
       // Front diagonals: turn the near front wheel out. Every other flank view,
       // the two rear diagonals included since 2026-08-17: wheels square.
       // Asserted per locale, because a half-translated hint is what QA sees.
-      for (const id of OUTWARD_WHEEL_ANGLES) {
+      for (const id of INWARD_WHEEL_ANGLES) {
         expect(hintOf(id)?.de).toContain('Vorderrad');
-        expect(hintOf(id)?.en?.toLowerCase()).toContain('outward');
-        expect(hintOf(id)?.ru).toContain('наружу');
-        expect(hintOf(id)?.uk).toContain('назовні');
+        expect(hintOf(id)?.en?.toLowerCase()).toContain('inward');
+        expect(hintOf(id)?.ru).toContain('внутрь');
+        expect(hintOf(id)?.uk).toContain('всередину');
       }
       for (const id of WHEELS_SQUARE_ANGLES) {
         expect(hintOf(id)?.de).toContain('gerade');
@@ -365,7 +373,7 @@ describe('Catalog (e2e)', () => {
       // the rear diagonals SHARE a text on purpose, which is why the comparison
       // is between families and never between angles.
       const families = [
-        textsOf(OUTWARD_WHEEL_ANGLES),
+        textsOf(INWARD_WHEEL_ANGLES),
         textsOf(WHEELS_SQUARE_ANGLES),
         textsOf(OPENING_ANGLES),
         textsOf(REAR_SEAT_ANGLES),
@@ -573,14 +581,24 @@ describe('Catalog (e2e)', () => {
   });
 
   describe('thickness panels', () => {
-    it('exposes 13 stations with unique ids and contiguous order 1..13', async () => {
+    /*
+     * SEVENTEEN since 2026-08-19, not thirteen. The four door sills were added
+     * where the client asked for them rather than appended, so the orders of
+     * every station after the first sill moved as well. This file kept the old
+     * count and the old walk, and failed against a catalogue that was correct.
+     *
+     * The quality weight did not move with the expansion, so an already
+     * complete report drops from 100 to 96. That is a consequence and not a
+     * defect - see CLAUDE.md.
+     */
+    it('exposes 17 stations with unique ids and contiguous order 1..17', async () => {
       const catalog = await getCatalog();
       expect(Array.isArray(catalog.thicknessPanels)).toBe(true);
-      expect(catalog.thicknessPanels.length).toBe(13);
-      expect(new Set(catalog.thicknessPanels.map((p) => p.id)).size).toBe(13);
-      expect([...catalog.thicknessPanels.map((p) => p.order)].sort((a, b) => a - b)).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
-      ]);
+      expect(catalog.thicknessPanels.length).toBe(17);
+      expect(new Set(catalog.thicknessPanels.map((p) => p.id)).size).toBe(17);
+      expect([...catalog.thicknessPanels.map((p) => p.order)].sort((a, b) => a - b)).toEqual(
+        Array.from({ length: 17 }, (_, i) => i + 1),
+      );
     });
 
     it('every panelId maps to a real part and carries four-locale labels', async () => {
@@ -600,23 +618,41 @@ describe('Catalog (e2e)', () => {
     it('walks the vehicle roof → left → front → right → tailgate', async () => {
       const catalog = await getCatalog();
       const inOrder = [...catalog.thicknessPanels].sort((a, b) => a.order - b.order);
+      // The left flank is deliberately NOT a mirror of the right: the sills sit
+      // where the client dictated them, which is outside the b-pillar opening
+      // on the left and inside it on the right.
       expect(inOrder.map((p) => p.id)).toEqual([
         'roof_rear_left',
         'fender_rear_left',
         'door_rear_left',
+        'sill_rear_left',
         'opening_left',
+        'sill_front_left',
         'door_front_left',
         'fender_front_left',
         'hood',
         'fender_front_right',
         'door_front_right',
+        'sill_front_right',
         'opening_right',
         'door_rear_right',
+        'sill_rear_right',
         'fender_rear_right',
         'trunk_lid',
       ]);
-      expect(inOrder[3].partId).toBe('pillar_b_left');
-      expect(inOrder[9].partId).toBe('pillar_b_right');
+
+      // Found by id and not by index, so inserting a station cannot make these
+      // two assertions silently describe a different one.
+      const partOf = (id: string) => inOrder.find((p) => p.id === id)?.partId;
+      expect(partOf('opening_left')).toBe('pillar_b_left');
+      expect(partOf('opening_right')).toBe('pillar_b_right');
+
+      // Two stations per side share ONE painted part: a sill belongs to the
+      // rocker panel, and `sill_left`/`sill_right` are the decorative trim.
+      expect(partOf('sill_rear_left')).toBe('rocker_panel_left');
+      expect(partOf('sill_front_left')).toBe('rocker_panel_left');
+      expect(partOf('sill_rear_right')).toBe('rocker_panel_right');
+      expect(partOf('sill_front_right')).toBe('rocker_panel_right');
     });
   });
 });
