@@ -683,6 +683,40 @@ describe('KYC verification (e2e)', () => {
     expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(true);
   });
 
+  /**
+   * K-6. `reviewedBy` holds the LAST decision, thus a revocation erases the
+   * machine approval that came before it. The audit trail is append-only and
+   * is the only place both survive.
+   */
+  it('9d. every KYC decision leaves an audit row, the automatic one included', async () => {
+    const user = await makeUser();
+    const admin = await makeAdminUser();
+    const appId = await createWithDocs(user);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${appId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Documents do not show the applicant.' })
+      .expect(201);
+
+    const rows = await prisma.adminAuditLog.findMany({
+      where: { entity: 'kyc', entityId: appId },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(rows.map((r) => r.action)).toEqual(['kyc.auto_approve', 'kyc.reject']);
+    // The machine approval is still readable after the revocation overwrote
+    // `reviewedBy` - that is the whole point of the row.
+    expect(rows[0].adminId).toBe('auto');
+    expect(rows[1].adminId).toBe(admin.userId);
+    expect((rows[1].after as { previousStatus?: string }).previousStatus).toBe('APPROVED');
+    const current = await prisma.kycApplication.findUnique({ where: { id: appId } });
+    expect(current!.reviewedBy).toBe(admin.userId);
+  });
+
   it('10. illegal transitions return 409 (submit a SUBMITTED, approve an APPROVED)', async () => {
     const user = await makeUser();
     const admin = await makeAdminUser();

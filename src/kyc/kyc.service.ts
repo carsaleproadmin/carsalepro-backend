@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { KycApplication, KycDocument, KycStatus, Prisma } from '@prisma/client';
+import { AdminAuditService } from '../admin/admin-audit.service';
 import { PhotoProcessingService } from '../common/photo/photo-processing.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -50,7 +51,38 @@ export class KycService {
     private readonly r2: R2Service,
     private readonly notifications: NotificationsService,
     private readonly photoProcessing: PhotoProcessingService,
+    private readonly audit: AdminAuditService,
   ) {}
+
+  /**
+   * Record one KYC decision in the admin audit trail.
+   *
+   * Written here rather than in the controller, which is where the rest of the
+   * admin panel writes its rows: one of the three decisions - the automatic
+   * approval - has no admin and no admin request behind it, and splitting the
+   * trail between two layers would make "who decided" answerable only by
+   * reading both.
+   *
+   * `reviewedBy` on the application is not a record of a decision, it is the
+   * LAST decision: a revocation overwrites the machine approval that preceded
+   * it, and the fact that nobody read the documents disappears with it. This is
+   * append-only and keeps both.
+   *
+   * `AdminAuditService.log` swallows its own failures, thus a broken audit
+   * write cannot fail the decision it records.
+   */
+  private auditDecision(
+    actorId: string,
+    action: string,
+    applicationId: string,
+    userId: string,
+    after: Record<string, unknown>,
+  ): Promise<void> {
+    return this.audit.log(actorId, action, 'kyc', applicationId, null, {
+      userId,
+      ...after,
+    });
+  }
 
   // ============================================================
   // Inspector-facing
@@ -284,6 +316,10 @@ export class KycService {
       });
       // `user.kycVerified` is deliberately NOT touched. `reject` cleared it,
       // and only an admin's `approve` may set it again on this path.
+      await this.auditDecision(KYC_AUTO_REVIEWER, 'kyc.held_for_review', applicationId, userId, {
+        status: KycStatus.SUBMITTED,
+        priorRejections,
+      });
       await this.notifications.notify(userId, 'kyc.submitted', { applicationId });
       this.logger.log(
         `KYC application ${applicationId} submitted, HELD FOR REVIEW ` +
@@ -317,6 +353,11 @@ export class KycService {
 
     // Same event as a manual approval - the inspector's experience is that the
     // application was accepted, and it was.
+    await this.auditDecision(KYC_AUTO_REVIEWER, 'kyc.auto_approve', applicationId, userId, {
+      status: KycStatus.APPROVED,
+      kycVerified: true,
+      reviewedBy: KYC_AUTO_REVIEWER,
+    });
     await this.notifications.notify(userId, 'kyc.approved', { applicationId });
     this.logger.log(
       `KYC application ${applicationId} submitted and AUTO-APPROVED user=${this.mask(userId)}`,
@@ -327,6 +368,27 @@ export class KycService {
       submittedAt: submittedAt.toISOString(),
     };
   }
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE MANUAL REVIEW PATH IS HALF REACHABLE, AND THAT IS A DECISION
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * `getApplicationForAdmin` (SUBMITTED→IN_REVIEW) and `approve` below act on
+   * SUBMITTED. Since automatic approval only ONE route produces that status: a
+   * re-application from someone who was rejected before (DEN-239). A FIRST
+   * application never passes through it.
+   *
+   * The path is kept deliberately. It is the way back if automatic approval is
+   * withdrawn, and it is what an admin uses on every held application.
+   *
+   * What a reader must know: `test/kyc.e2e-spec.ts` seeds SUBMITTED straight
+   * into the database (`forceSubmitted`) for the first-application cases, so
+   * those tests prove the machinery works on a state that this API cannot
+   * produce for a first-time applicant. Test `9c` is the one that goes through
+   * the real route end to end. If this path is ever deleted, those seeds are
+   * the list of what goes with it.
+   */
 
   /** The user's latest application (kinds + uploadedAt only — no raw s3Keys). */
   async getMyApplication(userId: string): Promise<KycApplicationDto | null> {
@@ -498,6 +560,11 @@ export class KycService {
       }),
     ]);
 
+    await this.auditDecision(adminId, 'kyc.approve', applicationId, application.userId, {
+      status: KycStatus.APPROVED,
+      kycVerified: true,
+      previousStatus: application.status,
+    });
     // E11: notify the inspector their KYC was approved (non-throwing).
     await this.notifications.notify(application.userId, 'kyc.approved', {
       applicationId,
@@ -554,6 +621,12 @@ export class KycService {
       }),
     ]);
 
+    await this.auditDecision(adminId, 'kyc.reject', applicationId, application.userId, {
+      status: KycStatus.REJECTED,
+      kycVerified: false,
+      previousStatus: application.status,
+      reason,
+    });
     // E11: notify the inspector their KYC was rejected, with the reason (non-throwing).
     await this.notifications.notify(application.userId, 'kyc.rejected', {
       applicationId,
