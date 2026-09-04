@@ -69,16 +69,6 @@ export interface CreateGoldCheckoutParams {
   cancelUrl: string;
 }
 
-export interface CreateVinHistoryCheckoutParams {
-  paymentId: string;
-  purchaseId: string;
-  userId: string;
-  vin: string;
-  amountCents: number;
-  successUrl: string;
-  cancelUrl: string;
-}
-
 /**
  * The verdict on a failed Stripe call. `retryable` is the only field callers
  * are allowed to branch a retry on; `code` and `message` are for mapping to an
@@ -311,46 +301,6 @@ export class StripeService implements OnModuleInit {
           listingId: params.listingId,
           userId: params.userId,
           purpose: 'gold',
-        },
-      },
-      this.idempotently(params.paymentId),
-    );
-    if (!session.url) throw new Error('Stripe did not return a Checkout URL');
-    return { checkoutUrl: session.url, sessionId: session.id };
-  }
-
-  /**
-   * Create a one-time payment Checkout Session for a paid VIN history.
-   *
-   * `purchaseId` rides in the metadata alongside `paymentId` so the webhook can
-   * settle the exact purchase row rather than re-deriving it from (user, VIN) —
-   * a retry after the user started a second unlock would otherwise settle the
-   * wrong one.
-   */
-  async createVinHistoryCheckout(
-    params: CreateVinHistoryCheckoutParams,
-  ): Promise<{ checkoutUrl: string; sessionId: string }> {
-    const session = await this.requireClient().checkout.sessions.create(
-      {
-        mode: 'payment',
-        success_url: params.successUrl,
-        cancel_url: params.cancelUrl,
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'eur',
-              unit_amount: params.amountCents,
-              product_data: { name: `CarSalePro VIN history ${params.vin}` },
-            },
-          },
-        ],
-        metadata: {
-          paymentId: params.paymentId,
-          purchaseId: params.purchaseId,
-          userId: params.userId,
-          vin: params.vin,
-          purpose: 'vin_history',
         },
       },
       this.idempotently(params.paymentId),

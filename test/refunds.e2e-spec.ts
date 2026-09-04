@@ -41,17 +41,6 @@ function uniqueReportCode(): string {
   return `CSP-${Date.now().toString().slice(-3)}${codeCounter}`.slice(0, 10);
 }
 
-/** Valid ISO 3779 VIN (no I/O/Q), unique per run so the provider cache is cold. */
-function uniqueVin(seed = ''): string {
-  const rand = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${seed}`
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '')
-    .replace(/[IOQ]/g, 'X');
-  return `WAU${(rand + 'ABCDEFGHJKLMNPRSTUVWXYZ0123456789').slice(0, 14)}`
-    .slice(0, 17)
-    .padEnd(17, '0');
-}
-
 interface Registered {
   token: string;
   userId: string;
@@ -70,7 +59,6 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
   const createdWaitlistEmails = new Set<string>();
   const createdReportIds = new Set<string>();
   const createdEventIds = new Set<string>();
-  const createdVins = new Set<string>();
   const inspectorTokens = new Map<string, string>();
 
   const FARE = colocatedQuote();
@@ -99,9 +87,6 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
     if (createdEventIds.size) {
       await prisma.stripeWebhookEvent.deleteMany({ where: { id: { in: [...createdEventIds] } } });
     }
-    if (createdVins.size) {
-      await prisma.vinHistoryReport.deleteMany({ where: { vin: { in: [...createdVins] } } });
-    }
     if (createdWaitlistEmails.size) {
       await prisma.waitlistEntry.deleteMany({
         where: { email: { in: [...createdWaitlistEmails] } },
@@ -114,7 +99,6 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
         where: { payment: { userId: { in: userIds } } },
       });
       await prisma.reportPurchase.deleteMany({ where: { userId: { in: userIds } } });
-      await prisma.vinHistoryPurchase.deleteMany({ where: { userId: { in: userIds } } });
       await prisma.payout.deleteMany({ where: { inspectorId: { in: userIds } } });
       await prisma.orderOffer.deleteMany({ where: { inspectorId: { in: userIds } } });
       await prisma.inspectorProfile.deleteMany({ where: { userId: { in: userIds } } });
@@ -132,7 +116,6 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
     createdWaitlistEmails.clear();
     createdReportIds.clear();
     createdEventIds.clear();
-    createdVins.clear();
     inspectorTokens.clear();
     stripe.reset();
   });
@@ -955,52 +938,6 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
         .get(`/api/v1/reports/${report.id}/full`)
         .set('Authorization', `Bearer ${owner.token}`)
         .expect(200);
-    });
-
-    it('26. a refunded VIN history is re-buyable — pinning behaviour we rely on', async () => {
-      const buyer = await makeCustomer();
-      const vin = uniqueVin('r');
-      createdVins.add(vin);
-
-      const first = await request(app.getHttpServer())
-        .post(`/api/v1/vin-history/${vin}/unlock`)
-        .set('Authorization', `Bearer ${buyer.token}`)
-        .expect(201);
-      const purchaseId = first.body.purchaseId as string;
-
-      const firstPayment = await prisma.payment.findFirstOrThrow({
-        where: { userId: buyer.userId, purpose: 'vin_history' },
-        orderBy: { createdAt: 'desc' },
-      });
-      await completeCheckout(firstPayment.id, { purchaseId, vin, purpose: 'vin_history' });
-      expect(
-        (await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } })).status,
-      ).toBe('ready');
-
-      // Refund → the purchase is revoked by the same code path as a PPV report.
-      await payments.markPaymentRefunded(firstPayment.id);
-      expect(
-        (await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } })).status,
-      ).toBe('refunded');
-
-      // And it can be bought again: `unlock` reopens everything but `ready`, and
-      // `reusableOrNewPayment` refuses to reuse a refunded payment.
-      const second = await request(app.getHttpServer())
-        .post(`/api/v1/vin-history/${vin}/unlock`)
-        .set('Authorization', `Bearer ${buyer.token}`)
-        .expect(201);
-      expect(second.body.purchaseId).toBe(purchaseId); // same row, unique (user, vin)
-      expect(second.body.alreadyOwned).toBeFalsy();
-
-      const secondPayment = await prisma.payment.findFirstOrThrow({
-        where: { userId: buyer.userId, purpose: 'vin_history', status: 'pending' },
-        orderBy: { createdAt: 'desc' },
-      });
-      expect(secondPayment.id).not.toBe(firstPayment.id);
-      await completeCheckout(secondPayment.id, { purchaseId, vin, purpose: 'vin_history' });
-      expect(
-        (await prisma.vinHistoryPurchase.findUniqueOrThrow({ where: { id: purchaseId } })).status,
-      ).toBe('ready');
     });
   });
 

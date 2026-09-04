@@ -275,7 +275,6 @@ describe('Auth + users (e2e)', () => {
       Math.round(res.body.orderRatePerMinuteEur * 100),
     );
     expect(prices.orderMinimumFareCents).toBe(Math.round(res.body.orderMinimumFareEur * 100));
-    expect(prices.vinHistoryCents).toBe(Math.round(res.body.vinHistoryPriceEur * 100));
 
     // Operator levers stay private — publishing them would let a caller time a
     // booking around the peak window.

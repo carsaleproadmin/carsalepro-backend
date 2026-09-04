@@ -202,7 +202,6 @@ export const CRITICAL_ENV_VARS: EnvVarSpec[] = [
 
   { name: 'REDIS_URL', impact: 'link-codes fall back to in-memory (breaks multi-instance)' },
   { name: 'SENTRY_DSN', impact: 'errors are never reported' },
-  { name: 'VIN_HISTORY_API_KEY', impact: 'paid VIN provenance provider' },
 ];
 
 export function inspectCriticalEnv(
