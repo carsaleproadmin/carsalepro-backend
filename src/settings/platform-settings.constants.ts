@@ -67,7 +67,27 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    */
   orderRatePerKmEur: 0.3,
   orderRatePerMinuteEur: 0.35,
-  orderMinimumFareEur: 49,
+  /**
+   * The floor under the fare. Owner's decision of 2026-09-04: 5, down from 49.
+   *
+   * 49 was the price of a short job outright - it decided the fare for every
+   * order inside roughly 37 km, because the base plus the travel does not reach
+   * it before then. Two consequences followed, and lowering the floor is what
+   * removes both.
+   *
+   * An inspector's own base fee was invisible: 5 and 39 produced the same 49 on
+   * a nearby job, so the one number DEN-213 gave them to set changed nothing
+   * where most orders are. And the floor, not the tariff, was answering what an
+   * inspection costs - regional pricing included, since it topped up every
+   * cheaper country to the same figure.
+   *
+   * What it stops protecting is the question the floor was there to answer: at
+   * what point is a job worth the drive. Nothing else answers it now - a job
+   * next door prices at the base plus a few minutes - so if short jobs turn out
+   * to be unprofitable, the answer is a higher base or a per-order call-out
+   * charge, not this number quietly going back up.
+   */
+  orderMinimumFareEur: 5,
   /** Manual admin lever. 1 = off. Applied on top of the peak multiplier. */
   orderSurgeMultiplier: 1,
   /** 1 = off. Set above 1 to charge more inside the peak window below. */
