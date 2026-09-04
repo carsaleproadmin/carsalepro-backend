@@ -131,6 +131,12 @@ export const envValidationSchema = Joi.object({
   // from Render at leisure.
 
   // Boot-time self-check. `false` downgrades fatal findings to error logs.
+  // KYC document-number check (DEN-250). All three are optional: with none of
+  // them set the read is attempted with data fetched from a CDN, and a failed
+  // read changes nothing.
+  KYC_MRZ_OCR_ENABLED: Joi.string().valid('true', 'false').default('true'),
+  KYC_MRZ_TESSDATA_PATH: Joi.string().allow('').default(''),
+  KYC_ID_HASH_PEPPER: Joi.string().allow('').default(''),
   STARTUP_CHECK_STRICT: Joi.string().valid('true', 'false').default('true'),
   // Explicit acknowledgement that identity documents share the reports bucket.
   ALLOW_SHARED_KYC_BUCKET: Joi.string().valid('true', 'false').default('false'),

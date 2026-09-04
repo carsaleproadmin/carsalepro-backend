@@ -117,6 +117,29 @@ export interface AppConfig {
     bucket: string;
   };
   /**
+   * KYC checks that read the documents themselves (DEN-250).
+   *
+   * `mrzOcrEnabled` false stops the machine-readable zone from being read at
+   * all; the platform then behaves as it did before the check existed, which
+   * is also what happens whenever a read simply fails.
+   *
+   * `mrzTessdataPath` points at a directory holding `eng.traineddata`. Unset,
+   * `tesseract.js` downloads it from a CDN on first use - acceptable, but it
+   * makes the first upload after a deploy depend on a third party.
+   *
+   * `idHashPepper` is mixed into the stored document-number digest. A document
+   * number is short and structured, so an unpeppered digest of one is worth
+   * guessing; the pepper makes a stolen table useless without the server's
+   * secret. CHANGING IT RETIRES EVERY HASH ALREADY STORED - they simply stop
+   * matching, which fails towards letting an applicant through rather than
+   * towards accusing one.
+   */
+  kyc: {
+    mrzOcrEnabled: boolean;
+    mrzTessdataPath: string;
+    idHashPepper: string;
+  };
+  /**
    * Boot-time self-check (`src/health/startup-check.service.ts`).
    *
    * `strict` false downgrades every fatal finding to an error log — the
@@ -283,6 +306,11 @@ export default (): AppConfig => ({
     accessKeyId: process.env.R2_KYC_ACCESS_KEY_ID ?? '',
     secretAccessKey: process.env.R2_KYC_SECRET_ACCESS_KEY ?? '',
     bucket: process.env.R2_KYC_BUCKET ?? '',
+  },
+  kyc: {
+    mrzOcrEnabled: (process.env.KYC_MRZ_OCR_ENABLED ?? 'true') === 'true',
+    mrzTessdataPath: process.env.KYC_MRZ_TESSDATA_PATH ?? '',
+    idHashPepper: process.env.KYC_ID_HASH_PEPPER ?? '',
   },
   startupCheck: {
     strict: (process.env.STARTUP_CHECK_STRICT ?? 'true') === 'true',
