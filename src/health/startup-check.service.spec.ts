@@ -197,9 +197,9 @@ describe('StartupCheckService', () => {
       const report = await build({
         iap: {
           mode: 'server',
-          bundleId: 'us.designkey.carsalepro',
+          bundleId: 'net.carsalepro.app',
           retiredBundleIdInEnv: true,
-          google: { packageName: 'us.designkey.carsalepro', subscriptionProductIds: [] },
+          google: { packageName: 'net.carsalepro.app', subscriptionProductIds: [] },
         },
       }).run();
 
@@ -208,6 +208,7 @@ describe('StartupCheckService', () => {
       expect(bundle[0].severity).toBe('warn');
       expect(bundle[0].message).toContain('com.carsalepro.app');
       expect(bundle[0].message).toContain('us.designkey.carsalepro');
+      expect(bundle[0].message).toContain('net.carsalepro.app');
       expect(report.counts.fatal).toBe(0);
     });
 
@@ -215,9 +216,9 @@ describe('StartupCheckService', () => {
       const report = await build({
         iap: {
           mode: 'server',
-          bundleId: 'us.designkey.carsalepro',
+          bundleId: 'net.carsalepro.app',
           retiredBundleIdInEnv: false,
-          google: { packageName: 'us.designkey.carsalepro', subscriptionProductIds: [] },
+          google: { packageName: 'net.carsalepro.app', subscriptionProductIds: [] },
         },
       }).run();
 

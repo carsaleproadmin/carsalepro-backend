@@ -2,9 +2,10 @@ import configuration from './configuration';
 
 /**
  * The IAP bundle id is the only value in this file that IGNORES what the
- * environment says, so it is the only one that needs a spec: `com.carsalepro.app`
- * is a package that has never existed in either store, and obeying it rejects
- * every Apple and Google receipt on a bundle mismatch.
+ * environment says, so it is the only one that needs a spec. `com.carsalepro.app`
+ * has never existed in either store and `us.designkey.carsalepro` is no longer
+ * published, and obeying either rejects every Apple and Google receipt on a
+ * bundle mismatch.
  */
 describe('configuration() - IAP bundle id', () => {
   const ORIGINAL_ENV = process.env;
@@ -21,8 +22,8 @@ describe('configuration() - IAP bundle id', () => {
 
   it('resolves the shipped id when nothing is set', () => {
     const { iap } = configuration();
-    expect(iap.bundleId).toBe('us.designkey.carsalepro');
-    expect(iap.google.packageName).toBe('us.designkey.carsalepro');
+    expect(iap.bundleId).toBe('net.carsalepro.app');
+    expect(iap.google.packageName).toBe('net.carsalepro.app');
     expect(iap.retiredBundleIdInEnv).toBe(false);
   });
 
@@ -32,27 +33,41 @@ describe('configuration() - IAP bundle id', () => {
 
     // Google's package name falls through to IAP_BUNDLE_ID, which is how ONE
     // stale variable pointed both stores at nothing.
-    expect(iap.bundleId).toBe('us.designkey.carsalepro');
-    expect(iap.google.packageName).toBe('us.designkey.carsalepro');
+    expect(iap.bundleId).toBe('net.carsalepro.app');
+    expect(iap.google.packageName).toBe('net.carsalepro.app');
     expect(iap.retiredBundleIdInEnv).toBe(true);
   });
 
   it('ignores the retired package in GOOGLE_PLAY_PACKAGE_NAME too', () => {
-    process.env.IAP_BUNDLE_ID = 'us.designkey.carsalepro';
+    process.env.IAP_BUNDLE_ID = 'net.carsalepro.app.staging';
     process.env.GOOGLE_PLAY_PACKAGE_NAME = ' com.carsalepro.app ';
     const { iap } = configuration();
 
-    expect(iap.google.packageName).toBe('us.designkey.carsalepro');
+    expect(iap.google.packageName).toBe('net.carsalepro.app.staging');
     expect(iap.retiredBundleIdInEnv).toBe(true);
   });
 
   it('believes any other value, so a second app or a staging id still works', () => {
-    process.env.IAP_BUNDLE_ID = 'us.designkey.carsalepro.staging';
+    process.env.IAP_BUNDLE_ID = 'net.carsalepro.app.staging';
     const { iap } = configuration();
 
-    expect(iap.bundleId).toBe('us.designkey.carsalepro.staging');
-    expect(iap.google.packageName).toBe('us.designkey.carsalepro.staging');
+    expect(iap.bundleId).toBe('net.carsalepro.app.staging');
+    expect(iap.google.packageName).toBe('net.carsalepro.app.staging');
     expect(iap.retiredBundleIdInEnv).toBe(false);
+  });
+
+  /**
+   * The rename of 2026-09-04. Render's environment held the previous shipped id
+   * as an explicit variable, and the same silent rejection would have come back
+   * one rename later if it were still obeyed.
+   */
+  it('ignores the previous shipped id, which nothing publishes now', () => {
+    process.env.IAP_BUNDLE_ID = 'us.designkey.carsalepro';
+    const { iap } = configuration();
+
+    expect(iap.bundleId).toBe('net.carsalepro.app');
+    expect(iap.google.packageName).toBe('net.carsalepro.app');
+    expect(iap.retiredBundleIdInEnv).toBe(true);
   });
 
   it('treats a blank variable as absent', () => {
@@ -60,8 +75,8 @@ describe('configuration() - IAP bundle id', () => {
     process.env.GOOGLE_PLAY_PACKAGE_NAME = '';
     const { iap } = configuration();
 
-    expect(iap.bundleId).toBe('us.designkey.carsalepro');
-    expect(iap.google.packageName).toBe('us.designkey.carsalepro');
+    expect(iap.bundleId).toBe('net.carsalepro.app');
+    expect(iap.google.packageName).toBe('net.carsalepro.app');
     expect(iap.retiredBundleIdInEnv).toBe(false);
   });
 });

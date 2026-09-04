@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
-import { AppConfig } from '../config/configuration';
+import { AppConfig, RETIRED_BUNDLE_IDS } from '../config/configuration';
 import { FONT_MANIFEST } from '../fonts/fonts.manifest';
 import { R2Service } from '../r2/r2.service';
 import {
@@ -582,7 +582,7 @@ export class StartupCheckService implements OnApplicationBootstrap {
   /** Informational: which provenance provider is live, and whether it may sell. */
   /**
    * `IAP_BUNDLE_ID` defaulted to `com.carsalepro.app` — a package that has never
-   * existed — against the shipped `us.designkey.carsalepro`, and because
+   * existed — against the shipped id, and because
    * `GOOGLE_PLAY_PACKAGE_NAME` falls through to it, BOTH Apple and Google
    * server-side validation pointed at nothing. It was invisible because
    * `IAP_VALIDATION_MODE` defaults to `client-trust`, which never contacts a
@@ -624,10 +624,11 @@ export class StartupCheckService implements OnApplicationBootstrap {
         id: 'iap.bundle',
         intended: 'warn',
         message:
-          'IAP_BUNDLE_ID / GOOGLE_PLAY_PACKAGE_NAME still holds the retired ' +
-          'com.carsalepro.app, a package that has never existed. It is IGNORED ' +
-          `and ${iap.bundleId} is used instead - clear the variable so the ` +
-          'environment stops describing a store nobody publishes to.',
+          'IAP_BUNDLE_ID / GOOGLE_PLAY_PACKAGE_NAME still holds a retired ' +
+          `package (${RETIRED_BUNDLE_IDS.join(' or ')}). No store publishes ` +
+          `it, so it is IGNORED and ${iap.bundleId} is used instead - clear ` +
+          'the variable so the environment stops describing a store nobody ' +
+          'publishes to.',
       });
     }
 
