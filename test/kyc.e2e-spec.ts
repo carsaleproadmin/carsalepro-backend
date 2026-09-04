@@ -172,8 +172,10 @@ describe('KYC verification (e2e)', () => {
     user: Registered,
     appId: string,
     kinds: string[] = ['id_front', 'id_back', 'selfie', 'gewerbeschein'],
+    fingerprint?: (kind: string) => string,
   ): Promise<void> {
     for (const kind of kinds) {
+      const sha256 = fingerprint ? fingerprint(kind) : null;
       await prisma.kycDocument.upsert({
         where: { applicationId_kind: { applicationId: appId, kind } },
         create: {
@@ -181,8 +183,9 @@ describe('KYC verification (e2e)', () => {
           kind,
           s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg`,
           bucket: expectedBucket,
+          sha256,
         },
-        update: { s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg` },
+        update: { s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg`, sha256 },
       });
     }
   }
@@ -191,13 +194,14 @@ describe('KYC verification (e2e)', () => {
   async function createWithDocs(
     user: Registered,
     kinds: string[] = ['id_front', 'id_back', 'selfie', 'gewerbeschein'],
+    fingerprint?: (kind: string) => string,
   ): Promise<string> {
     const created = await request(app.getHttpServer())
       .post('/api/v1/kyc/applications')
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
     const appId = created.body.id as string;
-    await seedDocuments(user, appId, kinds);
+    await seedDocuments(user, appId, kinds, fingerprint);
     return appId;
   }
 
@@ -681,6 +685,99 @@ describe('KYC verification (e2e)', () => {
     const decided = await prisma.kycApplication.findUnique({ where: { id: secondId } });
     expect(decided!.reviewedBy).toBe(admin.userId);
     expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(true);
+  });
+
+  /**
+   * DEN-249. The check above is keyed by `user_id`. This is the same person
+   * with a second account, which is what makes the per-user check insufficient
+   * on its own: to THAT count a new registration is a first-time applicant.
+   */
+  it('9e. the same documents on a NEW account are held too, and the old account is not needed', async () => {
+    const revoked = await makeUser();
+    const admin = await makeAdminUser();
+    const files = (kind: string) => `de1249${kind.padEnd(20, '0')}`.padEnd(64, 'f');
+
+    const firstId = await createWithDocs(revoked, undefined, files);
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .set('Authorization', `Bearer ${revoked.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${firstId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Access revoked.' })
+      .expect(201);
+
+    // A different account. It has no history of its own at all.
+    const freshAccount = await makeUser();
+    const secondId = await createWithDocs(freshAccount, undefined, files);
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${secondId}/submit`)
+      .set('Authorization', `Bearer ${freshAccount.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('SUBMITTED');
+    const second = await prisma.kycApplication.findUnique({ where: { id: secondId } });
+    expect(second!.status).toBe(KycStatus.SUBMITTED);
+    expect(second!.reviewedBy).toBeNull();
+    expect(
+      (await prisma.user.findUnique({ where: { id: freshAccount.userId } }))!.kycVerified,
+    ).toBe(false);
+
+    // The audit row says WHICH check held it: the account is clean, the files
+    // are not.
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { entity: 'kyc', entityId: secondId, action: 'kyc.held_for_review' },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit).not.toBeNull();
+    const held = audit!.after as { priorRejections: number; reusedDocuments: number };
+    expect(held.priorRejections).toBe(0);
+    expect(held.reusedDocuments).toBeGreaterThan(0);
+
+    // And an admin can still let them in — a hold is not a ban.
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${secondId}/approve`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(201);
+    expect(
+      (await prisma.user.findUnique({ where: { id: freshAccount.userId } }))!.kycVerified,
+    ).toBe(true);
+  });
+
+  it('9f. different documents on a new account are auto-approved, and old rows without a hash match nobody', async () => {
+    const rejected = await makeUser();
+    const admin = await makeAdminUser();
+
+    // Documents recorded before DEN-249 have no fingerprint at all.
+    const legacyId = await createWithDocs(rejected);
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${legacyId}/submit`)
+      .set('Authorization', `Bearer ${rejected.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${legacyId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Access revoked.' })
+      .expect(201);
+
+    // An unrelated applicant with their own papers. A NULL hash on the
+    // rejected rows must not read as "matches everything".
+    const stranger = await makeUser();
+    const ownId = await createWithDocs(
+      stranger,
+      undefined,
+      (kind) => `de1249own${kind.padEnd(17, '0')}`.padEnd(64, 'a'),
+    );
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${ownId}/submit`)
+      .set('Authorization', `Bearer ${stranger.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('APPROVED');
+    expect((await prisma.user.findUnique({ where: { id: stranger.userId } }))!.kycVerified).toBe(
+      true,
+    );
   });
 
   /**

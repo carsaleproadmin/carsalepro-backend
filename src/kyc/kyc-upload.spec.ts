@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import {
+import { hashKycDocument,
   KycUploadPart,
   MAX_KYC_UPLOAD_BYTES,
   resolveKycObject,
@@ -195,5 +195,25 @@ describe('resolveKycObject', () => {
     const huge = Buffer.concat([HEADERS.jpeg, Buffer.alloc(MAX_KYC_UPLOAD_BYTES)]);
     // `size` deliberately lies: the check must read the buffer, not the claim.
     expect(codeOf(() => resolveKycObject(part({ buffer: huge, size: 10 })))).toBe('file_too_large');
+  });
+
+  describe('hashKycDocument', () => {
+    it('is stable for the same bytes and different for one flipped byte', () => {
+      const a = Buffer.from([0xff, 0xd8, 0xff, 0x01, 0x02, 0x03]);
+      const b = Buffer.from([0xff, 0xd8, 0xff, 0x01, 0x02, 0x03]);
+      const c = Buffer.from([0xff, 0xd8, 0xff, 0x01, 0x02, 0x04]);
+
+      expect(hashKycDocument(a)).toBe(hashKycDocument(b));
+      expect(hashKycDocument(a)).not.toBe(hashKycDocument(c));
+      expect(hashKycDocument(a)).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it('is the plain SHA-256 of the bytes, so it can be reproduced outside this code', () => {
+      // Somebody investigating a held application must be able to check a
+      // stored value with `sha256sum`, without running the server.
+      expect(hashKycDocument(Buffer.from('abc'))).toBe(
+        'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+      );
+    });
   });
 });
