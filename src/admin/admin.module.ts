@@ -5,7 +5,7 @@ import { OrdersModule } from '../orders/orders.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { UsersModule } from '../users/users.module';
 import { AdminAuditController } from './admin-audit.controller';
-import { AdminAuditService } from './admin-audit.service';
+import { AdminAuditModule } from './admin-audit.module';
 import { AdminDashboardController } from './admin-dashboard.controller';
 import { AdminDashboardService } from './admin-dashboard.service';
 import { AdminFinanceController } from './admin-finance.controller';
@@ -26,7 +26,14 @@ import { AdminUsersService } from './admin-users.service';
  * The imported feature modules export the services the admin controllers reuse.
  */
 @Module({
-  imports: [UsersModule, OrdersModule, PaymentsModule, ListingsModule, KycModule],
+  imports: [
+    UsersModule,
+    OrdersModule,
+    PaymentsModule,
+    ListingsModule,
+    KycModule,
+    AdminAuditModule,
+  ],
   controllers: [
     AdminUsersController,
     AdminOrdersController,
@@ -38,7 +45,6 @@ import { AdminUsersService } from './admin-users.service';
     AdminAuditController,
   ],
   providers: [
-    AdminAuditService,
     AdminUsersService,
     AdminOrdersService,
     AdminListingsService,
