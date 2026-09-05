@@ -11,8 +11,9 @@ The shared NestJS backend for the **CarSalePro** ecosystem. One service, one Pos
 
 - **Live API:** https://carsalepro-backend.onrender.com · **Swagger:** `/docs` · **OpenAPI JSON:** `/docs-json` · **Health:** `/health`
 - **Source:** https://github.com/carsaleproadmin/carsalepro-backend
-- **Render service:** `srv-d83o7j1kh4rs73cgjfng` (auto-deploys on push to `main`; start command runs `prisma migrate deploy`)
-- **Render Postgres:** `dpg-d83o5v3rjlhs73900aig-a` (PostgreSQL 16 + PostGIS)
+- **Render service:** `srv-d83o7j1kh4rs73cgjfng` — **paid `starter` plan, always on** (auto-deploys on push to `main`; start command runs `prisma migrate deploy`)
+- **Render Postgres:** `dpg-d83o5v3rjlhs73900aig-a` — **paid `basic_256mb` plan**, 1 GB disk (PostgreSQL 16 + PostGIS)
+- **Neither is on the free tier.** Both are billed, and have been since July 2026. A free Render service spins down after 15 minutes of idle and a free database expires after 30 days; neither applies here, so the API does not sleep and the database will not lapse. Plans verified through the Render API on 2026-09-05 (`plan: starter` / `plan: basic_256mb`, both `not_suspended`, no `expiresAt`).
 - **Cloudflare R2 buckets:** `carsalepro-reports` — private (prefixes: `free/`, `pro/`, `report-photos/`, `listings/`, `kyc/`, `contracts/`, `fonts/`) · optional **public** image bucket (`R2_PUBLIC_*`, served from `https://img.carsalepro.de`) for showroom photos
 
 ## Tech stack
