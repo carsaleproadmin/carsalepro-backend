@@ -207,7 +207,11 @@ Always pass `--forceExit` (Redis/handles keep Jest alive otherwise). e2e reads
 `MAPBOX_TOKEN`, `RESEND_API_KEY` and `SENTRY_DSN`. Without that file the suite
 silently runs against the dev database using real credentials. Suites that assert
 prices must pin the tariff (`test/helpers/tariff.ts`) — the admin settings suite
-mutates `orderBaseFeeEur` as part of an acceptance test. Render auto-deploys on push to `main` (runs `prisma migrate deploy` on start; Joi env validation can fail the boot — e.g. a weak prod `JWT_SECRET`). If a deploy fails, check `mcp__render__list_logs` for `srv-d83o7j1kh4rs73cgjfng` first. **Commit messages must not mention Claude/AI or include a Co-Authored-By trailer.**
+mutates `orderBaseFeeEur` as part of an acceptance test. Render auto-deploys on push to `main` (runs `prisma migrate deploy` on start; Joi env validation can fail the boot — e.g. a weak prod `JWT_SECRET`). If a deploy fails, check `mcp__render__list_logs` for `srv-d83o7j1kh4rs73cgjfng` first — but **confirm the Render MCP is pointing at the right account before you trust an empty answer.** On 2026-09-05 it was authorised against an unrelated workspace, where `list_services` returned `null` and the only database was somebody else's suspended free instance. `mcp__render__list_workspaces` must answer `carsaleproadmin@gmail.com` (`tea-d81nglnlk1mc73b00u3g`); anything else means the token is wrong, not that the service is gone.
+
+**Neither Render resource is on the free tier, and this is load-bearing for the mobile app.** The service runs the paid `starter` plan and the database `basic_256mb` (1 GB disk), billed since July 2026, verified through the API on 2026-09-05: both `not_suspended`, neither carrying the `expiresAt` a free resource does. So the API does **not** spin down after 15 minutes of idle and the database will not lapse after 30 days. The app's warm-up ladder and its 45 s report budget (`carsalepro-mobile/lib/data/http/api_config.dart`) stay anyway, and their comments now say why: a push to `main` redeploys and `prisma migrate deploy` runs at start, so the first request after a deploy still waits for a boot. Do not remove them on the strength of the plan alone.
+
+**Commit messages must not mention Claude/AI or include a Co-Authored-By trailer.**
 
 ## Where agent-relevant things live
 
