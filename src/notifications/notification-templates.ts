@@ -394,37 +394,65 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Возврат ${str(p, 'orderNumber')} не прошёл.`,
     }),
   },
-  'kyc.approved': {
+  /**
+   * Sent when an application waits for an admin instead of being approved by
+   * the platform (DEN-239): the applicant was rejected before. It must not
+   * promise a result, and it must not repeat the wording of `kyc.approved`.
+   */
+  'kyc.submitted': {
     de: () => ({
-      subject: `Verifizierung genehmigt`,
-      body: `Ihre Prüfer-Verifizierung (KYC) wurde genehmigt. Sie können jetzt Aufträge annehmen.`,
-      short: `KYC genehmigt — Sie sind verifiziert.`,
+      subject: `Verifizierung eingegangen`,
+      body: `Ihre Unterlagen sind eingegangen und werden von unserem Team geprüft. Sie erhalten eine Nachricht, sobald entschieden ist. Bis dahin können Sie keine Aufträge annehmen.`,
+      short: `KYC eingegangen — Prüfung durch das Team.`,
     }),
     en: () => ({
-      subject: `Verification approved`,
-      body: `Your inspector verification (KYC) was approved. You can now accept jobs.`,
-      short: `KYC approved — you are verified.`,
+      subject: `Verification received`,
+      body: `Your documents were received and our team will look at them. You get a message when the decision is made. Until then you cannot accept jobs.`,
+      short: `KYC received — the team will review it.`,
     }),
     ru: () => ({
-      subject: `Верификация одобрена`,
-      body: `Ваша верификация инспектора (KYC) одобрена. Теперь вы можете принимать заказы.`,
-      short: `KYC одобрена — вы верифицированы.`,
+      subject: `Заявка получена`,
+      body: `Ваши документы получены, их рассмотрит наша команда. Мы напишем, когда решение будет принято. До этого принимать заказы нельзя.`,
+      short: `KYC получена — рассмотрит команда.`,
+    }),
+  },
+  /**
+   * The letter must say that the application was accepted, and must NOT say
+   * that anything was verified (DEN-240). The platform stores the documents
+   * and reads none of them, and the sentence a person was sent is the one that
+   * counts if the inspector later turns out not to be who they claimed.
+   */
+  'kyc.approved': {
+    de: () => ({
+      subject: `Bewerbung angenommen`,
+      body: `Ihre Prüfer-Bewerbung ist angenommen und Ihre Unterlagen sind gespeichert. Sie können jetzt Aufträge annehmen.`,
+      short: `Bewerbung angenommen — Sie können Aufträge annehmen.`,
+    }),
+    en: () => ({
+      subject: `Application accepted`,
+      body: `Your inspector application is accepted and your documents are stored. You can now accept jobs.`,
+      short: `Application accepted — you can accept jobs.`,
+    }),
+    ru: () => ({
+      subject: `Заявка принята`,
+      body: `Ваша заявка инспектора принята, документы сохранены. Теперь вы можете принимать заказы.`,
+      short: `Заявка принята — можно принимать заказы.`,
     }),
   },
   'kyc.rejected': {
     de: (p) => ({
       subject: `Verifizierung abgelehnt`,
-      body: `Ihre Prüfer-Verifizierung (KYC) wurde abgelehnt. Grund: ${str(p, 'reason', '—')}. Bitte reichen Sie sie erneut ein.`,
+      body: `Ihre Prüfer-Verifizierung (KYC) wurde abgelehnt. Grund: ${str(p, 'reason', '—')}. Sie können eine neue Bewerbung senden, die unser Team ansieht.`,
       short: `KYC abgelehnt: ${str(p, 'reason', '—')}`,
     }),
     en: (p) => ({
       subject: `Verification rejected`,
-      body: `Your inspector verification (KYC) was rejected. Reason: ${str(p, 'reason', '—')}. Please re-submit.`,
+      body: `Your inspector verification (KYC) was rejected. Reason: ${str(p, 'reason', '—')}. You can send a new application, and our team will look at it.`,
       short: `KYC rejected: ${str(p, 'reason', '—')}`,
     }),
     ru: (p) => ({
       subject: `Верификация отклонена`,
-      body: `Ваша верификация инспектора (KYC) отклонена. Причина: ${str(p, 'reason', '—')}. Пожалуйста, отправьте повторно.`,
+      body: `Ваша верификация инспектора (KYC) отклонена. Причина: ${str(p, 'reason', '—')}. Вы можете отправить новую заявку — её рассмотрит наша команда.`,
       short: `KYC отклонена: ${str(p, 'reason', '—')}`,
     }),
   },

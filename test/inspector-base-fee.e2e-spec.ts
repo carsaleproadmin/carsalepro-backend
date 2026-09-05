@@ -6,6 +6,7 @@ import { createTestApp } from './helpers/test-app';
 import { PinnedTariff, pinTariff } from './helpers/tariff';
 import { inspectorBaseFeeBounds } from '../src/orders/inspector-base-fee';
 import { SettingsService } from '../src/settings/settings.service';
+import { PLATFORM_SETTING_DEFAULTS } from '../src/settings/platform-settings.constants';
 
 /*
  * DEN-213. The inspector sets their own base fee.
@@ -13,13 +14,16 @@ import { SettingsService } from '../src/settings/settings.service';
  * The four rules the client decided, one block each:
  *
  *  1. only the BASE is theirs to move;
- *  2. it is held inside +/-30 % of the platform base;
+ *  2. it is held inside a flat window of 5 to 500 EUR;
  *  3. the customer is shown ONE price and never charged above it;
  *  4. the price is frozen when the offer is SENT, not when it is accepted.
  *
  * Rule 4 is the one that needs a database to prove: it is about what happens
  * between two events, and a unit test can only assert the arithmetic.
  */
+
+/** The platform base a lowest-base inspector must come in under. */
+const PLATFORM_BASE_CENTS = Math.round(PLATFORM_SETTING_DEFAULTS.orderBaseFeeEur * 100);
 
 const LAT = 52.52;
 const LNG = 13.405;
@@ -306,12 +310,18 @@ describe('Inspector base fee (e2e)', () => {
       expect(order.platformFeeCents! + order.inspectorShareCents!).toBe(order.totalCents);
     });
 
-    it('cannot go below the platform minimum fare, however low the base is', async () => {
+    it('reaches the fare on a short job, and still stops at the platform floor', async () => {
       /*
-       * Worth stating out loud, because it is the first thing an inspector
-       * notices: on a short job the fare is floored, so cutting the base buys
-       * the customer nothing and buys the inspector no advantage in the queue.
-       * The floor is the platform's and the inspector's discount stops at it.
+       * This asserted the opposite until 2026-09-04, and the assertion was
+       * right at the time: with the floor at 49 EUR a short job cost the same
+       * whatever the inspector had set, so the one number DEN-213 gave them
+       * changed nothing where most orders are. The floor came down to 5, and
+       * the number now reaches the customer.
+       *
+       * Both halves are asserted deliberately. The lowest base must produce a
+       * fare BELOW the platform base - that is the feature working - and it
+       * must still not fall through the floor, which is what stops a race to
+       * zero once dispatch starts preferring the cheaper candidate (DEN-241).
        */
       const { minCents } = inspectorBaseFeeBounds();
       await makeInspector(minCents, LAT, LNG);
@@ -324,8 +334,10 @@ describe('Inspector base fee (e2e)', () => {
         .expect(200);
 
       expect(res.body.breakdown.baseFeeCents).toBe(minCents);
-      expect(res.body.totalCents).toBe(res.body.breakdown.minimumFareCents);
-      expect(res.body.breakdown.minimumFareApplied).toBe(true);
+      expect(res.body.totalCents).toBeLessThan(PLATFORM_BASE_CENTS);
+      expect(res.body.totalCents).toBeGreaterThanOrEqual(
+        res.body.breakdown.minimumFareCents,
+      );
     });
 
     it('charges the quote when the accepting inspector is the quoted one', async () => {

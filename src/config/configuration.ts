@@ -58,31 +58,6 @@ export interface AppConfig {
   nhtsa: {
     baseUrl: string;
   };
-  /**
-   * Paid VIN history provenance provider (BE-S3). Only 'mock' is implemented;
-   * see .env.example. Distinct from `nhtsa`, which is the free VIN decode.
-   */
-  vinHistory: {
-    provider: string;
-    apiKey: string;
-    /**
-     * CarAPI's key. Separate from `apiKey` on purpose: they are two accounts
-     * with two balances, and a single shared field would send one provider's
-     * credential to the other the moment `provider` is switched.
-     */
-    carapiKey: string;
-    /**
-     * Lets the MOCK provider sell in production. Off by default, because
-     * charging for generated data without meaning to is the worst possible
-     * failure here.
-     *
-     * A separate flag rather than flipping `MockVinHistoryProvider.configured`,
-     * so `synthetic: true` keeps riding on every payload, DTO, page and PDF —
-     * the buyer is told what they bought in all four places whether or not this
-     * is on.
-     */
-    allowSyntheticSale: boolean;
-  };
   iap: {
     mode: 'client-trust' | 'server';
     bundleId: string;
@@ -140,6 +115,29 @@ export interface AppConfig {
     accessKeyId: string;
     secretAccessKey: string;
     bucket: string;
+  };
+  /**
+   * KYC checks that read the documents themselves (DEN-250).
+   *
+   * `mrzOcrEnabled` false stops the machine-readable zone from being read at
+   * all; the platform then behaves as it did before the check existed, which
+   * is also what happens whenever a read simply fails.
+   *
+   * `mrzTessdataPath` points at a directory holding `eng.traineddata`. Unset,
+   * `tesseract.js` downloads it from a CDN on first use - acceptable, but it
+   * makes the first upload after a deploy depend on a third party.
+   *
+   * `idHashPepper` is mixed into the stored document-number digest. A document
+   * number is short and structured, so an unpeppered digest of one is worth
+   * guessing; the pepper makes a stolen table useless without the server's
+   * secret. CHANGING IT RETIRES EVERY HASH ALREADY STORED - they simply stop
+   * matching, which fails towards letting an applicant through rather than
+   * towards accusing one.
+   */
+  kyc: {
+    mrzOcrEnabled: boolean;
+    mrzTessdataPath: string;
+    idHashPepper: string;
   };
   /**
    * Boot-time self-check (`src/health/startup-check.service.ts`).
@@ -262,12 +260,6 @@ export default (): AppConfig => ({
   nhtsa: {
     baseUrl: process.env.NHTSA_BASE_URL ?? 'https://vpic.nhtsa.dot.gov/api',
   },
-  vinHistory: {
-    provider: process.env.VIN_HISTORY_PROVIDER ?? 'mock',
-    apiKey: process.env.VIN_HISTORY_API_KEY ?? '',
-    carapiKey: process.env.CARAPI_API_KEY ?? '',
-    allowSyntheticSale: (process.env.VIN_HISTORY_ALLOW_SYNTHETIC_SALE ?? 'false') === 'true',
-  },
   iap: {
     mode: (process.env.IAP_VALIDATION_MODE as 'client-trust' | 'server') || 'client-trust',
     // A retired package is ignored wherever it comes from - see
@@ -325,6 +317,11 @@ export default (): AppConfig => ({
     accessKeyId: process.env.R2_KYC_ACCESS_KEY_ID ?? '',
     secretAccessKey: process.env.R2_KYC_SECRET_ACCESS_KEY ?? '',
     bucket: process.env.R2_KYC_BUCKET ?? '',
+  },
+  kyc: {
+    mrzOcrEnabled: (process.env.KYC_MRZ_OCR_ENABLED ?? 'true') === 'true',
+    mrzTessdataPath: process.env.KYC_MRZ_TESSDATA_PATH ?? '',
+    idHashPepper: process.env.KYC_ID_HASH_PEPPER ?? '',
   },
   startupCheck: {
     strict: (process.env.STARTUP_CHECK_STRICT ?? 'true') === 'true',

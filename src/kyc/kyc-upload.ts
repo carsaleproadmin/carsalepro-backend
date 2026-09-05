@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException } from '@nestjs/common';
 import { ALLOWED_KYC_CONTENT_TYPE } from './kyc.constants';
 
@@ -58,6 +59,35 @@ export interface KycUploadPart {
   originalname?: string;
   buffer?: Buffer;
   size?: number;
+}
+
+/**
+ * Fingerprint one uploaded document: SHA-256 of the bytes, lower-case hex.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHAT THIS CATCHES, AND WHAT IT DOES NOT
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * A rejection is the only way to take an inspector's access away (DEN-236),
+ * and the check that keeps a rejected applicant from being let back in by the
+ * machine counts EARLIER APPLICATIONS OF THE SAME USER (DEN-239). A new
+ * registration is a new `user_id`, so that count is zero and the same person
+ * walks back in with the same four files.
+ *
+ * The hash gives those files an identity that survives a new account. It
+ * catches THE SAME FILE, byte for byte. It does not catch the same person: a
+ * re-crop, a re-save, one more photograph of the same passport all produce
+ * different bytes, and no digest can see through that. This raises the cost of
+ * walking back in from "register again" to "take the pictures again"; it is
+ * not identity verification and must not be described as any.
+ *
+ * The SOURCE bytes are hashed, not the stored object. An image is re-encoded
+ * by `PhotoProcessingService` before it is written, so hashing the object would
+ * tie the value to a sharp/libvips build and two servers would disagree about
+ * the same upload.
+ */
+export function hashKycDocument(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex');
 }
 
 export interface KycObjectPlan {

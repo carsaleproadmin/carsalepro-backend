@@ -8,14 +8,21 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { KycApplication, KycDocument, KycStatus, Prisma } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
+import { AdminAuditService } from '../admin/admin-audit.service';
 import { PhotoProcessingService } from '../common/photo/photo-processing.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import {
   ACTIVE_KYC_STATUSES,
+  KYC_AUTO_REVIEWER,
+  KYC_MANUAL_REVIEW_AFTER_STATUSES,
+  KYC_QUEUE_DEFAULT_LIMIT,
+  KYC_QUEUE_DEFAULT_STATUSES,
+  KYC_RETENTION_DAYS,
   KYC_TRANSITIONS,
   KycDocumentKind,
   REQUIRED_KYC_KINDS,
@@ -30,12 +37,37 @@ import {
   KycDocumentUploadResultDto,
   SubmitKycResultDto,
 } from './dto/kyc-response.dto';
-import { KycUploadPart, resolveKycObject } from './kyc-upload';
+import { hashKycDocument, KycUploadPart, resolveKycObject } from './kyc-upload';
+import { mrzIdentityKey } from './mrz';
+import { MrzOcrService } from './mrz-ocr.service';
 
 type KycApplicationWithDocs = KycApplication & { documents: KycDocument[] };
 
 /** Number of days after review before approved/rejected documents may be purged. */
-const PURGE_AFTER_DAYS = 90;
+/** @see KYC_RETENTION_DAYS - the number itself lives with the other KYC constants. */
+const PURGE_AFTER_DAYS = KYC_RETENTION_DAYS;
+
+/**
+ * Stamped in front of every `KycDocument.idNumberHash`.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE PEPPER CANNOT BE ROTATED SILENTLY
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * The digest mixes in `KYC_ID_HASH_PEPPER`, and an absent variable reads as an
+ * empty string. So an operator who sets the pepper for the first time, or
+ * changes it, makes every hash already in the table disagree with every hash
+ * written after - the comparison in `submitApplication` then matches nothing,
+ * the application is approved, and NOTHING says why. A protection against a
+ * revoked inspector would switch itself off with no error and no log line.
+ *
+ * A version in front of the digest does not repair old rows, and it is not
+ * meant to: they belong to a pepper nobody has any more. It makes the break
+ * VISIBLE - two versions in one column say plainly that the values were written
+ * under different secrets, and a query can find how many of each. Bump it in
+ * the same change as a rotation.
+ */
+const ID_HASH_VERSION = 'v1';
 
 @Injectable()
 export class KycService {
@@ -46,7 +78,40 @@ export class KycService {
     private readonly r2: R2Service,
     private readonly notifications: NotificationsService,
     private readonly photoProcessing: PhotoProcessingService,
+    private readonly audit: AdminAuditService,
+    private readonly mrzOcr: MrzOcrService,
+    private readonly config: ConfigService,
   ) {}
+
+  /**
+   * Record one KYC decision in the admin audit trail.
+   *
+   * Written here rather than in the controller, which is where the rest of the
+   * admin panel writes its rows: one of the three decisions - the automatic
+   * approval - has no admin and no admin request behind it, and splitting the
+   * trail between two layers would make "who decided" answerable only by
+   * reading both.
+   *
+   * `reviewedBy` on the application is not a record of a decision, it is the
+   * LAST decision: a revocation overwrites the machine approval that preceded
+   * it, and the fact that nobody read the documents disappears with it. This is
+   * append-only and keeps both.
+   *
+   * `AdminAuditService.log` swallows its own failures, thus a broken audit
+   * write cannot fail the decision it records.
+   */
+  private auditDecision(
+    actorId: string,
+    action: string,
+    applicationId: string,
+    userId: string,
+    after: Record<string, unknown>,
+  ): Promise<void> {
+    return this.audit.log(actorId, action, 'kyc', applicationId, null, {
+      userId,
+      ...after,
+    });
+  }
 
   // ============================================================
   // Inspector-facing
@@ -165,6 +230,21 @@ export class KycService {
         ).data
       : file.buffer;
 
+    // The SOURCE bytes, not `body`: see `hashKycDocument`. Taken before the
+    // upload, so an object never lands in the bucket without a fingerprint.
+    const sha256 = hashKycDocument(file.buffer);
+
+    // The document's own number, when the document states one a machine can
+    // read. Attempted only on the two identity documents - a Gewerbeschein and
+    // an insurance certificate have no machine-readable zone, and a selfie
+    // certainly does not, so running the recogniser over them would only spend
+    // seconds to find nothing. A failure or a silence is `null`, and `null`
+    // behaves exactly as this method did before (DEN-250).
+    const idNumberHash =
+      kind === 'id_front' || kind === 'id_back'
+        ? await this.readIdNumberHash(file.buffer)
+        : null;
+
     const s3Key = `kyc/${userId}/${applicationId}/${kind}-${randomUUID()}.${plan.extension}`;
 
     // What this upload displaces, captured BEFORE the upsert: the old object is
@@ -181,8 +261,8 @@ export class KycService {
 
     const row = await this.prisma.kycDocument.upsert({
       where: { applicationId_kind: { applicationId, kind } },
-      create: { applicationId, kind, s3Key, bucket },
-      update: { s3Key, bucket, uploadedAt: new Date(), purgedAt: null },
+      create: { applicationId, kind, s3Key, bucket, sha256, idNumberHash },
+      update: { s3Key, bucket, sha256, idNumberHash, uploadedAt: new Date(), purgedAt: null },
     });
 
     if (previous && previous.s3Key !== s3Key) {
@@ -213,11 +293,57 @@ export class KycService {
   }
 
   /**
-   * Submit a DRAFT application for review. Requires all REQUIRED_KYC_KINDS
-   * documents present. Transitions DRAFT→SUBMITTED and stamps submittedAt.
+   * Submit a DRAFT application. Requires all REQUIRED_KYC_KINDS documents
+   * present, then APPROVES IT IMMEDIATELY - DRAFT→APPROVED in one step.
+   *
+   * **What this method verifies is that four files exist. Nothing reads them.**
+   * That was true before this change too: `submitApplication` only ever counted
+   * kinds, and the judgement of what the documents actually showed lived with
+   * the admin who opened them. Removing the admin removes the judgement with
+   * him - whoever uploads four images becomes an inspector, and an inspector is
+   * dispatched to strangers' vehicles and paid out of escrow. That is a
+   * decision of the platform owner (2026-09-03, DEN-236), not an oversight, and
+   * it must not be reworded into something that sounds verified: the applicant
+   * is notified through `kyc.approved`, whose wording must not claim that
+   * documents were checked.
+   *
+   * The path back is `reject`, which is why APPROVED→REJECTED exists in
+   * `KYC_TRANSITIONS`. Approval that cannot be revoked is what makes an
+   * automatic grant dangerous, rather than the grant itself.
+   *
+   * **AUTOMATIC APPROVAL IS NOT GIVEN TO AN APPLICANT WHO WAS REJECTED BEFORE**
+   * (DEN-239). Such an application stops at SUBMITTED and waits for an admin,
+   * because the alternative is that a revoked inspector re-applies with the
+   * same four files and is let back in by the machine, which would leave the
+   * revocation entirely under the control of the person it was used against.
+   * See `KYC_MANUAL_REVIEW_AFTER_STATUSES`.
+   *
+   * **NOR TO ONE WHOSE DOCUMENTS WERE REJECTED UNDER ANOTHER ACCOUNT**
+   * (DEN-249). The rule above is keyed by `userId` and a new registration
+   * resets it, so it held the door shut for exactly as long as the applicant
+   * chose not to sign up twice. Each document carries the SHA-256 of the bytes
+   * it arrived as, and an application whose files are already on a REJECTED
+   * application is held for a person too. It recognises the same FILE, not the
+   * same person - see `hashKycDocument`.
+   *
+   * **NOR TO ONE HOLDING A DOCUMENT THAT WAS REJECTED** (DEN-250). The file
+   * hash is defeated by photographing the same passport again, which costs a
+   * minute. `KycDocument.idNumberHash` holds the number the document states in
+   * its machine-readable zone, so the SAME DOCUMENT is recognised however it
+   * was photographed. A document with no readable zone stores NULL and is
+   * treated exactly as it was before the column existed: **an unreadable
+   * document must never hold an application**, or an honest applicant is
+   * refused work for owning the wrong bureaucracy.
+   *
+   * `submittedAt` and `reviewedAt` are the same instant here, and both are
+   * stamped: they mean different things (when the applicant acted, when the
+   * decision was taken) and a reader must not have to infer one from the other.
    */
   async submitApplication(userId: string, applicationId: string): Promise<SubmitKycResultDto> {
     const application = await this.requireOwnedApplication(userId, applicationId);
+    // Guarded against SUBMITTED rather than APPROVED so a DRAFT is still the
+    // only state that may be submitted; DRAFT→APPROVED is what actually gets
+    // written, and the transition table allows both moves out of DRAFT.
     this.assertTransition(application.status, KycStatus.SUBMITTED);
 
     const present = new Set(application.documents.map((d) => d.kind));
@@ -232,17 +358,157 @@ export class KycService {
     }
 
     const submittedAt = new Date();
-    const updated = await this.prisma.kycApplication.update({
-      where: { id: applicationId },
-      data: { status: KycStatus.SUBMITTED, submittedAt },
+
+    // Any earlier decision against this applicant, not only the last one: the
+    // count is over the user's whole history, so a rejection cannot be aged out
+    // by creating drafts, and the query excludes the row being submitted.
+    const priorRejections = await this.prisma.kycApplication.count({
+      where: {
+        userId,
+        id: { not: applicationId },
+        status: { in: KYC_MANUAL_REVIEW_AFTER_STATUSES },
+      },
     });
-    this.logger.log(`KYC application ${applicationId} submitted by user=${this.mask(userId)}`);
+
+    // The same question asked of the DOCUMENTS rather than of the account
+    // (DEN-249). `priorRejections` is keyed by `userId`, which a new
+    // registration resets - so a revoked inspector who signs up again is a
+    // first-time applicant to that count and the machine lets him back in.
+    //
+    // A document carries the fingerprint of the bytes it was uploaded with, so
+    // the four files can be recognised on an application the platform has
+    // already refused, whoever now owns the account. Rows written before this
+    // shipped have no hash; they are excluded rather than treated as matching
+    // everything.
+    //
+    // Own history is excluded because `priorRejections` covers it, and a match
+    // there would only say the same thing twice in the audit row.
+    const fingerprints = application.documents
+      .map((d) => d.sha256)
+      .filter((h): h is string => h !== null);
+
+    const reusedDocuments =
+      fingerprints.length === 0
+        ? 0
+        : await this.prisma.kycDocument.count({
+            where: {
+              sha256: { in: fingerprints },
+              application: {
+                userId: { not: userId },
+                status: { in: KYC_MANUAL_REVIEW_AFTER_STATUSES },
+              },
+            },
+          });
+
+    // And of the DOCUMENT NUMBERS (DEN-250). The file hash above is defeated by
+    // photographing the same passport a second time; the number in the
+    // machine-readable zone is not. Rows where no zone could be read hold NULL
+    // and are excluded, so a document without one - or a photograph the
+    // recogniser could not read - behaves as it always did.
+    const idNumberHashes = application.documents
+      .map((d) => d.idNumberHash)
+      .filter((h): h is string => h !== null);
+
+    const reusedIdentity =
+      idNumberHashes.length === 0
+        ? 0
+        : await this.prisma.kycDocument.count({
+            where: {
+              idNumberHash: { in: idNumberHashes },
+              application: {
+                userId: { not: userId },
+                status: { in: KYC_MANUAL_REVIEW_AFTER_STATUSES },
+              },
+            },
+          });
+
+    if (priorRejections > 0 || reusedDocuments > 0 || reusedIdentity > 0) {
+      const held = await this.prisma.kycApplication.update({
+        where: { id: applicationId },
+        data: { status: KycStatus.SUBMITTED, submittedAt },
+      });
+      // `user.kycVerified` is deliberately NOT touched. `reject` cleared it,
+      // and only an admin's `approve` may set it again on this path.
+      // Both counts are recorded, and they answer different questions: whether
+      // this ACCOUNT was refused before, and whether these FILES were. An
+      // admin opening a held application is entitled to know which.
+      await this.auditDecision(KYC_AUTO_REVIEWER, 'kyc.held_for_review', applicationId, userId, {
+        status: KycStatus.SUBMITTED,
+        priorRejections,
+        reusedDocuments,
+        reusedIdentity,
+      });
+      await this.notifications.notify(userId, 'kyc.submitted', { applicationId });
+      this.logger.log(
+        `KYC application ${applicationId} submitted, HELD FOR REVIEW ` +
+          `(prior rejections=${priorRejections}, reused documents=${reusedDocuments}, ` +
+          `reused identity=${reusedIdentity}) ` +
+          `user=${this.mask(userId)}`,
+      );
+      return {
+        id: held.id,
+        status: held.status,
+        submittedAt: submittedAt.toISOString(),
+      };
+    }
+
+    // One transaction, as in `approve`: the application's status and the user's
+    // flag are one fact. Split, a failure between them leaves an APPROVED
+    // application whose owner cannot be dispatched, and nothing says why.
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.kycApplication.update({
+        where: { id: applicationId },
+        data: {
+          status: KycStatus.APPROVED,
+          submittedAt,
+          reviewedBy: KYC_AUTO_REVIEWER,
+          reviewedAt: submittedAt,
+        },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { kycVerified: true },
+      }),
+    ]);
+
+    // Same event as a manual approval - the inspector's experience is that the
+    // application was accepted, and it was.
+    await this.auditDecision(KYC_AUTO_REVIEWER, 'kyc.auto_approve', applicationId, userId, {
+      status: KycStatus.APPROVED,
+      kycVerified: true,
+      reviewedBy: KYC_AUTO_REVIEWER,
+    });
+    await this.notifications.notify(userId, 'kyc.approved', { applicationId });
+    this.logger.log(
+      `KYC application ${applicationId} submitted and AUTO-APPROVED user=${this.mask(userId)}`,
+    );
     return {
       id: updated.id,
       status: updated.status,
       submittedAt: submittedAt.toISOString(),
     };
   }
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE MANUAL REVIEW PATH IS HALF REACHABLE, AND THAT IS A DECISION
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * `getApplicationForAdmin` (SUBMITTED→IN_REVIEW) and `approve` below act on
+   * SUBMITTED. Since automatic approval only ONE route produces that status: a
+   * re-application from someone who was rejected before (DEN-239). A FIRST
+   * application never passes through it.
+   *
+   * The path is kept deliberately. It is the way back if automatic approval is
+   * withdrawn, and it is what an admin uses on every held application.
+   *
+   * What a reader must know: `test/kyc.e2e-spec.ts` seeds SUBMITTED straight
+   * into the database (`forceSubmitted`) for the first-application cases, so
+   * those tests prove the machinery works on a state that this API cannot
+   * produce for a first-time applicant. Test `9c` is the one that goes through
+   * the real route end to end. If this path is ever deleted, those seeds are
+   * the list of what goes with it.
+   */
 
   /** The user's latest application (kinds + uploadedAt only — no raw s3Keys). */
   async getMyApplication(userId: string): Promise<KycApplicationDto | null> {
@@ -259,21 +525,79 @@ export class KycService {
   // ============================================================
 
   /**
-   * Review queue. Defaults to SUBMITTED + IN_REVIEW; an optional status filter
-   * narrows it. Includes the applicant's email/name and the document kinds.
+   * Review queue. Defaults to `KYC_QUEUE_DEFAULT_STATUSES` (SUBMITTED +
+   * IN_REVIEW + APPROVED, and that constant says why APPROVED is in the default
+   * set); an optional status filter narrows it. Includes the applicant's email/name and the document kinds.
    */
-  async listQueue(status?: KycStatus): Promise<AdminKycQueueDto> {
+  async listQueue(
+    status?: KycStatus,
+    limit?: number,
+    offset?: number,
+    q?: string,
+  ): Promise<AdminKycQueueDto> {
     const where: Prisma.KycApplicationWhereInput = status
       ? { status }
-      : { status: { in: [KycStatus.SUBMITTED, KycStatus.IN_REVIEW] } };
+      : { status: { in: KYC_QUEUE_DEFAULT_STATUSES } };
+
+    // The search is on the applicant, not on the application: an admin who
+    // must switch an inspector off knows the person, and never the id of a row.
+    // An applicant who deleted the account is not a queue entry. Nothing can be
+    // decided about them: `reject` would revoke access that erasure already
+    // took, and `approve` would grant it to a user who is gone.
+    const userWhere: Prisma.UserWhereInput = { deletedAt: null };
+
+    const term = q?.trim();
+    if (term) {
+      userWhere.OR = [
+        { email: { contains: term, mode: 'insensitive' } },
+        { name: { contains: term, mode: 'insensitive' } },
+      ];
+    }
+    where.user = userWhere;
 
     const applications = await this.prisma.kycApplication.findMany({
       where,
-      orderBy: [{ submittedAt: 'asc' }, { createdAt: 'asc' }],
-      include: { documents: true, user: true },
+      /*
+       * NEWEST FIRST, reversed on 2026-09-03 with automatic approval (DEN-236).
+       *
+       * Oldest-first is right for a backlog someone works through, and that is
+       * what this list used to be. It is now mostly a record of who has been
+       * granted access, and the applicant an admin needs — the one who just
+       * joined, or the one just reported — is the most recent. Ascending order
+       * would bury every new entry behind every inspector ever approved.
+       *
+       * `createdAt` breaks the tie rather than being a fallback: `submittedAt`
+       * is set on every row this list shows, but a DRAFT reached through
+       * `?status=DRAFT` has none, and a null must not sort arbitrarily.
+       */
+      orderBy: [{ submittedAt: 'desc' }, { createdAt: 'desc' }],
+      take: limit ?? KYC_QUEUE_DEFAULT_LIMIT,
+      skip: offset ?? 0,
+      // `select`, and not `include: { user: true }`. The answer carries three
+      // user fields; `include` fetched every column of the row, which means
+      // `passwordHash` and `totpSecret` were read into memory for as many as
+      // KYC_QUEUE_MAX_LIMIT applicants on every page of the admin queue. They
+      // never reached the wire, and they never needed to leave the database
+      // either - a secret that is not selected cannot be logged, serialised by
+      // accident, or caught in a heap dump.
+      select: {
+        id: true,
+        status: true,
+        submittedAt: true,
+        createdAt: true,
+        reviewedBy: true,
+        reviewedAt: true,
+        documents: { select: { kind: true } },
+        user: { select: { id: true, email: true, name: true } },
+      },
     });
 
+    // Counted with the same `where`, so the number describes the set the caller
+    // asked for rather than the table.
+    const total = await this.prisma.kycApplication.count({ where });
+
     return {
+      total,
       items: applications.map((a) => ({
         id: a.id,
         status: a.status,
@@ -281,6 +605,15 @@ export class KycService {
         documentKinds: a.documents.map((d) => d.kind),
         submittedAt: a.submittedAt ? a.submittedAt.toISOString() : null,
         createdAt: a.createdAt.toISOString(),
+        /*
+         * Who decided, exposed so the list can say it out loud.
+         *
+         * `KYC_AUTO_REVIEWER` here means nobody looked at the documents. An
+         * admin about to act on an applicant is owed that distinction, and
+         * without it every row looks equally reviewed.
+         */
+        reviewedBy: a.reviewedBy,
+        reviewedAt: a.reviewedAt ? a.reviewedAt.toISOString() : null,
       })),
     };
   }
@@ -367,6 +700,11 @@ export class KycService {
       }),
     ]);
 
+    await this.auditDecision(adminId, 'kyc.approve', applicationId, application.userId, {
+      status: KycStatus.APPROVED,
+      kycVerified: true,
+      previousStatus: application.status,
+    });
     // E11: notify the inspector their KYC was approved (non-throwing).
     await this.notifications.notify(application.userId, 'kyc.approved', {
       applicationId,
@@ -383,22 +721,52 @@ export class KycService {
     };
   }
 
-  /** Reject an application: →REJECTED with a reason. */
+  /**
+   * Reject an application: →REJECTED with a reason, and CLEAR `kycVerified`.
+   *
+   * **This is the revocation path**, and since applications are approved
+   * automatically it is the only one. Rejecting an application that is already
+   * APPROVED is legal (see `KYC_TRANSITIONS`) and is how an inspector who
+   * should not have been granted access is switched off.
+   *
+   * `kycVerified: false` is written on every rejection, not only on the ones
+   * that follow an approval. Setting it unconditionally cannot be wrong - a
+   * rejected applicant has no verified standing by definition - while making it
+   * conditional on the previous status would leave the flag standing after any
+   * path the condition failed to anticipate. `approve` sets the flag, so `reject`
+   * clears it; anything else is an approval that only pretends to be reversible.
+   *
+   * The write is one transaction with the status change for the same reason
+   * approval is: a rejected application whose owner still passes the
+   * eligibility filter is worse than either outcome alone.
+   */
   async reject(applicationId: string, adminId: string, reason: string): Promise<AdminKycDecisionDto> {
     const application = await this.requireApplication(applicationId);
     this.assertTransition(application.status, KycStatus.REJECTED);
 
     const reviewedAt = new Date();
-    const updated = await this.prisma.kycApplication.update({
-      where: { id: applicationId },
-      data: {
-        status: KycStatus.REJECTED,
-        rejectReason: reason,
-        reviewedBy: adminId,
-        reviewedAt,
-      },
-    });
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.kycApplication.update({
+        where: { id: applicationId },
+        data: {
+          status: KycStatus.REJECTED,
+          rejectReason: reason,
+          reviewedBy: adminId,
+          reviewedAt,
+        },
+      }),
+      this.prisma.user.update({
+        where: { id: application.userId },
+        data: { kycVerified: false },
+      }),
+    ]);
 
+    await this.auditDecision(adminId, 'kyc.reject', applicationId, application.userId, {
+      status: KycStatus.REJECTED,
+      kycVerified: false,
+      previousStatus: application.status,
+      reason,
+    });
     // E11: notify the inspector their KYC was rejected, with the reason (non-throwing).
     await this.notifications.notify(application.userId, 'kyc.rejected', {
       applicationId,
@@ -518,6 +886,29 @@ export class KycService {
         },
       });
     }
+  }
+
+  /**
+   * The stored digest of a document's own number, or `null`.
+   *
+   * PEPPERED, and not a bare SHA-256 like the file hash. A document number is
+   * nine or so structured characters: a stolen table of unpeppered digests
+   * could be matched against generated candidates, and after
+   * `purgeOldDocuments` these rows are all that is left of the documents. The
+   * pepper is a server secret and never reaches the database.
+   *
+   * With `KYC_ID_HASH_PEPPER` unset the digest is still computed - it is a
+   * weaker digest, and refusing to store one would silently disable the whole
+   * check on a server whose environment is merely incomplete.
+   */
+  private async readIdNumberHash(image: Buffer): Promise<string | null> {
+    const identity = await this.mrzOcr.read(image);
+    if (!identity) return null;
+    const pepper = this.config.get<string>('kyc.idHashPepper') ?? '';
+    const digest = createHash('sha256')
+      .update(`${pepper}|${mrzIdentityKey(identity)}`)
+      .digest('hex');
+    return `${ID_HASH_VERSION}:${digest}`;
   }
 
   private mask(id: string): string {

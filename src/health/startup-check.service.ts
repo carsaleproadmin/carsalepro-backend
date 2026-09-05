@@ -170,10 +170,10 @@ export class StartupCheckService implements OnApplicationBootstrap {
     this.checkCors(raw, production);
     await this.checkReportsBucket(raw);
     await this.checkKycBucket(raw, startup.allowSharedKycBucket);
+    this.checkKycIdHashPepper(raw, production);
     await this.checkPublicBucket(raw);
     await this.checkStripe(raw, production);
     await this.checkMapbox(raw, production);
-    this.checkVinHistory(raw, production);
     this.checkIap(raw);
     await this.checkFonts(raw);
 
@@ -337,6 +337,54 @@ export class StartupCheckService implements OnApplicationBootstrap {
    * explicit, logged acknowledgement that documents share the reports bucket)
    * and `STARTUP_CHECK_STRICT=false`.
    */
+  /**
+   * The pepper behind `KycDocument.idNumberHash` must be set, and must stay set.
+   *
+   * An unset variable is not an outage: the digest is still computed, still
+   * stored and still compared, so the check that holds a re-application keeps
+   * working. What it loses is its defence against the table itself - after
+   * `purgeOldDocuments` the digest is all that is left of the document, and an
+   * unpeppered SHA-256 of a document number is guessable by anybody who can
+   * read the rows.
+   *
+   * It is a WARNING and not a refusal, deliberately. This is one setting behind
+   * one optional check; making it fatal would take the whole API down over it,
+   * which is the mistake `iap.bundle` above already made once. The value is
+   * never printed.
+   */
+  private checkKycIdHashPepper(raw: RawFinding[], production: boolean): void {
+    const kyc = this.config.get('kyc', { infer: true });
+    const pepper = kyc?.idHashPepper ?? '';
+    const ocrOn = kyc?.mrzOcrEnabled !== false;
+
+    if (!ocrOn) {
+      raw.push({
+        id: 'kyc.idHashPepper',
+        intended: 'info',
+        message: 'KYC_MRZ_OCR_ENABLED=false, so no document number is read and none is hashed.',
+      });
+      return;
+    }
+
+    if (!pepper) {
+      raw.push({
+        id: 'kyc.idHashPepper',
+        intended: production ? 'warn' : 'info',
+        message:
+          'KYC_ID_HASH_PEPPER is MISSING, so stored document-number digests are unpeppered and ' +
+          'a reader of the table can test a guessed number against them. Setting it later ' +
+          'invalidates every digest written until then - see ID_HASH_VERSION in kyc.service.ts.',
+      });
+      return;
+    }
+
+    raw.push({
+      id: 'kyc.idHashPepper',
+      intended: 'ok',
+      message: `KYC_ID_HASH_PEPPER set (len ${pepper.length}).`,
+    });
+  }
+
   private async checkKycBucket(raw: RawFinding[], allowShared: boolean): Promise<void> {
     const dedicated = this.r2.isKycDedicated();
 
@@ -644,19 +692,6 @@ export class StartupCheckService implements OnApplicationBootstrap {
           ? ' - carsalepro_pro_lifetime is a one-time managed product and must ' +
             'NOT be listed as a subscription; Play answers 404 for it there.'
           : ''),
-    });
-  }
-
-  private checkVinHistory(raw: RawFinding[], production: boolean): void {
-    const vin = this.config.get('vinHistory', { infer: true });
-    const selling = production && vin.provider === 'mock' && vin.allowSyntheticSale;
-    raw.push({
-      id: 'vin-history',
-      intended: selling ? 'warn' : 'info',
-      message:
-        `VIN history provider=${vin.provider} apiKey=${vin.apiKey ? 'set' : 'MISSING'} ` +
-        `allowSyntheticSale=${vin.allowSyntheticSale}` +
-        (selling ? ' - the MOCK provider is selling generated data in production.' : ''),
     });
   }
 

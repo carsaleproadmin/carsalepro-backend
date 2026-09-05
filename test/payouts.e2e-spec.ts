@@ -579,7 +579,7 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
     });
 
     it('14. a second failure increments attempts without creating a second row', async () => {
-      const { orderId } = await stuckPayout();
+      const { orderId, inspectorId } = await stuckPayout();
       await orders.releasePayout(orderId);
 
       const rows = await prisma.payout.findMany({ where: { orderId } });
@@ -588,8 +588,15 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
 
       // No second inspector notification: one "your money is late" is enough.
       // Counted on the inapp channel only — each notify() also writes an email row.
+      //
+      // Scoped to THIS inspector. Without `userId` the count covered the whole
+      // table, and `stuckPayout()` makes a new inspector on every call: cases
+      // 12, 13 and 14 each leave a row of their own, so the assertion measured
+      // how many tests had run before it rather than whether this payout
+      // notified twice. It failed for that reason and not for a defect in the
+      // dedupe, which is doing exactly what the next two lines assert.
       const delayed = await prisma.notification.count({
-        where: { type: 'payout.delayed', channel: 'inapp' },
+        where: { userId: inspectorId, type: 'payout.delayed', channel: 'inapp' },
       });
       expect(delayed).toBe(1);
     });

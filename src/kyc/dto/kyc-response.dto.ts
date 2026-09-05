@@ -69,12 +69,25 @@ export class KycDocumentUploadResultDto {
   replaced!: boolean;
 }
 
-/** Response of POST /applications/:id/submit. */
+/**
+ * Response of POST /applications/:id/submit.
+ *
+ * The status is the ANSWER TO A QUESTION THE CALLER MUST ASK: an application
+ * gets one of two outcomes, and a client that assumes one of them shows the
+ * wrong thing to half its users.
+ */
 export class SubmitKycResultDto {
   @ApiProperty({ example: 'ckqz2zk5e0000a8b8h4t8j2z3' })
   id!: string;
 
-  @ApiProperty({ enum: KycStatus, example: 'SUBMITTED' })
+  @ApiProperty({
+    enum: KycStatus,
+    example: 'APPROVED',
+    description:
+      'APPROVED when the platform approved the application itself, which is the usual answer. ' +
+      'SUBMITTED when the applicant was rejected before: that application waits for an admin, ' +
+      'and the user is NOT verified by it (DEN-239).',
+  })
   status!: KycStatus;
 
   @ApiProperty({ example: '2026-06-14T10:05:00.000Z' })

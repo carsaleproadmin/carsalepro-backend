@@ -84,8 +84,8 @@ export const envValidationSchema = Joi.object({
    *
    * Deliberately NOT a `.valid()` list of the countries Stripe supports: that
    * list changes on Stripe's schedule, and a stale copy here would refuse a
-   * country that works, taking the whole API down over one feature (the same
-   * reasoning as VIN_HISTORY_PROVIDER). Which countries are supported is
+   * country that works, taking the whole API down over one feature. Which
+   * countries are supported is
    * Stripe's answer at the moment of the call, and a rejection is mapped onto
    * `connect_country_unsupported`.
    */
@@ -125,30 +125,18 @@ export const envValidationSchema = Joi.object({
 
   NHTSA_BASE_URL: Joi.string().uri().default('https://vpic.nhtsa.dot.gov/api'),
 
-  // Paid VIN history (BE-S3). 'mock', 'carsxe' and 'aggregate' are implemented;
-  // an unknown value falls back to the mock, which refuses PAID unlocks in
-  // production. 'aggregate' is the real one: it runs every source that has a key
-  // and merges them into one report, so turning a source on is a key, not a
-  // release.
-  //
-  // Deliberately NOT a Joi `.valid(...)`. A typo here should cost a
-  // 503 and a loud startup error, not a service that will not boot: the
-  // fall-through in vin-history.module.ts already makes the wrong value safe,
-  // and refusing to start would take the whole API down over one feature.
-  VIN_HISTORY_PROVIDER: Joi.string().allow('').default('mock'),
-  VIN_HISTORY_API_KEY: Joi.string().allow('').default(''),
-  // The CarAPI key, kept SEPARATE from VIN_HISTORY_API_KEY because the two
-  // providers are different accounts with different billing, and one env var
-  // holding whichever key the current provider needs is how a CarsXE key ends up
-  // being sent to CarAPI — which answers 401 and still charges nobody, so the
-  // feature simply stops working with no wrong-looking value anywhere. Empty is
-  // valid and means "not configured": the client then makes no call at all and
-  // POST /unlock refuses rather than taking money.
-  CARAPI_API_KEY: Joi.string().allow('').default(''),
-  // Lets the mock provider sell in production. Payloads stay flagged synthetic.
-  VIN_HISTORY_ALLOW_SYNTHETIC_SALE: Joi.boolean().default(false),
+  // NOTE: the paid VIN history (BE-S3) is retired - DEN-245. VIN_HISTORY_*
+  // and CARAPI_API_KEY are gone from this schema. Joi allows unknown keys, so
+  // a deploy still carrying them in its environment boots normally; clear them
+  // from Render at leisure.
 
   // Boot-time self-check. `false` downgrades fatal findings to error logs.
+  // KYC document-number check (DEN-250). All three are optional: with none of
+  // them set the read is attempted with data fetched from a CDN, and a failed
+  // read changes nothing.
+  KYC_MRZ_OCR_ENABLED: Joi.string().valid('true', 'false').default('true'),
+  KYC_MRZ_TESSDATA_PATH: Joi.string().allow('').default(''),
+  KYC_ID_HASH_PEPPER: Joi.string().allow('').default(''),
   STARTUP_CHECK_STRICT: Joi.string().valid('true', 'false').default('true'),
   // Explicit acknowledgement that identity documents share the reports bucket.
   ALLOW_SHARED_KYC_BUCKET: Joi.string().valid('true', 'false').default('false'),

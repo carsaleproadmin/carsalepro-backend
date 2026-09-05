@@ -49,9 +49,24 @@ describe('Legal (e2e)', () => {
     expect(res.text.toLowerCase()).toContain('terms of use');
   });
 
-  it('falls back to German when lang is unknown', async () => {
+  /*
+   * ENGLISH, and not German, since 2026-08-19.
+   *
+   * `resolveLang` fell back to `'de'` while the mobile app sent a raw language
+   * code, so a Greek phone asking `?lang=el` matched nothing and read the
+   * privacy policy in German. Thirty-one of the thirty-five locales did. The
+   * fallback of a document nobody can read must at least be the language most
+   * readers have some of, and that is not the language of one market.
+   *
+   * This assertion kept the old expectation and therefore failed against the
+   * correct behaviour. It asserts the ENGLISH title and, explicitly, that the
+   * German one is absent - a document that somehow served both would satisfy a
+   * one-sided check.
+   */
+  it('falls back to English when lang is unknown', async () => {
     const res = await request(app.getHttpServer()).get('/legal/privacy?lang=zz').expect(200);
-    expect(res.text).toContain('Datenschutz');
+    expect(res.text.toLowerCase()).toContain('privacy policy');
+    expect(res.text).not.toContain('Datenschutz');
   });
 
   it('honours Accept-Language when no query param is given', async () => {

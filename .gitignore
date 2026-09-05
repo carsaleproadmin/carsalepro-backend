@@ -41,3 +41,6 @@ prisma/dev.db-journal
 # AI Kit temp
 .ai-kit/tmp
 demo-photos/
+
+# Downloaded by tesseract.js on first use (see MrzOcrService).
+*.traineddata
