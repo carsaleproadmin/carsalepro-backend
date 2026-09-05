@@ -172,8 +172,15 @@ describe('KYC verification (e2e)', () => {
     user: Registered,
     appId: string,
     kinds: string[] = ['id_front', 'id_back', 'selfie', 'gewerbeschein'],
+    fingerprint?: (kind: string) => string,
+    idNumberHash?: string,
   ): Promise<void> {
     for (const kind of kinds) {
+      const sha256 = fingerprint ? fingerprint(kind) : null;
+      // Only the two identity documents carry a number; the service reads no
+      // zone off a Gewerbeschein and the seed must not pretend otherwise.
+      const idHash =
+        idNumberHash && (kind === 'id_front' || kind === 'id_back') ? idNumberHash : null;
       await prisma.kycDocument.upsert({
         where: { applicationId_kind: { applicationId: appId, kind } },
         create: {
@@ -181,8 +188,14 @@ describe('KYC verification (e2e)', () => {
           kind,
           s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg`,
           bucket: expectedBucket,
+          sha256,
+          idNumberHash: idHash,
         },
-        update: { s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg` },
+        update: {
+          s3Key: `kyc/${user.userId}/${appId}/${kind}-seeded.jpg`,
+          sha256,
+          idNumberHash: idHash,
+        },
       });
     }
   }
@@ -191,14 +204,34 @@ describe('KYC verification (e2e)', () => {
   async function createWithDocs(
     user: Registered,
     kinds: string[] = ['id_front', 'id_back', 'selfie', 'gewerbeschein'],
+    fingerprint?: (kind: string) => string,
+    idNumberHash?: string,
   ): Promise<string> {
     const created = await request(app.getHttpServer())
       .post('/api/v1/kyc/applications')
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
     const appId = created.body.id as string;
-    await seedDocuments(user, appId, kinds);
+    await seedDocuments(user, appId, kinds, fingerprint, idNumberHash);
     return appId;
+  }
+
+  /**
+   * Put an application into SUBMITTED **directly in the database**.
+   *
+   * Since 2026-09-03 (DEN-236) `POST /submit` approves immediately, so no route
+   * produces a SUBMITTED row any more. The admin review machinery — the queue,
+   * the signed document URLs, the manual approve and reject — is deliberately
+   * kept, and the only way to exercise it is to seed the state it reads.
+   *
+   * If a future change removes SUBMITTED entirely, these seeds are the list of
+   * what has to go with it.
+   */
+  async function forceSubmitted(appId: string): Promise<void> {
+    await prisma.kycApplication.update({
+      where: { id: appId },
+      data: { status: KycStatus.SUBMITTED, submittedAt: new Date(), reviewedBy: null, reviewedAt: null },
+    });
   }
 
   /** Create a bare DRAFT application and return its id. */
@@ -279,19 +312,55 @@ describe('KYC verification (e2e)', () => {
     expect(res.body.error.code).toBe('incomplete_kyc');
   });
 
-  it('4. submit with all required docs transitions to SUBMITTED', async () => {
+  /**
+   * DEN-236. Submitting a complete application approves it on the spot, with no
+   * admin involved — and the user flag that gates dispatch moves with it.
+   *
+   * The two assertions are one requirement: an APPROVED application whose owner
+   * is not `kycVerified` grants nothing, and a `kycVerified` user with no
+   * approved application has standing nobody can trace. They are written in one
+   * transaction so they cannot disagree.
+   */
+  it('4. submit with all required docs AUTO-APPROVES and verifies the user', async () => {
     const user = await makeUser();
     const appId = await createWithDocs(user);
     const res = await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
-    expect(res.body.status).toBe('SUBMITTED');
+    expect(res.body.status).toBe('APPROVED');
     expect(typeof res.body.submittedAt).toBe('string');
 
     const dbApp = await prisma.kycApplication.findUnique({ where: { id: appId } });
-    expect(dbApp!.status).toBe(KycStatus.SUBMITTED);
+    expect(dbApp!.status).toBe(KycStatus.APPROVED);
     expect(dbApp!.submittedAt).toBeTruthy();
+    // Both stamped, and by the platform rather than by a person. `reviewedBy`
+    // is the only record of WHO decided; a null here would make an automatic
+    // grant indistinguishable from an unreviewed one.
+    expect(dbApp!.reviewedAt).toBeTruthy();
+    expect(dbApp!.reviewedBy).toBe('auto');
+
+    const dbUser = await prisma.user.findUnique({ where: { id: user.userId } });
+    expect(dbUser!.kycVerified).toBe(true);
+  });
+
+  /**
+   * The incomplete case is the ONLY thing still standing between an upload and
+   * a verified inspector, so it is asserted from the user's side too: a refused
+   * submit must not verify anybody.
+   */
+  it('4b. an incomplete submit verifies nobody', async () => {
+    const user = await makeUser();
+    const appId = await createWithDocs(user, ['id_front', 'selfie']);
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(400);
+
+    const dbApp = await prisma.kycApplication.findUnique({ where: { id: appId } });
+    expect(dbApp!.status).toBe(KycStatus.DRAFT);
+    const dbUser = await prisma.user.findUnique({ where: { id: user.userId } });
+    expect(dbUser!.kycVerified).toBe(false);
   });
 
   it('5. GET /applications/me returns status + doc kinds, NOT raw s3Keys', async () => {
@@ -317,10 +386,7 @@ describe('KYC verification (e2e)', () => {
     const user = await makeUser();
     const admin = await makeAdminUser();
     const appId = await createWithDocs(user);
-    await request(app.getHttpServer())
-      .post(`/api/v1/kyc/applications/${appId}/submit`)
-      .set('Authorization', `Bearer ${user.token}`)
-      .expect(201);
+    await forceSubmitted(appId);
 
     const queue = await request(app.getHttpServer())
       .get('/api/v1/admin/kyc')
@@ -344,10 +410,7 @@ describe('KYC verification (e2e)', () => {
     const user = await makeUser();
     const admin = await makeAdminUser();
     const appId = await createWithDocs(user);
-    await request(app.getHttpServer())
-      .post(`/api/v1/kyc/applications/${appId}/submit`)
-      .set('Authorization', `Bearer ${user.token}`)
-      .expect(201);
+    await forceSubmitted(appId);
 
     const res = await request(app.getHttpServer())
       .get(`/api/v1/admin/kyc/${appId}`)
@@ -381,10 +444,7 @@ describe('KYC verification (e2e)', () => {
     const user = await makeUser();
     const admin = await makeAdminUser();
     const appId = await createWithDocs(user);
-    await request(app.getHttpServer())
-      .post(`/api/v1/kyc/applications/${appId}/submit`)
-      .set('Authorization', `Bearer ${user.token}`)
-      .expect(201);
+    await forceSubmitted(appId);
 
     const res = await request(app.getHttpServer())
       .post(`/api/v1/admin/kyc/${appId}/approve`)
@@ -406,10 +466,7 @@ describe('KYC verification (e2e)', () => {
     const user = await makeUser();
     const admin = await makeAdminUser();
     const appId = await createWithDocs(user);
-    await request(app.getHttpServer())
-      .post(`/api/v1/kyc/applications/${appId}/submit`)
-      .set('Authorization', `Bearer ${user.token}`)
-      .expect(201);
+    await forceSubmitted(appId);
 
     const reason = 'ID photo is blurry — please re-upload.';
     const res = await request(app.getHttpServer())
@@ -433,7 +490,16 @@ describe('KYC verification (e2e)', () => {
     expect(fresh.body.status).toBe('DRAFT');
   });
 
-  it('10. illegal transitions return 409 (submit a SUBMITTED, approve an APPROVED)', async () => {
+  /**
+   * DEN-236. The queue must show APPROVED applications, or the revocation path
+   * exists in the API and nowhere a person can reach it.
+   *
+   * This is asserted through the auto-approval route rather than a seeded row,
+   * because the pairing is the requirement: what `POST /submit` produces has to
+   * be what `GET /admin/kyc` lists. Seeding the status would pass even if the
+   * two disagreed about which state an approved applicant lands in.
+   */
+  it('6b. the default queue lists AUTO-APPROVED applications and says who decided', async () => {
     const user = await makeUser();
     const admin = await makeAdminUser();
     const appId = await createWithDocs(user);
@@ -441,6 +507,432 @@ describe('KYC verification (e2e)', () => {
       .post(`/api/v1/kyc/applications/${appId}/submit`)
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
+
+    const queue = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    const item = queue.body.items.find((i: { id: string }) => i.id === appId);
+    expect(item).toBeTruthy();
+    expect(item.status).toBe('APPROVED');
+    // The distinction an admin acts on: nobody read these documents.
+    expect(item.reviewedBy).toBe('auto');
+    expect(typeof item.reviewedAt).toBe('string');
+  });
+
+  /**
+   * The queue was unbounded, which was safe while it held only applications
+   * awaiting review. It now holds every approved inspector, so an unbounded read
+   * grows with the platform for ever.
+   */
+  it('6c. the queue is bounded and the bound is a request parameter', async () => {
+    const admin = await makeAdminUser();
+    for (let i = 0; i < 3; i += 1) {
+      const user = await makeUser();
+      const appId = await createWithDocs(user);
+      await request(app.getHttpServer())
+        .post(`/api/v1/kyc/applications/${appId}/submit`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(201);
+    }
+
+    const limited = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc?limit=2')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(limited.body.items.length).toBe(2);
+
+    // Out of range is refused rather than silently clamped: a caller asking for
+    // 10 000 rows has misunderstood something, and answering 500 of them hides it.
+    await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc?limit=10000')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(400);
+  });
+
+  /**
+   * DEN-236, the other half of automatic approval: it must be revocable.
+   *
+   * Approval is now granted on the strength of four files existing, so the
+   * platform will sometimes have verified somebody it should not have. Before
+   * this change `APPROVED` was terminal and `reject` never touched the user
+   * flag — an unwanted inspector could not be switched off through the API at
+   * all. The assertion that matters is the LAST one: the flag, not the
+   * application's label, is what `eligibleForOffers` and the dispatch filter
+   * read.
+   */
+  /**
+   * DEN-239 / review item K-3. The queue holds every approved inspector now, so
+   * the row an admin needs is often not on the first page. Without a total and
+   * a way to search, a truncated answer is indistinguishable from a complete
+   * one, and an inspector who is not recent cannot be reached at all.
+   */
+  it('6d. the queue says how many rows match, pages, and finds an applicant', async () => {
+    const admin = await makeAdminUser();
+    const users = [];
+    for (let i = 0; i < 3; i += 1) {
+      const user = await makeUser();
+      const appId = await createWithDocs(user);
+      await request(app.getHttpServer())
+        .post(`/api/v1/kyc/applications/${appId}/submit`)
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(201);
+      users.push(user);
+    }
+
+    const all = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc?status=APPROVED')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(all.body.total).toBeGreaterThanOrEqual(3);
+
+    // A page is smaller than the set, and the total keeps describing the set.
+    const page = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc?status=APPROVED&limit=2')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(page.body.items).toHaveLength(2);
+    expect(page.body.total).toBe(all.body.total);
+
+    const second = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc?status=APPROVED&limit=2&offset=2')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    const firstIds = page.body.items.map((i: { id: string }) => i.id);
+    for (const item of second.body.items as { id: string }[]) {
+      expect(firstIds).not.toContain(item.id);
+    }
+
+    // The applicant is reachable by who they are, in any case.
+    const target = users[0];
+    const found = await request(app.getHttpServer())
+      .get(`/api/v1/admin/kyc?q=${encodeURIComponent(target.email.toUpperCase())}`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(found.body.total).toBe(1);
+    expect(found.body.items[0].user.email).toBe(target.email);
+  });
+
+  it('9b. an auto-approved inspector can be revoked, and the flag really clears', async () => {
+    const user = await makeUser();
+    const admin = await makeAdminUser();
+    const appId = await createWithDocs(user);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(true);
+
+    const reason = 'Documents do not show the applicant.';
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${appId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason })
+      .expect(201);
+    expect(res.body.status).toBe('REJECTED');
+
+    const dbApp = await prisma.kycApplication.findUnique({ where: { id: appId } });
+    expect(dbApp!.status).toBe(KycStatus.REJECTED);
+    expect(dbApp!.rejectReason).toBe(reason);
+    // `reviewedBy` moves from 'auto' to the admin who intervened, which is the
+    // whole point of keeping the two distinguishable.
+    expect(dbApp!.reviewedBy).toBe(admin.userId);
+
+    const dbUser = await prisma.user.findUnique({ where: { id: user.userId } });
+    expect(dbUser!.kycVerified).toBe(false);
+  });
+
+  /**
+   * DEN-239. This is the test that the revocation work depends on.
+   *
+   * Without it the whole APPROVED→REJECTED path is decorative: the applicant
+   * simply applies again and the platform approves them again, so the admin's
+   * decision holds only until the person it was used against notices.
+   */
+  it('9c. a revoked inspector who re-applies is HELD for a person, not auto-approved', async () => {
+    const user = await makeUser();
+    const admin = await makeAdminUser();
+    const firstId = await createWithDocs(user);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${firstId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Documents do not show the applicant.' })
+      .expect(201);
+    expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(false);
+
+    // The same four files again, exactly as the applicant would send them.
+    const secondId = await createWithDocs(user);
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${secondId}/submit`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('SUBMITTED');
+    const second = await prisma.kycApplication.findUnique({ where: { id: secondId } });
+    expect(second!.status).toBe(KycStatus.SUBMITTED);
+    expect(second!.reviewedBy).toBeNull();
+    expect(second!.submittedAt).not.toBeNull();
+    // The access stays off until an admin says otherwise.
+    expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(false);
+
+    // And the held application is where an admin will find it.
+    const queue = await request(app.getHttpServer())
+      .get('/api/v1/admin/kyc')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200);
+    expect(queue.body.items.map((i: { id: string }) => i.id)).toContain(secondId);
+
+    // An admin can still let them back in, and that grant is a person's.
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${secondId}/approve`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(201);
+    const decided = await prisma.kycApplication.findUnique({ where: { id: secondId } });
+    expect(decided!.reviewedBy).toBe(admin.userId);
+    expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(true);
+  });
+
+  /**
+   * DEN-249. The check above is keyed by `user_id`. This is the same person
+   * with a second account, which is what makes the per-user check insufficient
+   * on its own: to THAT count a new registration is a first-time applicant.
+   */
+  it('9e. the same documents on a NEW account are held too, and the old account is not needed', async () => {
+    const revoked = await makeUser();
+    const admin = await makeAdminUser();
+    const files = (kind: string) => `de1249${kind.padEnd(20, '0')}`.padEnd(64, 'f');
+
+    const firstId = await createWithDocs(revoked, undefined, files);
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .set('Authorization', `Bearer ${revoked.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${firstId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Access revoked.' })
+      .expect(201);
+
+    // A different account. It has no history of its own at all.
+    const freshAccount = await makeUser();
+    const secondId = await createWithDocs(freshAccount, undefined, files);
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${secondId}/submit`)
+      .set('Authorization', `Bearer ${freshAccount.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('SUBMITTED');
+    const second = await prisma.kycApplication.findUnique({ where: { id: secondId } });
+    expect(second!.status).toBe(KycStatus.SUBMITTED);
+    expect(second!.reviewedBy).toBeNull();
+    expect(
+      (await prisma.user.findUnique({ where: { id: freshAccount.userId } }))!.kycVerified,
+    ).toBe(false);
+
+    // The audit row says WHICH check held it: the account is clean, the files
+    // are not.
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { entity: 'kyc', entityId: secondId, action: 'kyc.held_for_review' },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit).not.toBeNull();
+    const held = audit!.after as { priorRejections: number; reusedDocuments: number };
+    expect(held.priorRejections).toBe(0);
+    expect(held.reusedDocuments).toBeGreaterThan(0);
+
+    // And an admin can still let them in — a hold is not a ban.
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${secondId}/approve`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(201);
+    expect(
+      (await prisma.user.findUnique({ where: { id: freshAccount.userId } }))!.kycVerified,
+    ).toBe(true);
+  });
+
+  it('9f. different documents on a new account are auto-approved, and old rows without a hash match nobody', async () => {
+    const rejected = await makeUser();
+    const admin = await makeAdminUser();
+
+    // Documents recorded before DEN-249 have no fingerprint at all.
+    const legacyId = await createWithDocs(rejected);
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${legacyId}/submit`)
+      .set('Authorization', `Bearer ${rejected.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${legacyId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Access revoked.' })
+      .expect(201);
+
+    // An unrelated applicant with their own papers. A NULL hash on the
+    // rejected rows must not read as "matches everything".
+    const stranger = await makeUser();
+    const ownId = await createWithDocs(
+      stranger,
+      undefined,
+      (kind) => `de1249own${kind.padEnd(17, '0')}`.padEnd(64, 'a'),
+    );
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${ownId}/submit`)
+      .set('Authorization', `Bearer ${stranger.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('APPROVED');
+    expect((await prisma.user.findUnique({ where: { id: stranger.userId } }))!.kycVerified).toBe(
+      true,
+    );
+  });
+
+  /**
+   * DEN-250. The gap the FILE hash leaves: photograph the same passport a
+   * second time and every byte differs. The number in the machine-readable
+   * zone does not.
+   */
+  it('9g. the same DOCUMENT re-photographed on a new account is held, though the files differ', async () => {
+    const revoked = await makeUser();
+    const admin = await makeAdminUser();
+    const idHash = 'de1250'.padEnd(64, 'b');
+
+    // First account: rejected, and the documents carry the document's number.
+    const firstId = await createWithDocs(
+      revoked,
+      undefined,
+      (kind) => `de1250first${kind.padEnd(15, '0')}`.padEnd(64, 'c'),
+      idHash,
+    );
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .set('Authorization', `Bearer ${revoked.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${firstId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Access revoked.' })
+      .expect(201);
+
+    // Second account, and DIFFERENT FILES - the passport was photographed
+    // again. Every `sha256` here is new, so the file check sees a stranger.
+    const freshAccount = await makeUser();
+    const secondId = await createWithDocs(
+      freshAccount,
+      undefined,
+      (kind) => `de1250second${kind.padEnd(14, '0')}`.padEnd(64, 'd'),
+      idHash,
+    );
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${secondId}/submit`)
+      .set('Authorization', `Bearer ${freshAccount.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('SUBMITTED');
+    expect(
+      (await prisma.user.findUnique({ where: { id: freshAccount.userId } }))!.kycVerified,
+    ).toBe(false);
+
+    // The audit row says which of the three checks held it, and here it is the
+    // document number ALONE: a new account, and files nobody has seen before.
+    const audit = await prisma.adminAuditLog.findFirst({
+      where: { entity: 'kyc', entityId: secondId, action: 'kyc.held_for_review' },
+      orderBy: { createdAt: 'desc' },
+    });
+    const held = audit!.after as {
+      priorRejections: number;
+      reusedDocuments: number;
+      reusedIdentity: number;
+    };
+    expect(held.priorRejections).toBe(0);
+    expect(held.reusedDocuments).toBe(0);
+    expect(held.reusedIdentity).toBeGreaterThan(0);
+  });
+
+  /**
+   * The rule that protects honest applicants: a document with no readable zone
+   * - a national identity card that has none, a photograph the recogniser
+   * could not read - stores NULL, and NULL must behave as it did before this
+   * check existed.
+   */
+  it('9h. a document whose number could not be read holds nobody', async () => {
+    const rejected = await makeUser();
+    const admin = await makeAdminUser();
+
+    const firstId = await createWithDocs(
+      rejected,
+      undefined,
+      (kind) => `de1250null${kind.padEnd(15, '0')}`.padEnd(64, 'e'),
+    );
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .set('Authorization', `Bearer ${rejected.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${firstId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Access revoked.' })
+      .expect(201);
+
+    // Another applicant, also with no readable number and with their own files.
+    const other = await makeUser();
+    const ownId = await createWithDocs(
+      other,
+      undefined,
+      (kind) => `de1250other${kind.padEnd(14, '0')}`.padEnd(64, 'f'),
+    );
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${ownId}/submit`)
+      .set('Authorization', `Bearer ${other.token}`)
+      .expect(201);
+
+    expect(res.body.status).toBe('APPROVED');
+    expect((await prisma.user.findUnique({ where: { id: other.userId } }))!.kycVerified).toBe(true);
+  });
+
+  /**
+   * K-6. `reviewedBy` holds the LAST decision, thus a revocation erases the
+   * machine approval that came before it. The audit trail is append-only and
+   * is the only place both survive.
+   */
+  it('9d. every KYC decision leaves an audit row, the automatic one included', async () => {
+    const user = await makeUser();
+    const admin = await makeAdminUser();
+    const appId = await createWithDocs(user);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/kyc/${appId}/reject`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ reason: 'Documents do not show the applicant.' })
+      .expect(201);
+
+    const rows = await prisma.adminAuditLog.findMany({
+      where: { entity: 'kyc', entityId: appId },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(rows.map((r) => r.action)).toEqual(['kyc.auto_approve', 'kyc.reject']);
+    // The machine approval is still readable after the revocation overwrote
+    // `reviewedBy` - that is the whole point of the row.
+    expect(rows[0].adminId).toBe('auto');
+    expect(rows[1].adminId).toBe(admin.userId);
+    expect((rows[1].after as { previousStatus?: string }).previousStatus).toBe('APPROVED');
+    const current = await prisma.kycApplication.findUnique({ where: { id: appId } });
+    expect(current!.reviewedBy).toBe(admin.userId);
+  });
+
+  it('10. illegal transitions return 409 (submit a SUBMITTED, approve an APPROVED)', async () => {
+    const user = await makeUser();
+    const admin = await makeAdminUser();
+    const appId = await createWithDocs(user);
+    await forceSubmitted(appId);
 
     // submit again on a SUBMITTED application → 409
     const reSubmit = await request(app.getHttpServer())

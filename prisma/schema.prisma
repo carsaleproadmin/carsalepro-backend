@@ -153,18 +153,17 @@ model User {
   createdAt         DateTime  @default(now())
   deletedAt         DateTime?
 
-  inspector           InspectorProfile?
-  deviceLinks         DeviceLink[]
-  ordersAsCustomer    Order[]              @relation("CustomerOrders")
-  listings            Listing[]
-  reportPurchases     ReportPurchase[]
-  notifications       Notification[]
-  reports             Report[]
-  payments            Payment[]
-  vinHistoryPurchases VinHistoryPurchase[]
-  kycApplications     KycApplication[]
-  authAccounts        AuthAccount[]
-  verificationTokens  VerificationToken[]
+  inspector          InspectorProfile?
+  deviceLinks        DeviceLink[]
+  ordersAsCustomer   Order[]             @relation("CustomerOrders")
+  listings           Listing[]
+  reportPurchases    ReportPurchase[]
+  notifications      Notification[]
+  reports            Report[]
+  payments           Payment[]
+  kycApplications    KycApplication[]
+  authAccounts       AuthAccount[]
+  verificationTokens VerificationToken[]
 
   @@index([role])
   @@map("user")
@@ -203,23 +202,23 @@ model VerificationToken {
 }
 
 model InspectorProfile {
-  userId          String                                 @id @map("user_id")
-  companyName     String?                                @map("company_name")
-  taxId           String?                                @map("tax_id")
-  vatId           String?                                @map("vat_id")
+  userId             String                                 @id @map("user_id")
+  companyName        String?                                @map("company_name")
+  taxId              String?                                @map("tax_id")
+  vatId              String?                                @map("vat_id")
   // Work contacts, disclosed to the customer only once an order is COMPLETED
   // (never to the inspector in reverse; an admin sees both in any status). Kept
   // here and not on `User` for the same reason a Listing carries its own
   // contactPhone/contactEmail: the channel customers use is a business fact,
   // not account data. Both fall back to the User row when null.
-  contactPhone    String?                                @map("contact_phone")
-  contactEmail    String?                                @map("contact_email")
+  contactPhone       String?                                @map("contact_phone")
+  contactEmail       String?                                @map("contact_email")
   /// True when contactPhone (or the User fallback) is reachable on WhatsApp.
-  contactWhatsapp Boolean                                @default(false) @map("contact_whatsapp")
+  contactWhatsapp    Boolean                                @default(false) @map("contact_whatsapp")
   /// Bare Telegram username, stored without the leading "@".
-  contactTelegram String?                                @map("contact_telegram")
-  baseAddress     String                                 @map("base_address")
-  location        Unsupported("geography(Point, 4326)")?
+  contactTelegram    String?                                @map("contact_telegram")
+  baseAddress        String                                 @map("base_address")
+  location           Unsupported("geography(Point, 4326)")?
   /// How far this inspector accepts jobs, in kilometres, straight-line.
   ///
   /// Read by `GeoService.findNearestInspectors`, where it narrows the platform
@@ -231,7 +230,7 @@ model InspectorProfile {
   /// new inspector who has not answered the question keeps the reach the
   /// platform had before the field went live; somebody who does not want a
   /// five-hour drive now has a control that works.
-  searchRadiusKm  Int                                    @default(300) @map("search_radius_km")
+  searchRadiusKm     Int                                    @default(300) @map("search_radius_km")
   /// What THIS inspector charges as the base fee, in cents (DEN-213).
   ///
   /// NULL means "has not said", which resolves to the platform base - not to
@@ -243,10 +242,10 @@ model InspectorProfile {
   /// (`effectiveBaseFeeCents`), because the bound moves - a regional tariff
   /// changes, an operator edits the tolerance - and a value that was legal when
   /// it was typed must not drop the inspector out of dispatch weeks later.
-  baseFeeCents    Int?                                   @map("base_fee_cents")
-  available       Boolean                                @default(true)
-  stripeAccountId String?                                @unique @map("stripe_account_id")
-  stripeOnboarded Boolean                                @default(false) @map("stripe_onboarded")
+  baseFeeCents       Int?                                   @map("base_fee_cents")
+  available          Boolean                                @default(true)
+  stripeAccountId    String?                                @unique @map("stripe_account_id")
+  stripeOnboarded    Boolean                                @default(false) @map("stripe_onboarded")
   /// Country of the Stripe connected account, ISO 3166-1 alpha-2, upper case.
   ///
   /// Stripe fixes an account's country AT CREATION and offers no way to change
@@ -257,16 +256,16 @@ model InspectorProfile {
   ///
   /// Null with an account present means "created before the country became a
   /// choice"; the migration backfills those to DE, which is what the code sent.
-  stripeCountry      String?                             @map("stripe_country")
+  stripeCountry      String?                                @map("stripe_country")
   /// Stripe `business_type`: individual | company | non_profit | government_entity.
   ///
   /// Null means the inspector has not said, and Express onboarding asks them —
   /// which is the freest answer and the default. It was hardcoded to
   /// `individual` until 2026-08-19, so no company could be onboarded at all.
-  stripeBusinessType String?                             @map("stripe_business_type")
-  fcmToken        String?                                @map("fcm_token")
-  cancelCount     Int                                    @default(0) @map("cancel_count")
-  createdAt       DateTime                               @default(now())
+  stripeBusinessType String?                                @map("stripe_business_type")
+  fcmToken           String?                                @map("fcm_token")
+  cancelCount        Int                                    @default(0) @map("cancel_count")
+  createdAt          DateTime                               @default(now())
 
   user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   orders  Order[]      @relation("InspectorOrders")
@@ -329,6 +328,38 @@ model KycDocument {
   /// bucket; a value means the dedicated private KYC bucket. Recorded per row so
   /// the migration window is unambiguous rather than "everything moved at once".
   bucket        String?
+  /// SHA-256 of the bytes AS UPLOADED, before compression, lower-case hex.
+  ///
+  /// It exists so that a revoked inspector cannot walk back in under a new
+  /// account with the same four files: `submitApplication` holds an
+  /// application whose documents were already seen on a REJECTED one. The
+  /// per-user history check it supplements is keyed by `user_id`, which a new
+  /// registration resets.
+  ///
+  /// NULL on every row written before DEN-249. An old row matches nothing, so
+  /// the check is silent about the past rather than wrong about it.
+  ///
+  /// The hash is over the SOURCE bytes and not the stored object: an image is
+  /// re-encoded by `PhotoProcessingService`, and hashing its output would make
+  /// the value depend on the sharp build that happened to process it.
+  ///
+  /// It OUTLIVES the document. `purgeOldDocuments` deletes the object and
+  /// stamps `purged_at`, keeping the row - so the check still works after the
+  /// retention window, and it works on a digest rather than on the identity
+  /// document itself.
+  sha256        String?
+  /// Peppered SHA-256 of "issuing state | document code | document number",
+  /// read out of the document's machine-readable zone (DEN-250).
+  ///
+  /// It answers the question `sha256` cannot: the same passport photographed
+  /// AGAIN is a different file, and the same number. NULL whenever no zone was
+  /// read - an identity card without one, a bad photograph, the recogniser
+  /// switched off - and a NULL matches nothing, so an unreadable document is
+  /// treated exactly as it was before this column existed.
+  ///
+  /// The state and the code are part of the hashed string because a document
+  /// number is unique within a country and not across them.
+  idNumberHash  String?   @map("id_number_hash")
   uploadedAt    DateTime  @default(now())
   purgedAt      DateTime? @map("purged_at")
 
@@ -339,6 +370,10 @@ model KycDocument {
   /// — the reviewer could be looking at a superseded document.
   @@unique([applicationId, kind])
   @@index([applicationId])
+  /// Read on every submit, to find this application's hashes on somebody
+  /// else's rejected one.
+  @@index([sha256])
+  @@index([idNumberHash])
   @@map("kyc_document")
 }
 
@@ -446,12 +481,12 @@ model Order {
 }
 
 model OrderOffer {
-  id          String   @id @default(cuid())
-  orderId     String   @map("order_id")
-  inspectorId String   @map("inspector_id")
-  status      String   @default("PENDING") // PENDING|ACCEPTED|DECLINED|EXPIRED
-  expiresAt   DateTime @map("expires_at")
-  createdAt   DateTime @default(now())
+  id             String   @id @default(cuid())
+  orderId        String   @map("order_id")
+  inspectorId    String   @map("inspector_id")
+  status         String   @default("PENDING") // PENDING|ACCEPTED|DECLINED|EXPIRED
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now())
   /// Great-circle kilometres from THIS inspector to the vehicle, one direction,
   /// recorded when the offer was made.
   ///
@@ -510,19 +545,19 @@ model PricingZone {
   /// Every money field is nullable, and null means "the band says nothing about
   /// this — ask the next level". That is what makes a band able to move one
   /// term (the per-km rate) without restating the base fee.
-  baseFeeCents    Int?
-  perKmCents      Int?
+  baseFeeCents       Int?
+  perKmCents         Int?
   ratePerMinuteCents Int?
   minimumFareCents   Int?
   /// Kilometres inside which no travel charge applies.
-  freeRadiusKm    Decimal? @db.Decimal(6, 2)
+  freeRadiusKm       Decimal? @db.Decimal(6, 2)
   /// Refuse the quote above this — a 400 km trip prices an inspection above the
   /// value of the car, and nobody accepts it anyway.
-  capKm           Decimal? @db.Decimal(7, 2)
+  capKm              Decimal? @db.Decimal(7, 2)
   /// How many times the measured one-direction trip is charged. A rate quoted
   /// from a national mileage allowance is defined on the return trip, so a band
   /// that sets `perKmCents` from one must set this to 2.
-  returnTripFactor Decimal? @db.Decimal(4, 2)
+  returnTripFactor   Decimal? @db.Decimal(4, 2)
 
   countries CountryTariff[]
 
@@ -552,8 +587,8 @@ enum RateDerivation {
 /// A single country's tariff, overriding its band field by field.
 model CountryTariff {
   /// ISO 3166-1 alpha-2, upper case. Matches `Order.countryCode`.
-  countryCode String @id @map("country_code")
-  zoneId      String? @map("zone_id")
+  countryCode String       @id @map("country_code")
+  zoneId      String?      @map("zone_id")
   zone        PricingZone? @relation(fields: [zoneId], references: [id])
 
   baseFeeCents       Int?
@@ -564,7 +599,7 @@ model CountryTariff {
   capKm              Decimal? @db.Decimal(7, 2)
   returnTripFactor   Decimal? @db.Decimal(4, 2)
 
-  derivation RateDerivation?
+  derivation     RateDerivation?
   /// The rate as the source publishes it, in the source's own currency and its
   /// own unit — `0.45` with `sourceCurrency` GBP and `sourcePerMile` true.
   ///
@@ -572,11 +607,11 @@ model CountryTariff {
   /// moment the exchange rate moves and our EUR figure does not. Storing only
   /// the converted cents makes it impossible to say six months later where the
   /// number came from, and a per-mile rate converted twice is wrong by 1.6.
-  sourceRate     Decimal? @db.Decimal(10, 4)
-  sourceCurrency String?  @db.VarChar(3)
-  sourcePerMile  Boolean  @default(false)
+  sourceRate     Decimal?        @db.Decimal(10, 4)
+  sourceCurrency String?         @db.VarChar(3)
+  sourcePerMile  Boolean         @default(false)
   /// The rate used to convert `sourceRate` into cents, and when it was taken.
-  fxRate         Decimal? @db.Decimal(12, 6)
+  fxRate         Decimal?        @db.Decimal(12, 6)
   fxDate         DateTime?
   /// Where the number is published. A rate anchored to law must cite the law.
   sourceUrl      String?
@@ -643,11 +678,10 @@ model Payment {
   canceledAt              DateTime? @map("canceled_at")
   createdAt               DateTime  @default(now())
 
-  order              Order?              @relation(fields: [orderId], references: [id])
-  user               User                @relation(fields: [userId], references: [id])
-  reportPurchase     ReportPurchase?
-  vinHistoryPurchase VinHistoryPurchase?
-  refund             Refund?
+  order          Order?          @relation(fields: [orderId], references: [id])
+  user           User            @relation(fields: [userId], references: [id])
+  reportPurchase ReportPurchase?
+  refund         Refund?
 
   @@index([userId])
   @@index([status, createdAt])
@@ -1035,81 +1069,6 @@ model PlatformSetting {
 /// Providers charge per lookup, so the fetch is cached for `vinHistoryCacheDays`
 /// and SHARED across buyers: two users unlocking the same VIN inside the window
 /// pay twice but the provider is queried once.
-model VinHistoryReport {
-  id          String   @id @default(cuid())
-  vin         String   @db.VarChar(17)
-  /// Provider that produced this payload ('mock' until a real one is wired).
-  provider    String
-  /// Normalised VinHistoryPayloadV1 — the contract the API serves.
-  payload     Json
-  /// LEGACY. The shared archive written before each buyer got their own
-  /// snapshot; new rows leave it null. Kept because purchases fulfilled under
-  /// the old scheme still resolve their download through it.
-  rawS3Key    String?  @map("raw_s3_key")
-  recordCount Int      @default(0) @map("record_count")
-  fetchedAt   DateTime @default(now()) @map("fetched_at")
-  expiresAt   DateTime @map("expires_at")
-
-  purchases VinHistoryPurchase[]
-
-  @@unique([vin, provider])
-  @@index([expiresAt])
-  @@map("vin_history_report")
-}
-
-/// One user's paid unlock of one VIN.
-///
-/// `@@unique([userId, vin])` makes /unlock idempotent: a user cannot be charged
-/// twice for the same VIN, however many times the button is pressed or the
-/// webhook is replayed.
-///
-/// `payload` and `s3Key` are the PAID ARTEFACT: an immutable snapshot of what
-/// this buyer was sold, written once at fulfilment. They are deliberately a copy
-/// of `report.payload` / `report.rawS3Key` rather than a reference, because the
-/// linked `VinHistoryReport` is a SHARED provider cache that the next buyer of
-/// the same VIN overwrites once the cache window lapses. Reads fall back to the
-/// report only for purchases fulfilled before this column existed.
-model VinHistoryPurchase {
-  id            String    @id @default(cuid())
-  userId        String    @map("user_id")
-  vin           String    @db.VarChar(17)
-  reportId      String?   @map("report_id")
-  paymentId     String?   @unique @map("payment_id")
-  /// pending | ready | failed | refunded
-  status        String    @default("pending")
-  provider      String?
-  failureReason String?   @map("failure_reason")
-  /// Immutable snapshot of the payload this buyer paid for.
-  payload       Json?
-  /// R2 key of this buyer's own archived copy, served only via a signed URL.
-  s3Key         String?   @map("s3_key")
-  /// R2 key of the rendered PDF. The key carries the locale, so re-rendering in
-  /// another language adds a document instead of overwriting one.
-  pdfS3Key      String?   @map("pdf_s3_key")
-  pdfLocale     String?   @map("pdf_locale")
-  pdfRenderedAt DateTime? @map("pdf_rendered_at")
-  /// Render attempts, capped — a payload the renderer cannot handle must not
-  /// retry on every download. A render failure never fails the sale: the JSON
-  /// view stays available.
-  pdfAttempts   Int       @default(0) @map("pdf_attempts")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  readyAt       DateTime? @map("ready_at")
-
-  /// Opaque, unguessable token for the public report link, or null when the
-  /// buyer has not shared it. Minting is explicit and revoking sets it back to
-  /// null, so the link is off by default and its whole lifetime is the owner's
-  /// decision. Unique because it is the sole lookup key on a public route.
-  shareToken          String?   @unique @map("share_token")
-  shareTokenCreatedAt DateTime? @map("share_token_created_at")
-
-  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  report  VinHistoryReport? @relation(fields: [reportId], references: [id])
-  payment Payment?          @relation(fields: [paymentId], references: [id])
-
-  @@unique([userId, vin])
-  @@index([userId, createdAt])
-  @@map("vin_history_purchase")
-}
 
 model WaitlistEntry {
   id        String                                 @id @default(cuid())

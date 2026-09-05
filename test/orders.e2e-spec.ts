@@ -219,14 +219,16 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .expect(200);
 
     expect(res.body.available).toBe(true);
-    // Co-located inspector → no distance fee; the fare is base + one minute,
-    // which sits below the minimum fare and is floored up to it.
+    // Co-located inspector → no distance fee; the fare is base + one minute.
+    // Whether the floor then decides it comes from the tariff, not from a
+    // fixed expectation: this test is about the split, and it must not fail
+    // the day the minimum fare moves (it did, 49 → 5 on 2026-09-04).
     expect(res.body.breakdown.baseFeeCents).toBe(FARE.baseFeeCents);
     expect(res.body.breakdown.distanceFeeCents).toBe(0);
     expect(res.body.breakdown.timeFeeCents).toBe(FARE.timeFeeCents);
-    expect(res.body.breakdown.minimumFareApplied).toBe(true);
+    expect(res.body.breakdown.minimumFareApplied).toBe(FARE.minimumFareApplied);
     expect(res.body.breakdown.minimumFareTopUpCents).toBe(
-      FARE.totalCents - FARE.subtotalCents,
+      FARE.minimumFareTopUpCents,
     );
     // No Mapbox token in .env.test, so the estimate is explicitly labelled.
     expect(res.body.breakdown.distanceSource).toBe('straight_line');
@@ -459,7 +461,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     // Two, not one: the routing floor of one minute is charged in both
     // directions, and the column stores what was billed.
     expect(order!.durationMin).toBe(2);
-    expect(order!.minimumFareApplied).toBe(true);
+    expect(order!.minimumFareApplied).toBe(FARE.minimumFareApplied);
     expect(order!.routingSource).toBe('haversine');
 
     const payment = await prisma.payment.findUnique({ where: { orderId: order!.id } });

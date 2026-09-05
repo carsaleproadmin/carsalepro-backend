@@ -20,9 +20,6 @@ export const SETTING_KEYS = {
   orderRoutingCacheHours: 'orderRoutingCacheHours',
   platformFeePercent: 'platformFeePercent',
   payPerViewPriceEur: 'payPerViewPriceEur',
-  vinHistoryPriceEur: 'vinHistoryPriceEur',
-  vinHistoryCacheDays: 'vinHistoryCacheDays',
-  vinHistoryEmptyCacheDays: 'vinHistoryEmptyCacheDays',
   goldPackagePriceEur: 'goldPackagePriceEur',
   standardListingPriceEur: 'standardListingPriceEur',
   listingDurationDays: 'listingDurationDays',
@@ -67,7 +64,27 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    */
   orderRatePerKmEur: 0.3,
   orderRatePerMinuteEur: 0.35,
-  orderMinimumFareEur: 49,
+  /**
+   * The floor under the fare. Owner's decision of 2026-09-04: 5, down from 49.
+   *
+   * 49 was the price of a short job outright - it decided the fare for every
+   * order inside roughly 37 km, because the base plus the travel does not reach
+   * it before then. Two consequences followed, and lowering the floor is what
+   * removes both.
+   *
+   * An inspector's own base fee was invisible: 5 and 39 produced the same 49 on
+   * a nearby job, so the one number DEN-213 gave them to set changed nothing
+   * where most orders are. And the floor, not the tariff, was answering what an
+   * inspection costs - regional pricing included, since it topped up every
+   * cheaper country to the same figure.
+   *
+   * What it stops protecting is the question the floor was there to answer: at
+   * what point is a job worth the drive. Nothing else answers it now - a job
+   * next door prices at the base plus a few minutes - so if short jobs turn out
+   * to be unprofitable, the answer is a higher base or a per-order call-out
+   * charge, not this number quietly going back up.
+   */
+  orderMinimumFareEur: 5,
   /** Manual admin lever. 1 = off. Applied on top of the peak multiplier. */
   orderSurgeMultiplier: 1,
   /** 1 = off. Set above 1 to charge more inside the peak window below. */
@@ -134,31 +151,6 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   orderRoutingCacheHours: 24,
   platformFeePercent: 20,
   payPerViewPriceEur: 14.99,
-  vinHistoryPriceEur: 19.99,
-  /** How long a purchased VIN history stays reusable before a refetch. */
-  vinHistoryCacheDays: 30,
-  /**
-   * How long we remember that a VIN has NO records, so we stop paying to be
-   * told again.
-   *
-   * The provider bills per lookup and a record-less answer costs the same as a
-   * full one. Without this, every attempt on the same VIN pays that fee again,
-   * refunds the buyer, and — before the preview gate landed — alerted every
-   * admin. Remembering the empty answer turns the second attempt into a free
-   * refusal.
-   *
-   * It is much shorter than `vinHistoryCacheDays` on purpose, and the two
-   * numbers are answering different questions. A full report ages slowly: the
-   * facts in it stay true. "No records" is not a fact about the car, it is a
-   * fact about the database on the day we asked, and it stops being true the
-   * first time the car is titled, written off or auctioned. Seven days keeps
-   * the repeat-billing window small while a VIN that gains its first record
-   * becomes sellable again within the week.
-   *
-   * Set to 0 to disable the negative cache entirely — every attempt then pays
-   * the provider again, which is the pre-2026-08 behaviour.
-   */
-  vinHistoryEmptyCacheDays: 7,
   goldPackagePriceEur: 9.99,
   standardListingPriceEur: 0,
   listingDurationDays: 30,
@@ -246,7 +238,6 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   'expertSearchRadiusKm',
   'orderRatePerMinuteEur',
   'orderMinimumFareEur',
-  'vinHistoryPriceEur',
   // How long the customer's hold is held while we look for an inspector. The
   // website shows it on the order page as "we are searching until …", so it has
   // to be public: a countdown the client invents from a hardcoded constant

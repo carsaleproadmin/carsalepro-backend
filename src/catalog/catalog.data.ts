@@ -19,7 +19,7 @@
  *
  * Additive extensions (catalog version stays '1'):
  *  - `angles[].hint`   — capture instruction explaining the walk-around order.
- *  - `thicknessPanels` — the 13 guided paint-thickness (Lackdicke) stations.
+ *  - `thicknessPanels` — the 17 guided paint-thickness (Lackdicke) stations.
  */
 
 /**

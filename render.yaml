@@ -59,6 +59,12 @@ services:
         sync: false
       - key: R2_KYC_SECRET_ACCESS_KEY
         sync: false
+      # Pepper for the stored KYC document-number digest (DEN-250). Optional:
+      # unset, the digest is still computed and is simply weaker. Changing it
+      # retires every hash already stored, which lets an applicant through
+      # rather than accusing one.
+      - key: KYC_ID_HASH_PEPPER
+        sync: false
       # Pinned, not left to the code default: address verification and password
       # reset are delivered by email only, and Resend refuses a From address
       # whose domain it has not verified. `notifications.carsalepro.de` is the
@@ -67,8 +73,6 @@ services:
       - key: EMAIL_FROM
         value: CarSalePro <no-reply@notifications.carsalepro.de>
       - key: RESEND_API_KEY
-        sync: false
-      - key: VIN_HISTORY_ALLOW_SYNTHETIC_SALE
         sync: false
       - key: SENTRY_DSN
         sync: false

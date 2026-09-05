@@ -32,11 +32,36 @@ export class AdminKycQueueItemDto {
 
   @ApiProperty({ example: '2026-06-14T09:55:00.000Z' })
   createdAt!: string;
+
+  /**
+   * The admin's user id, or the literal `auto` when the platform approved the
+   * application itself and nobody read the documents. Null while undecided.
+   */
+  @ApiProperty({
+    example: 'auto',
+    nullable: true,
+    description: "Admin user id, or 'auto' when approved automatically with no human review.",
+  })
+  reviewedBy!: string | null;
+
+  @ApiProperty({ example: '2026-06-14T11:00:00.000Z', nullable: true })
+  reviewedAt!: string | null;
 }
 
 export class AdminKycQueueDto {
   @ApiProperty({ type: [AdminKycQueueItemDto] })
   items!: AdminKycQueueItemDto[];
+
+  /**
+   * How many rows match, before `limit` and `offset`.
+   *
+   * The list is now every approved inspector rather than the few applications
+   * that wait for a decision, so a page of it says nothing about the size of
+   * the set. Without this number a caller cannot tell a complete answer from a
+   * truncated one, and an admin reading the screen cannot either.
+   */
+  @ApiProperty({ example: 137 })
+  total!: number;
 }
 
 /** A document with a short-lived signed view URL (GET /admin/kyc/:id). */

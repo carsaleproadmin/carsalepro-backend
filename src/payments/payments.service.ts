@@ -222,22 +222,14 @@ export class PaymentsService {
         } else if (meta.purpose === 'gold' && meta.paymentId && meta.listingId) {
           await this.activateGoldListing(meta.paymentId, meta.listingId);
           this.logger.log(`Gold listing ${meta.listingId} activated for payment ${meta.paymentId}`);
-        } else if (
-          meta.purpose === 'vin_history' &&
-          meta.paymentId &&
-          meta.purchaseId &&
-          meta.vin
-        ) {
-          const vinHistory = await this.resolveVinHistoryService();
-          if (vinHistory) {
-            await vinHistory.fulfillFromWebhook(meta.paymentId, meta.purchaseId, meta.vin);
-            this.logger.log(`VIN history purchase ${meta.purchaseId} settled`);
-          } else {
-            // Throwing leaves the event unrecorded, so Stripe redelivers it once
-            // the module is up — better than silently keeping the money.
-            throw new Error('VinHistoryService unavailable — cannot settle vin_history payment');
-          }
         }
+        /*
+         * There is no `vin_history` branch any more (DEN-245). The paid VIN
+         * history was withdrawn and its module is deleted, so nothing can mint
+         * such a session; a redelivery of a historical one falls through and is
+         * marked processed rather than throwing for ever against a service that
+         * no longer exists.
+         */
         break;
       }
       case 'payment_intent.amount_capturable_updated': {
@@ -478,29 +470,20 @@ export class PaymentsService {
    * purchase again.
    */
   async revokeEntitlementsFor(payment: Pick<Payment, 'id'>): Promise<void> {
-    const [vinChecks, reportPurchases] = await Promise.all([
-      // `status: 'ready'` ONLY. Revocation withdraws access, and a purchase that
-      // never reached `ready` never granted any — so there is nothing to take
-      // away, and moving it to `refunded` does two kinds of damage. It destroys
-      // `failureReason`, which is the only record of WHY the provider failed;
-      // and it asserts "this buyer's money went back" on a row whose refund may
-      // itself have failed, which is precisely the case the ledger must not lie
-      // about. A failed purchase stays `failed`; the money is tracked on the
-      // Payment and the Refund, where it belongs.
-      this.prisma.vinHistoryPurchase.updateMany({
-        where: { paymentId: payment.id, status: 'ready' },
-        data: { status: 'refunded', failureReason: 'payment_refunded' },
-      }),
-      this.prisma.reportPurchase.updateMany({
-        where: { paymentId: payment.id, revokedAt: null },
-        data: { revokedAt: new Date(), revokedReason: 'payment_refunded' },
-      }),
-    ]);
+    /*
+     * Only `ReportPurchase` now. The VIN history table was dropped in DEN-246
+     * along with the rest of that product; a historical `vin_history` payment
+     * can still be refunded, and the refund is recorded where it belongs - on
+     * the Payment and the Refund - with no entitlement left to withdraw.
+     */
+    const reportPurchases = await this.prisma.reportPurchase.updateMany({
+      where: { paymentId: payment.id, revokedAt: null },
+      data: { revokedAt: new Date(), revokedReason: 'payment_refunded' },
+    });
 
-    if (vinChecks.count > 0 || reportPurchases.count > 0) {
+    if (reportPurchases.count > 0) {
       this.logger.log(
-        `Payment ${payment.id} refunded — revoked ${reportPurchases.count} report purchase(s) ` +
-          `and ${vinChecks.count} VIN check(s)`,
+        `Payment ${payment.id} refunded — revoked ${reportPurchases.count} report purchase(s)`,
       );
     }
   }
@@ -648,22 +631,6 @@ export class PaymentsService {
     try {
       const { OrdersService } = await import('../orders/orders.service');
       return this.moduleRef.get(OrdersService, { strict: false });
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Lazily resolve VinHistoryService. Same pattern as OrdersService above:
-   * VinHistoryModule imports PaymentsModule for StripeService, so importing it
-   * back here would be a cycle. Returns null when the module is not loaded.
-   */
-  private async resolveVinHistoryService(): Promise<{
-    fulfillFromWebhook: (paymentId: string, purchaseId: string, vin: string) => Promise<void>;
-  } | null> {
-    try {
-      const { VinHistoryService } = await import('../vin-history/vin-history.service');
-      return this.moduleRef.get(VinHistoryService, { strict: false });
     } catch {
       return null;
     }

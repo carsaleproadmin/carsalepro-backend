@@ -19,8 +19,6 @@ export interface PriceCatalog {
   goldPackageCents: number;
   /** Standard listing package — 0 today, but read it rather than assume. */
   standardListingCents: number;
-  /** Paid VIN history check. */
-  vinHistoryCents: number;
 
   /** Order tariff, itemised so the UI can explain the fare before geocoding. */
   orderBaseFeeCents: number;

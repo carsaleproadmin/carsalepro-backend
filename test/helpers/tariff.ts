@@ -108,5 +108,16 @@ export function colocatedQuote(overrides: Partial<Record<SettingKey, number>> = 
     totalCents,
     platformFeeCents,
     inspectorShareCents: totalCents - platformFeeCents,
+    /*
+     * Whether the FLOOR decided this fare, derived rather than assumed.
+     *
+     * Callers used to assert `minimumFareApplied: true` outright, which was
+     * true only because the floor stood at 49 and swallowed every short job.
+     * At 5 it swallows none of them, and a hardcoded `true` then failed in
+     * tests that are not about the floor at all. Derived here, the same
+     * assertion states the rule instead of today's number.
+     */
+    minimumFareApplied: totalCents > subtotalCents,
+    minimumFareTopUpCents: totalCents - subtotalCents,
   };
 }
