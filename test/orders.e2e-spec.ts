@@ -1988,6 +1988,123 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   // ============================================================
   // 10. Dispute from SUBMITTED → DISPUTED
   // ============================================================
+  // ============================================================
+  // 9e-9h. The accepted order that never starts (DEN-269)
+  // ============================================================
+  it('9e. an ASSIGNED order past its deadline is cancelled and refunded in full', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+
+    // Acceptance sets the clock, so the deadline exists before anything is done
+    // to it — the property the sweep depends on.
+    const assigned = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(assigned!.inspectionDeadlineAt).toBeTruthy();
+
+    // Seven days are not testable; `src/testing` moves the deadline instead of
+    // the spec writing the column, so the cron meets a state the app produces.
+    await request(app.getHttpServer())
+      .post(`/api/v1/testing/orders/${orderId}/expire-inspection-deadline`)
+      .expect(200);
+
+    const { cancelled } = await orders.sweepAbandonedInspections();
+    expect(cancelled).toBeGreaterThanOrEqual(1);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('CANCELLED');
+
+    // The money was captured on acceptance, so all of it goes back.
+    const refund = await prisma.refund.findFirst({ where: { orderId } });
+    expect(refund!.amountCents).toBe(FARE.totalCents);
+    expect(refund!.reason).toBe('inspector_no_show');
+
+    const profile = await prisma.inspectorProfile.findUnique({ where: { userId: assignedId } });
+    expect(profile!.cancelCount).toBe(1);
+
+    // Its own letter: there is no reason to quote, and `order.cancelled` would
+    // tell the reader they cancelled.
+    const notes = await prisma.notification.findMany({ where: { userId: customer.userId } });
+    const types = notes.map((n) => n.type);
+    expect(types).toContain('order.inspector_no_show');
+    expect(types).not.toContain('order.cancelled');
+
+    // The website reads the panel off this block, and must be able to tell a
+    // silent inspector from one who wrote a reason.
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(detail.body.declined.kind).toBe('no_show');
+    expect(detail.body.declined.reason).toBe('');
+    expect(detail.body.declined.refundCents).toBe(FARE.totalCents);
+  });
+
+  it('9f. an order inside its deadline is untouched', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    await acceptPendingOffer(orderId);
+
+    const { cancelled } = await orders.sweepAbandonedInspections();
+    expect(cancelled).toBe(0);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('ASSIGNED');
+    expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
+  });
+
+  it('9g. an IN_PROGRESS order is never swept, deadline or no deadline', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'IN_PROGRESS' })
+      .expect(200);
+    // The deadline is moved directly here: the testing affordance is
+    // status-blind on purpose, and what this pins is that the SWEEP refuses.
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { inspectionDeadlineAt: new Date(Date.now() - 60_000) },
+    });
+
+    const { cancelled } = await orders.sweepAbandonedInspections();
+    expect(cancelled).toBe(0);
+
+    // The inspector may be standing at the car. Taking the job away here is a
+    // dispute's decision, not a cron's.
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('IN_PROGRESS');
+  });
+
+  it('9h. an order with NO deadline is left alone', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    await acceptPendingOffer(orderId);
+
+    // An order assigned before the rule shipped. Null is never backfilled, and
+    // sweeping one would cancel live work under a rule it never had.
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { inspectionDeadlineAt: null },
+    });
+
+    const { cancelled } = await orders.sweepAbandonedInspections();
+    expect(cancelled).toBe(0);
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('ASSIGNED');
+  });
+
   it('10. dispute from SUBMITTED → DISPUTED + Dispute row', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);

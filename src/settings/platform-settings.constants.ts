@@ -27,6 +27,7 @@ export const SETTING_KEYS = {
   offerTimeoutMinutes: 'offerTimeoutMinutes',
   orderSearchWindowMinutes: 'orderSearchWindowMinutes',
   autoApproveAfterDays: 'autoApproveAfterDays',
+  inspectionStartDeadlineDays: 'inspectionStartDeadlineDays',
   minReportQualityScore: 'minReportQualityScore',
   refundBeforeAssignPercent: 'refundBeforeAssignPercent',
   refundAfterAssignPercent: 'refundAfterAssignPercent',
@@ -178,6 +179,20 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    */
   orderSearchWindowMinutes: 360,
   autoApproveAfterDays: 7,
+  /**
+   * How long an accepted order may sit without the inspection starting, before
+   * the sweep cancels it and refunds the customer in full (DEN-269).
+   *
+   * The clock starts at ACCEPTANCE, not at the appointment: a customer who
+   * books three weeks out still gets an answer inside a week. Seven days is the
+   * owner's number — long enough for a rescheduled visit and a quiet week, short
+   * enough that captured money is never stranded for a month behind an
+   * inspector who stopped answering.
+   *
+   * Measured in DAYS rather than the minutes `orderSearchWindowMinutes` uses,
+   * because this window is the length of a holiday, not of a wait.
+   */
+  inspectionStartDeadlineDays: 7,
   /**
    * Completeness gate: an order may only be closed with a report scoring at
    * least this. **`0` disables the gate** — that is the operational lever, and

@@ -53,4 +53,41 @@ export class TestingController {
     await this.prisma.order.update({ where: { id }, data: { searchExpiresAt } });
     return { orderId: id, searchExpiresAt: searchExpiresAt.toISOString() };
   }
+
+  /**
+   * Move an accepted order's inspection deadline into the past (DEN-269).
+   *
+   * The counterpart of the affordance above, and there for the same reason: the
+   * real window is seven days, and a spec cannot wait for it. It refuses a NULL
+   * deadline for the same reason too — a null means "assigned before the rule
+   * existed, never sweep it", and inventing one in a test would prove the sweep
+   * works on a state production never reaches.
+   */
+  @Public()
+  @Post('orders/:id/expire-inspection-deadline')
+  @HttpCode(200)
+  async expireInspectionDeadline(@Param('id') id: string): Promise<{
+    orderId: string;
+    inspectionDeadlineAt: string;
+  }> {
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      select: { id: true, inspectionDeadlineAt: true },
+    });
+    if (!order) {
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Order not found' } });
+    }
+    if (!order.inspectionDeadlineAt) {
+      throw new ConflictException({
+        error: {
+          code: 'inspection_deadline_absent',
+          message: 'This order has no inspection deadline; it was assigned before the rule.',
+        },
+      });
+    }
+
+    const inspectionDeadlineAt = new Date(Date.now() - 60_000);
+    await this.prisma.order.update({ where: { id }, data: { inspectionDeadlineAt } });
+    return { orderId: id, inspectionDeadlineAt: inspectionDeadlineAt.toISOString() };
+  }
 }
