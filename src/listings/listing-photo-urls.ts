@@ -101,19 +101,41 @@ export function mirroredPhotoKey(listingId: string, sourceKey: string): string {
 /**
  * Slot kinds that must never reach a public surface, whatever a manifest says.
  *
- * `passport` holds the pages of the vehicle registration document, which carry
- * the name and the address of the owner. Three separate locks already stand in
- * front of it: the mobile app does not upload it (`sync_providers.dart` skips
- * `PhotoKind.passport`), it is not drawn into the PDF, and the website removes
- * it again in `lib/report-photos.ts`. All three are on a different machine from
- * this one. This is the lock on the surface that PUBLISHES - the only place
- * where a leak is a leak rather than a mistake in a client.
+ * ## The list is EMPTY, and that is a decision rather than an oversight
  *
- * Matched by PREFIX as well as in full. The app takes up to three pages, and a
- * later build that numbers them `passport-2` must not walk past a rule written
- * for a single slot.
+ * It held `passport` - the pages of the vehicle registration document, which
+ * carry the name and the address of the owner - until 2026-09-09. Three other
+ * locks stood in front of it: the app did not upload the kind, the PDF did not
+ * draw it, and the website dropped it again in `lib/report-photos.ts`. DEN-263
+ * removed all three, and then removed this one too, on the client's explicit
+ * instruction that the document appear on the PUBLIC car page in the base-data
+ * block "the same as the VIN plate and the odometer".
+ *
+ * Parity with those two is the whole of the instruction, so understand what
+ * they get. A kind absent from this list is not merely rendered on a page: it
+ * is MIRRORED INTO THE PUBLIC BUCKET by `mirrorPublicPhotos`, as a permanent,
+ * unsigned, CDN-cached object reachable by anyone holding the URL, with no
+ * authentication and no expiry, independent of the listing it was mirrored for.
+ * That is the real surface this list governs, and it is why the erasure sweep
+ * (`erasePublicPhotoObjects`) passes `includeNeverPublic: true` - it must be
+ * able to delete an object mirrored under any rule this file has ever had.
+ *
+ * What now stands between an owner's address and that surface is the inspector
+ * covering it before he finishes: the app warns him at the slot
+ * (`passportRedactNote`) and the photo editor burns the strokes into the JPEG
+ * rather than overlaying them. Nothing downstream checks his work. The privacy
+ * policy and the terms say so, in both repositories, and they had to be
+ * rewritten for this change because they previously promised the opposite.
+ *
+ * ## Why the mechanism survives the empty list
+ *
+ * Deleting it would have deleted `includeNeverPublic` with it, and the erasure
+ * sweep needs that flag to keep meaning "every key this manifest has ever
+ * produced". Re-banning a kind is then one entry, not a re-derivation. Matching
+ * stays by PREFIX as well as in full, so a build that numbers pages
+ * `passport-2` could not walk past a rule written for a single slot.
  */
-const NEVER_PUBLIC_KINDS = ['passport'] as const;
+const NEVER_PUBLIC_KINDS: readonly string[] = [];
 
 /** True when a slot kind must not be published, at any index. */
 export function isNeverPublicKind(kind: string | null | undefined): boolean {
