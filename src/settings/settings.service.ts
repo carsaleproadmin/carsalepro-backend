@@ -85,7 +85,6 @@ export class SettingsService {
       orderRatePerKmCents: await this.getCents('orderRatePerKmEur'),
       orderRatePerMinuteCents: await this.getCents('orderRatePerMinuteEur'),
       orderMinimumFareCents: await this.getCents('orderMinimumFareEur'),
-      listingDurationDays: await this.getNumber('listingDurationDays'),
       expertSearchRadiusKm: await this.getNumber('expertSearchRadiusKm'),
     };
   }

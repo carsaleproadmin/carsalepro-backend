@@ -8,7 +8,7 @@ import { OrdersService } from '../orders/orders.service';
 /**
  * Scheduled automation (E11). Reuses the existing deferred job methods on the
  * domain services — those already emit notifications where appropriate
- * (auto-approve → order.approved, listing expire → listing.expiring).
+ * (auto-approve → order.approved).
  *
  * The WHOLE scheduler is gated off when NODE_ENV==='test' OR
  * SCHEDULER_ENABLED==='false': every job short-circuits via `disabled`, so no
@@ -64,12 +64,6 @@ export class SchedulerService {
       if (approved > 0) this.logger.log(`autoApproveOverdue: ${approved} order(s) approved`);
     } catch (err) {
       this.logger.error(`autoApproveOverdue failed: ${(err as Error).message}`);
-    }
-    try {
-      const expired = await this.listings.expireOverdue();
-      if (expired > 0) this.logger.log(`expireOverdue: ${expired} listing(s) expired`);
-    } catch (err) {
-      this.logger.error(`listing expireOverdue failed: ${(err as Error).message}`);
     }
     try {
       const { cancelled } = await this.orders.sweepAbandonedInspections();

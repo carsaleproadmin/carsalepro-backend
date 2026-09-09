@@ -449,9 +449,9 @@ model Order {
   inspectorShareCents Int     @map("inspector_share_cents")
   currency            String  @default("EUR")
 
-  contractId      String?   @unique @map("contract_id")
-  autoApproveAt   DateTime? @map("auto_approve_at")
-  submittedAt     DateTime? @map("submitted_at")
+  contractId           String?   @unique @map("contract_id")
+  autoApproveAt        DateTime? @map("auto_approve_at")
+  submittedAt          DateTime? @map("submitted_at")
   /// Deadline for finding an inspector, set when the payment is AUTHORIZED.
   /// Past it with nobody assigned, the cron releases the hold and cancels.
   ///
@@ -459,7 +459,7 @@ model Order {
   /// before manual capture shipped already had its money CHARGED, so a release
   /// attempt would target a hold that does not exist. Null means "pre-manual-
   /// capture order — leave it alone".
-  searchExpiresAt DateTime? @map("search_expires_at")
+  searchExpiresAt      DateTime? @map("search_expires_at")
   /// Deadline for the inspection to START, set on entry to ASSIGNED (DEN-269).
   /// Past it in ASSIGNED or EN_ROUTE, the hourly sweep cancels the order and
   /// refunds the customer in full: the money was captured on acceptance, and an
@@ -469,7 +469,7 @@ model Order {
   /// `searchExpiresAt`: an order assigned before this shipped has no deadline,
   /// and sweeping it would cancel live work on a rule it was never given.
   inspectionDeadlineAt DateTime? @map("inspection_deadline_at")
-  createdAt       DateTime  @default(now())
+  createdAt            DateTime  @default(now())
 
   customer  User              @relation("CustomerOrders", fields: [customerId], references: [id])
   inspector InspectorProfile? @relation("InspectorOrders", fields: [inspectorId], references: [userId])
@@ -801,6 +801,8 @@ model StripeWebhookEvent {
 enum ListingStatus {
   DRAFT
   ACTIVE
+  /// UNUSED since listings stopped expiring. Kept in the type because removing
+  /// an enum value rewrites it, and no row carries this value any more.
   EXPIRED
   SOLD
   HIDDEN
@@ -890,7 +892,6 @@ model Listing {
   /// signed URLs.
   publicPhotosMirroredAt DateTime?     @map("public_photos_mirrored_at")
   publishedAt            DateTime?     @map("published_at")
-  expiresAt              DateTime?     @map("expires_at")
   createdAt              DateTime      @default(now())
 
   seller User           @relation(fields: [sellerId], references: [id])

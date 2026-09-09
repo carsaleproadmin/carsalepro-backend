@@ -26,7 +26,6 @@ export interface PriceCatalog {
   orderRatePerMinuteCents: number;
   orderMinimumFareCents: number;
 
-  /** Non-money, but they belong to the same "what does this cost me" answer. */
-  listingDurationDays: number;
+  /** Non-money, but it belongs to the same "what does this cost me" answer. */
   expertSearchRadiusKm: number;
 }

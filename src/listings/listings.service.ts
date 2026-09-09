@@ -313,10 +313,9 @@ export class ListingsService {
     await this.assertPublishable(listing);
 
     if (pkg === 'standard') {
-      const { expiresAt } = await this.activateStandard(id);
+      await this.activateStandard(id);
       return {
         status: 'ACTIVE',
-        expiresAt: expiresAt.toISOString(),
         amountCents: await this.settings.getCents('standardListingPriceEur'),
         currency: 'EUR',
       };
@@ -392,19 +391,21 @@ export class ListingsService {
 
   /**
    * The package price list. Exists so the seller-facing picker renders live
-   * tariffs — before this, the prices and the 30-day duration were hardcoded
-   * strings inside the website's translation files, one copy per locale.
+   * tariffs — before this, the prices were hardcoded strings inside the
+   * website's translation files, one copy per locale.
+   *
+   * A published listing has NO end date (DEN-XXX): it stays in the showroom
+   * until the seller hides it or marks it sold, so no duration is quoted here.
    */
   async packages(): Promise<ListingPackagesDto> {
-    const [standardCents, goldCents, durationDays] = await Promise.all([
+    const [standardCents, goldCents] = await Promise.all([
       this.settings.getCents('standardListingPriceEur'),
       this.settings.getCents('goldPackagePriceEur'),
-      this.settings.getNumber('listingDurationDays'),
     ]);
     return {
       items: [
-        { package: 'standard', amountCents: standardCents, currency: 'EUR', durationDays },
-        { package: 'gold', amountCents: goldCents, currency: 'EUR', durationDays },
+        { package: 'standard', amountCents: standardCents, currency: 'EUR' },
+        { package: 'gold', amountCents: goldCents, currency: 'EUR' },
       ],
     };
   }
@@ -419,28 +420,6 @@ export class ListingsService {
   async markSold(userId: string, id: string): Promise<Listing> {
     await this.requireOwnedListing(userId, id);
     return this.prisma.listing.update({ where: { id }, data: { status: 'SOLD' } });
-  }
-
-  /** Renew an EXPIRED/ACTIVE listing: extend expiry and set ACTIVE. */
-  async renew(userId: string, id: string): Promise<Listing> {
-    const listing = await this.requireOwnedListing(userId, id);
-    if (listing.status !== 'EXPIRED' && listing.status !== 'ACTIVE') {
-      throw new BadRequestException({
-        error: { code: 'not_renewable', message: 'Only active or expired listings can be renewed' },
-      });
-    }
-    const durationDays = await this.settings.getNumber('listingDurationDays');
-    // Measured from whichever is later, now or the current expiry — DEN-177.
-    // The cabinet now offers renewal in the advert's last week, and measuring
-    // from `now` would charge the seller the days they have not used yet:
-    // renewing with 6 days left would have LOST 6 days. An expired listing has
-    // no unused time, so for it this is unchanged.
-    const from = Math.max(Date.now(), listing.expiresAt?.getTime() ?? 0);
-    const expiresAt = new Date(from + durationDays * 86_400_000);
-    return this.prisma.listing.update({
-      where: { id },
-      data: { status: 'ACTIVE', expiresAt, publishedAt: listing.publishedAt ?? new Date() },
-    });
   }
 
   // ============================================================
@@ -657,26 +636,14 @@ export class ListingsService {
   }
 
   /**
-   * Admin: restore a hidden/expired listing. Returns it to ACTIVE if its
-   * expiry is still in the future, otherwise EXPIRED.
+   * Admin: restore a hidden listing to the showroom. A listing has no end
+   * date, so this is unconditional.
    */
   async adminUnhide(id: string): Promise<Listing> {
     const listing = await this.requireListing(id);
-    const stillValid = listing.expiresAt ? listing.expiresAt.getTime() > Date.now() : false;
     return this.prisma.listing.update({
       where: { id },
-      data: { status: stillValid ? 'ACTIVE' : 'EXPIRED' },
-    });
-  }
-
-  /** Admin: extend a listing's expiry by listingDurationDays and set it ACTIVE. */
-  async adminRenew(id: string): Promise<Listing> {
-    const listing = await this.requireListing(id);
-    const durationDays = await this.settings.getNumber('listingDurationDays');
-    const expiresAt = new Date(Date.now() + durationDays * 86_400_000);
-    return this.prisma.listing.update({
-      where: { id },
-      data: { status: 'ACTIVE', expiresAt, publishedAt: listing.publishedAt ?? new Date() },
+      data: { status: 'ACTIVE', publishedAt: listing.publishedAt ?? new Date() },
     });
   }
 
@@ -736,39 +703,12 @@ export class ListingsService {
           ? manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).length
           : l._count.photos,
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
-      expiresAt: l.expiresAt ? l.expiresAt.toISOString() : null,
       viewsCount: l.viewsCount,
     }));
 
     return { items };
   }
 
-  /**
-   * Flip ACTIVE listings whose expiry has passed to EXPIRED. Exposed for the
-   * cron/worker. Returns the number of listings swept. Emits a
-   * `listing.expiring` notification to each affected seller (non-throwing).
-   */
-  async expireOverdue(): Promise<number> {
-    const overdue = await this.prisma.listing.findMany({
-      where: { status: 'ACTIVE', expiresAt: { lt: new Date() } },
-    });
-    if (overdue.length === 0) return 0;
-
-    const { count } = await this.prisma.listing.updateMany({
-      where: { id: { in: overdue.map((l) => l.id) } },
-      data: { status: 'EXPIRED' },
-    });
-
-    for (const l of overdue) {
-      await this.notifications.notify(l.sellerId, 'listing.expiring', {
-        listingId: l.id,
-        make: l.make,
-        model: l.model,
-      });
-    }
-    if (count > 0) this.logger.log(`Expired ${count} overdue listing(s)`);
-    return count;
-  }
 
   /**
    * The publication hook: notify the seller, then make sure the listing's
@@ -1052,16 +992,12 @@ export class ListingsService {
     return totals;
   }
 
-  private async activateStandard(id: string): Promise<{ expiresAt: Date }> {
-    const durationDays = await this.settings.getNumber('listingDurationDays');
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + durationDays * 86_400_000);
+  private async activateStandard(id: string): Promise<void> {
     await this.prisma.listing.update({
       where: { id },
-      data: { status: 'ACTIVE', package: 'standard', publishedAt: now, expiresAt },
+      data: { status: 'ACTIVE', package: 'standard', publishedAt: new Date() },
     });
     await this.notifyListingPublished(id);
-    return { expiresAt };
   }
 
   /** Load a listing the user owns, or throw 404/403. */

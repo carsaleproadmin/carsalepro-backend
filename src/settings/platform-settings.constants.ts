@@ -22,7 +22,6 @@ export const SETTING_KEYS = {
   payPerViewPriceEur: 'payPerViewPriceEur',
   goldPackagePriceEur: 'goldPackagePriceEur',
   standardListingPriceEur: 'standardListingPriceEur',
-  listingDurationDays: 'listingDurationDays',
   expertSearchRadiusKm: 'expertSearchRadiusKm',
   offerTimeoutMinutes: 'offerTimeoutMinutes',
   orderSearchWindowMinutes: 'orderSearchWindowMinutes',
@@ -154,7 +153,6 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   payPerViewPriceEur: 14.99,
   goldPackagePriceEur: 9.99,
   standardListingPriceEur: 0,
-  listingDurationDays: 30,
   /**
    * How far dispatch looks for an inspector, as a STRAIGHT LINE.
    *
@@ -249,7 +247,6 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   'payPerViewPriceEur',
   'goldPackagePriceEur',
   'standardListingPriceEur',
-  'listingDurationDays',
   'expertSearchRadiusKm',
   'orderRatePerMinuteEur',
   'orderMinimumFareEur',

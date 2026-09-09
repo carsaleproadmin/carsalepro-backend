@@ -69,7 +69,6 @@ describe('Public showroom + report check (e2e)', () => {
         year: 2019,
         mileageKm: 84500,
         publishedAt: new Date(),
-        expiresAt: new Date(Date.now() + 30 * 86400000),
       },
     });
     listingId = listing.id;
@@ -175,7 +174,7 @@ describe('Public showroom + report check (e2e)', () => {
       });
       await prisma.listing.update({
         where: { id: listingId },
-        data: { status: 'ACTIVE', expiresAt: null },
+        data: { status: 'ACTIVE' },
       });
     });
 
@@ -273,22 +272,6 @@ describe('Public showroom + report check (e2e)', () => {
 
     it('10-4. 404s once the car is off the market', async () => {
       await prisma.listing.update({ where: { id: listingId }, data: { status: 'HIDDEN' } });
-      await request(app.getHttpServer())
-        .get(`/api/v1/public/reports/${code}/full`)
-        .expect(404);
-    });
-
-    it('10-5. 404s once the listing has expired', async () => {
-      /*
-       * The other half of the gate. ACTIVE is not sufficient on its own - a
-       * listing keeps that status after `expiresAt` goes by, and the showroom
-       * stops showing it at that moment. The report has to stop with it, or a
-       * bookmarked code would outlive the advertisement it belongs to.
-       */
-      await prisma.listing.update({
-        where: { id: listingId },
-        data: { expiresAt: new Date(Date.now() - 60_000) },
-      });
       await request(app.getHttpServer())
         .get(`/api/v1/public/reports/${code}/full`)
         .expect(404);
@@ -445,8 +428,7 @@ describe('Public showroom + report check (e2e)', () => {
             selfDeclaration: { accidentFreeClaimed: true, ownersCount: 2 },
           },
           publishedAt: new Date(),
-          expiresAt: new Date(Date.now() + 30 * 86400000),
-        },
+          },
       });
       manualId = manual.id;
     });
@@ -612,7 +594,6 @@ describe('Public showroom + report check (e2e)', () => {
         priceCents: 1000000, city: 'Berlin', publishedAt: new Date(),
         make: 'BMW', model: '318i', year: 2017,
         ...listingSearchColumns({ city: 'Berlin', make: 'BMW', model: '318i' }),
-        expiresAt: new Date(Date.now() + 30 * 86400000),
       },
     });
     try {

@@ -46,20 +46,4 @@ export class AdminListingsController {
     return { id: listing.id, status: listing.status };
   }
 
-  @Post(':id/renew')
-  @HttpCode(200)
-  @ApiOperation({ summary: 'Renew a listing (admin)' })
-  @ApiParam({ name: 'id' })
-  async renew(@CurrentUser('id') adminId: string, @Param('id') id: string) {
-    const listing = await this.listings.adminRenew(id);
-    await this.audit.log(adminId, 'listing.renew', 'listing', id, null, {
-      status: listing.status,
-      expiresAt: listing.expiresAt?.toISOString() ?? null,
-    });
-    return {
-      id: listing.id,
-      status: listing.status,
-      expiresAt: listing.expiresAt?.toISOString() ?? null,
-    };
-  }
 }
