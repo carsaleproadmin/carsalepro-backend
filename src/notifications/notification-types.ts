@@ -16,6 +16,7 @@ export type NotificationType =
   | 'order.approved'
   | 'order.completed'
   | 'order.cancelled'
+  | 'order.declined_by_inspector'
   | 'order.search_expired'
   | 'order.disputed'
   | 'payout.sent'
@@ -57,6 +58,15 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   'order.approved': ['inapp', 'email'],
   'order.completed': ['inapp'],
   'order.cancelled': ['inapp', 'email'],
+  /**
+   * The inspector gave the job back after accepting it. Distinct from
+   * `order.cancelled`, whose copy says the reader cancelled: here the customer
+   * did nothing, their money is already captured and is being refunded in full,
+   * and they must be told the reason the inspector gave. Same channels as
+   * `order.cancelled` — email as well as in-app, because the reader has to act
+   * (order again) rather than only note a status.
+   */
+  'order.declined_by_inspector': ['inapp', 'email'],
   /**
    * Nobody accepted inside the search window: the hold is released, nothing was
    * charged. Distinct from `order.cancelled` because the customer did nothing

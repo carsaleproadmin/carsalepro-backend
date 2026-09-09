@@ -186,6 +186,17 @@ export type CaptureOutcome =
  */
 export type RefundMode = 'refunded' | 'refund_pending' | 'authorization_released' | 'none';
 
+/**
+ * What a transition knows about ITSELF that its from/to pair cannot say.
+ *
+ * Only the notification matrix reads it. `CANCELLED` is reached by several
+ * different events — the customer cancelling, a capture failing, an inspector
+ * handing the job back — and they owe the reader different letters.
+ */
+export interface TransitionContext {
+  declinedByInspector?: { reason: string; refundCents: number };
+}
+
 /** Where an order's money is, as the website's `orderPhase()` reads it. */
 export type OrderPaymentState =
   | 'pending'
@@ -1325,6 +1336,97 @@ export class OrdersService {
     return { orderId, status: target };
   }
 
+  /**
+   * The assigned inspector hands the job back, with a reason.
+   *
+   * Deliberately NOT `cancel`'s percentage: the money was CAPTURED the moment
+   * this inspector accepted, and the customer did nothing wrong, so the refund
+   * is the whole `totalCents` under its own reason key. The inspector's share is
+   * still in escrow — `releasePayout` runs on approve — so there is nothing to
+   * claw back from them.
+   *
+   * Only `ASSIGNED` and `EN_ROUTE` may be declined. From `IN_PROGRESS` the
+   * inspection has started and the customer is owed an argument, not a silent
+   * exit: that path stays `DISPUTED`. Both allowed edges already exist in the
+   * state machine, and the order does NOT go back to the search pool — see the
+   * `ASSIGNED -> UNASSIGNED` note in `order-state-machine.ts`. The customer
+   * makes a new order instead.
+   */
+  async declineByInspector(
+    orderId: string,
+    userId: string,
+    reason: string,
+  ): Promise<{
+    orderId: string;
+    status: OrderStatus;
+    refundCents: number;
+    refundMode: RefundMode;
+  }> {
+    const order = await this.requireOrder(orderId);
+    if (order.inspectorId !== userId) {
+      throw new ForbiddenException({
+        error: { code: 'forbidden', message: 'You are not the assigned inspector' },
+      });
+    }
+
+    const declinable: OrderStatus[] = [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE];
+    if (!declinable.includes(order.status)) {
+      throw new ConflictException({
+        error: {
+          code: 'not_declinable',
+          message: 'The order can no longer be declined; open a dispute instead',
+        },
+      });
+    }
+
+    // The DTO trims and length-checks this, but the guard is repeated here
+    // because the reason is the whole point of the endpoint: an empty one puts
+    // "cancelled, no reason given" in front of the customer.
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      throw new BadRequestException({
+        error: { code: 'reason_required', message: 'A reason is required to decline an order' },
+      });
+    }
+
+    // Money first, and it cannot throw — the same order as `cancel`, for the
+    // same reason: a refund failure must never be why the order stays open.
+    const outcome = await this.settleRefund(order, order.totalCents, 'inspector_declined');
+    await this.writeEvent(orderId, userId, 'inspector_declined', order.status, OrderStatus.CANCELLED, {
+      reason: trimmed,
+      refundCents: outcome.amountCents,
+    });
+    await this.transition(orderId, OrderStatus.CANCELLED, userId, {
+      declinedByInspector: { reason: trimmed, refundCents: outcome.amountCents },
+    });
+    await this.countInspectorCancellation(userId);
+
+    return {
+      orderId,
+      status: OrderStatus.CANCELLED,
+      refundCents: outcome.amountCents,
+      refundMode: refundModeOf(outcome.status),
+    };
+  }
+
+  /**
+   * Record the hand-back against the inspector. Never throws: the order is
+   * already cancelled and the customer already refunded, and a bookkeeping
+   * failure must not turn that into a 500 for the inspector.
+   */
+  private async countInspectorCancellation(userId: string): Promise<void> {
+    try {
+      await this.prisma.inspectorProfile.update({
+        where: { userId },
+        data: { cancelCount: { increment: 1 } },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to count the cancellation for inspector ${userId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   // ============================================================
   // Customer actions
   // ============================================================
@@ -1895,6 +1997,25 @@ export class OrdersService {
               events.find((e) => e.type === 'search_expired')?.createdAt.toISOString() ?? null,
           }
         : null,
+      /*
+       * Why the order was handed back, when it was.
+       *
+       * Derived from the `inspector_declined` event rather than a column, the
+       * same way `search.expiredAt` is: the timeline already holds the fact.
+       * The reason is the ONLY part of any event payload this endpoint
+       * discloses — payloads elsewhere carry operational detail — and it is
+       * disclosed because it was typed FOR the customer to read.
+       */
+      declined: (() => {
+        const event = events.find((e) => e.type === 'inspector_declined');
+        if (!event) return null;
+        const payload = (event.payload ?? {}) as { reason?: unknown; refundCents?: unknown };
+        return {
+          reason: typeof payload.reason === 'string' ? payload.reason : '',
+          refundCents: typeof payload.refundCents === 'number' ? payload.refundCents : null,
+          at: event.createdAt.toISOString(),
+        };
+      })(),
       // Returned in EVERY status on purpose. Its entire job is to be read while
       // the order is ASSIGNED — before the inspector drives anywhere — so they
       // know what the report has to reach to close the job. Telling them at
@@ -3423,7 +3544,12 @@ export class OrdersService {
    * from === to (no-op). Every applied transition writes an OrderEvent.
    * Illegal edges throw 409 illegal_transition.
    */
-  async transition(orderId: string, to: OrderStatus, actor: string): Promise<Order> {
+  async transition(
+    orderId: string,
+    to: OrderStatus,
+    actor: string,
+    context?: TransitionContext,
+  ): Promise<Order> {
     const order = await this.requireOrder(orderId);
     if (order.status === to) return order; // idempotent
     if (!canTransition(order.status, to)) {
@@ -3458,7 +3584,7 @@ export class OrdersService {
     // is internally non-throwing, but the whole block is also guarded so a failure
     // can never break the transition.
     try {
-      await this.notifyStatusChange(updated, from);
+      await this.notifyStatusChange(updated, from, context);
     } catch (err) {
       this.logger.warn(
         `Status notification failed for order ${orderId} (${to}): ${(err as Error).message}`,
@@ -3473,7 +3599,11 @@ export class OrdersService {
    * Recipients are derived from the order's customer/inspector. Each entry is
    * fired through notify(), which is itself non-throwing.
    */
-  private async notifyStatusChange(order: Order, _from: OrderStatus): Promise<void> {
+  private async notifyStatusChange(
+    order: Order,
+    _from: OrderStatus,
+    context?: TransitionContext,
+  ): Promise<void> {
     const payload = {
       orderId: order.id,
       orderNumber: order.number,
@@ -3510,6 +3640,18 @@ export class OrdersService {
         await emit(inspector, 'order.completed');
         break;
       case OrderStatus.CANCELLED:
+        // An inspector hand-back is its own event. `order.cancelled` tells the
+        // reader they cancelled, which is the opposite of what happened, and it
+        // carries neither the reason nor the refund the customer is owed. The
+        // inspector who declined is not told anything: they just did it.
+        if (context?.declinedByInspector) {
+          await this.notifications.notify(customer, 'order.declined_by_inspector', {
+            ...payload,
+            reason: context.declinedByInspector.reason,
+            refundCents: context.declinedByInspector.refundCents,
+          });
+          break;
+        }
         // Notify the "other party" — whoever did not initiate. We don't have the
         // actor's role here cheaply, so notify both known parties; each only gets
         // an in-app row plus their enabled channels.
@@ -3708,6 +3850,12 @@ export interface OrderDetail {
   } | null;
   /** The inspector search window. Null for pre-manual-capture orders. */
   search?: { deadlineAt: string; expiredAt: string | null } | null;
+  /**
+   * Set when the assigned inspector handed the order back (DEN-268). Null on
+   * every other order, including one the CUSTOMER cancelled — the two look the
+   * same in `status` and read very differently to the person who paid.
+   */
+  declined?: { reason: string; refundCents: number | null; at: string } | null;
   /** The completeness gate. Present in EVERY status — see `getDetail`. */
   reportRequirement?: {
     minQualityScore: number;
