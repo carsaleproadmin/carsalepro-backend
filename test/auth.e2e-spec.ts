@@ -311,7 +311,6 @@ describe('Auth + users (e2e)', () => {
     expect(gold.amountCents).toBe(settings.body.prices.goldPackageCents);
     expect(gold.currency).toBe('EUR');
     expect(standard.amountCents).toBe(settings.body.prices.standardListingCents);
-    expect(standard.durationDays).toBe(settings.body.listingDurationDays);
   });
 
   it('13. erases the account (GDPR) and blocks subsequent login', async () => {

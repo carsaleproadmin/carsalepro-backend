@@ -164,16 +164,6 @@ export class ListingsController {
     return this.listings.markSold(userId, id);
   }
 
-  @Post(':id/renew')
-  @ApiOperation({ summary: 'Renew an expired/active listing' })
-  @ApiParam({ name: 'id' })
-  renew(
-    @CurrentUser('id') userId: string,
-    @Param('id') id: string,
-  ): Promise<Listing> {
-    return this.listings.renew(userId, id);
-  }
-
   // ============================================================
   // Seller photo gallery (BE-S2)
   // ============================================================

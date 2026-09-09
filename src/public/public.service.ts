@@ -353,8 +353,6 @@ export class PublicService {
        * applied.
        */
       AND: [
-        // Exclude expired-but-not-yet-swept listings (null expiry = never expires).
-        { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
         /*
          * A city matches if ANY spelling of it does. `citySearchKeys` returns
          * the folded query plus its transliterations and exonyms, so "Берлин",
@@ -444,7 +442,6 @@ export class PublicService {
       where: {
         id,
         status: 'ACTIVE',
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       },
       include: { report: true },
     });
@@ -577,7 +574,6 @@ export class PublicService {
          * "is there a report to buy", and what was for sale was the PDF.
          */
         report: { code, deletedAt: null },
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       },
       /*
        * One report can back more than one listing - a car taken down and put

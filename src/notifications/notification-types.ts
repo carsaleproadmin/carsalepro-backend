@@ -29,8 +29,7 @@ export type NotificationType =
   | 'kyc.rejected'
   | 'ppv.purchased'
   | 'vin_history.failed'
-  | 'listing.published'
-  | 'listing.expiring';
+  | 'listing.published';
 
 /** The delivery channels a notification can travel on. */
 export type NotificationChannel = 'inapp' | 'email' | 'sms' | 'push';
@@ -101,7 +100,6 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   /** Operator-facing: a paid VIN lookup could not be delivered and was refunded. */
   'vin_history.failed': ['inapp', 'email'],
   'listing.published': ['inapp'],
-  'listing.expiring': ['inapp', 'email'],
 };
 
 /**

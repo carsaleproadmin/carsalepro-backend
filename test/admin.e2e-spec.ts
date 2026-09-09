@@ -697,14 +697,13 @@ describe('Admin panel (E9) (e2e)', () => {
           package: 'standard',
           priceCents: 1850000,
           city: 'Berlin',
-          expiresAt: new Date(Date.now() + 30 * 86_400_000),
           publishedAt: new Date(),
         },
       });
       return listing.id;
     }
 
-    it('20. list with filters + hide/unhide/renew (audited) + 404', async () => {
+    it('20. list with filters + hide/unhide (audited) + 404', async () => {
       const admin = await makeAdmin();
       const seller = await makeUser('seller');
       const listingId = await seedListing(seller, 'ACTIVE');
@@ -728,14 +727,7 @@ describe('Admin panel (E9) (e2e)', () => {
         admin.token,
       ).expect(200);
       l = await prisma.listing.findUnique({ where: { id: listingId } });
-      expect(l!.status).toBe('ACTIVE'); // expiresAt in future
-
-      const renewRes = await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/renew`),
-        admin.token,
-      ).expect(200);
-      expect(renewRes.body.status).toBe('ACTIVE');
-      expect(renewRes.body.expiresAt).toBeTruthy();
+      expect(l!.status).toBe('ACTIVE');
 
       const audit = await prisma.adminAuditLog.findFirst({
         where: { entity: 'listing', entityId: listingId, action: 'listing.hide' },
@@ -748,22 +740,6 @@ describe('Admin panel (E9) (e2e)', () => {
       ).expect(404);
     });
 
-    it('21. unhide an expired listing returns it to EXPIRED', async () => {
-      const admin = await makeAdmin();
-      const seller = await makeUser('seller');
-      const listingId = await seedListing(seller, 'HIDDEN');
-      await prisma.listing.update({
-        where: { id: listingId },
-        data: { expiresAt: new Date(Date.now() - 86_400_000) },
-      });
-
-      await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/unhide`),
-        admin.token,
-      ).expect(200);
-      const l = await prisma.listing.findUnique({ where: { id: listingId } });
-      expect(l!.status).toBe('EXPIRED');
-    });
   });
 
   // ============================================================

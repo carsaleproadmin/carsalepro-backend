@@ -584,23 +584,6 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Объявление о ${str(p, 'make')} ${str(p, 'model')} опубликовано.`,
     }),
   },
-  'listing.expiring': {
-    de: (p) => ({
-      subject: `Anzeige läuft bald ab`,
-      body: `Ihre Anzeige für ${str(p, 'make')} ${str(p, 'model')} läuft bald ab. Verlängern Sie sie, um sichtbar zu bleiben.`,
-      short: `Anzeige für ${str(p, 'make')} ${str(p, 'model')} läuft bald ab.`,
-    }),
-    en: (p) => ({
-      subject: `Listing expiring soon`,
-      body: `Your listing for ${str(p, 'make')} ${str(p, 'model')} is expiring soon. Renew it to stay visible.`,
-      short: `Listing for ${str(p, 'make')} ${str(p, 'model')} expiring soon.`,
-    }),
-    ru: (p) => ({
-      subject: `Объявление скоро истечёт`,
-      body: `Срок вашего объявления о ${str(p, 'make')} ${str(p, 'model')} скоро истечёт. Продлите его, чтобы остаться видимым.`,
-      short: `Объявление о ${str(p, 'make')} ${str(p, 'model')} скоро истечёт.`,
-    }),
-  },
 };
 
 /** Resolve a supported locale, falling back to the platform default. */
