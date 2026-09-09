@@ -2029,6 +2029,14 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(types).toContain('order.inspector_no_show');
     expect(types).not.toContain('order.cancelled');
 
+    // And the inspector gets his own. He loses the fee and carries the
+    // `cancelCount` above; a mark on a record its holder never read is the fact
+    // that surfaces first in a dispute.
+    const inspectorNotes = await prisma.notification.findMany({
+      where: { userId: assignedId },
+    });
+    expect(inspectorNotes.map((n) => n.type)).toContain('order.inspector_no_show_self');
+
     // The website reads the panel off this block, and must be able to tell a
     // silent inspector from one who wrote a reason.
     const detail = await request(app.getHttpServer())

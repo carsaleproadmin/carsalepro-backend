@@ -2204,6 +2204,16 @@ export class OrdersService {
    */
   async sweepAbandonedInspections(): Promise<{ cancelled: number }> {
     const now = new Date();
+    /*
+     * Only for the letter to the inspector. The deadline itself is the stamped
+     * `inspectionDeadlineAt`, so a setting changed mid-week moves no order that
+     * is already running; reading it here can therefore name a number one day
+     * out on that one order, which is a far smaller fault than a letter that
+     * says "in time" and names nothing.
+     */
+    const deadlineDays = await this.settings
+      .getNumber('inspectionStartDeadlineDays')
+      .catch(() => 7);
     const stale = await this.prisma.order.findMany({
       where: {
         status: { in: [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE] },
@@ -2256,6 +2266,20 @@ export class OrdersService {
           orderNumber: order.number,
           refundCents: outcome.amountCents,
         });
+        /*
+         * And the inspector, who until now lost the job, the fee and a mark on
+         * his record in silence. He was shown the deadline in the accept
+         * dialog, so this letter states the outcome rather than apologising for
+         * it. Best-effort like every other notify here: the order is already
+         * cancelled and the customer already refunded.
+         */
+        if (order.inspectorId) {
+          await this.notifications.notify(order.inspectorId, 'order.inspector_no_show_self', {
+            orderId: order.id,
+            orderNumber: order.number,
+            days: deadlineDays,
+          });
+        }
         cancelled += 1;
       } catch (err) {
         this.logger.error(

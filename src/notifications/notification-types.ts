@@ -18,6 +18,7 @@ export type NotificationType =
   | 'order.cancelled'
   | 'order.declined_by_inspector'
   | 'order.inspector_no_show'
+  | 'order.inspector_no_show_self'
   | 'order.search_expired'
   | 'order.disputed'
   | 'payout.sent'
@@ -73,6 +74,15 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
    * letter quotes a reason, and the defining fact here is that there is none.
    */
   'order.inspector_no_show': ['inapp', 'email'],
+  /**
+   * The same sweep, told to the inspector who did not start. It is not an
+   * information copy of the customer's letter: he loses the fee, the customer
+   * is refunded from money he was to be paid, and a cancellation is counted
+   * against him. Email as well as in-app for that reason - a mark on a record
+   * that the person carrying it never read is the kind of fact that surfaces
+   * first in a dispute.
+   */
+  'order.inspector_no_show_self': ['inapp', 'email'],
   /**
    * Nobody accepted inside the search window: the hold is released, nothing was
    * charged. Distinct from `order.cancelled` because the customer did nothing
