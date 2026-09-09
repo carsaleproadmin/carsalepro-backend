@@ -355,6 +355,44 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
     }),
   },
   /**
+   * The inspector's half of the same event. It says what he lost and what was
+   * recorded, and it does NOT say sorry: the deadline was shown to him in the
+   * accept dialog before he took the job. `days` comes from the setting rather
+   * than the word "week", because the setting is a lever.
+   */
+  'order.inspector_no_show_self': {
+    de: (p) => ({
+      subject: `Auftrag storniert - Prüfung nicht begonnen`,
+      body:
+        `Sie haben die Prüfung für Auftrag ${str(p, 'orderNumber')} nicht innerhalb von ` +
+        `${str(p, 'days')} Tagen begonnen. ` +
+        `Wir haben den Auftrag storniert und dem Kunden den vollen Betrag erstattet. ` +
+        `Die Stornierung wurde in Ihrem Profil vermerkt. ` +
+        `Sie erhalten für diesen Auftrag keine Vergütung.`,
+      short: `${str(p, 'orderNumber')} storniert - Prüfung nicht begonnen.`,
+    }),
+    en: (p) => ({
+      subject: `Order cancelled - the inspection did not start`,
+      body:
+        `You did not start the inspection for order ${str(p, 'orderNumber')} in ` +
+        `${str(p, 'days')} days. ` +
+        `We cancelled the order and refunded the customer in full. ` +
+        `The cancellation is recorded on your profile. ` +
+        `You get no fee for this order.`,
+      short: `${str(p, 'orderNumber')} cancelled - the inspection did not start.`,
+    }),
+    ru: (p) => ({
+      subject: `Заказ отменён - осмотр не начался`,
+      body:
+        `Вы не приступили к осмотру по заказу ${str(p, 'orderNumber')} в течение ` +
+        `${str(p, 'days')} дней. ` +
+        `Мы отменили заказ и вернули клиенту всю сумму. ` +
+        `Отмена учтена в вашем профиле. ` +
+        `Оплата за этот заказ не начисляется.`,
+      short: `${str(p, 'orderNumber')} отменён - осмотр не начался.`,
+    }),
+  },
+  /**
    * The copy has one job beyond informing: stop the support ticket. An
    * authorization that has been released still sits in a card statement for a
    * few working days, and a customer who reads "cancelled" and then sees the
