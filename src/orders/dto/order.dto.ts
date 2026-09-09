@@ -119,6 +119,22 @@ export class DisputeOrderDto {
   reason!: string;
 }
 
+/**
+ * The reason an inspector must give to hand an accepted order back.
+ *
+ * The reason is NOT optional and NOT allowed to be blank: the customer reads it
+ * in the cancellation letter, and "the inspector cancelled, no reason given" is
+ * the answer that makes them call support. `Transform` trims first, so a body of
+ * spaces fails `Length` instead of passing as text.
+ */
+export class DeclineOrderDto {
+  @ApiProperty({ example: 'My van broke down and I cannot reach the address today' })
+  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Length(3, 1000)
+  reason!: string;
+}
+
 export enum OrderRole {
   customer = 'customer',
   inspector = 'inspector',

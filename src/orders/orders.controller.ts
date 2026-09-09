@@ -7,6 +7,7 @@ import { LegalContractService } from '../legal/legal-contract.service';
 import {
   AttachOrderReportDto,
   CreateOrderDto,
+  DeclineOrderDto,
   DisputeOrderDto,
   ListOrdersQueryDto,
   OrderRole,
@@ -127,6 +128,22 @@ export class OrdersController {
     @Body() dto: DisputeOrderDto,
   ) {
     return this.orders.dispute(id, userId, dto.reason);
+  }
+
+  @Post(':id/decline')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Assigned inspector hands the order back (ASSIGNED|EN_ROUTE → CANCELLED). ' +
+      'A non-empty reason is required, and the customer is refunded 100% — the ' +
+      'money was captured on acceptance and the customer is not at fault.',
+  })
+  async decline(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: DeclineOrderDto,
+  ) {
+    return this.orders.declineByInspector(id, userId, dto.reason);
   }
 
   @Post(':id/status')

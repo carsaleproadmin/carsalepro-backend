@@ -1868,6 +1868,124 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   // ============================================================
+  // 9a-9d. The inspector hands an accepted order back (DEN-268)
+  // ============================================================
+  it('9a. decline from ASSIGNED → CANCELLED, FULL refund, reason recorded, customer told', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'My van broke down and I cannot reach the address today' })
+      .expect(200);
+    expect(res.body.status).toBe('CANCELLED');
+    // The whole amount, NOT the 80% of case 8: the customer did nothing wrong.
+    expect(res.body.refundCents).toBe(FARE.totalCents);
+    expect(res.body.refundMode).toBe('refunded');
+
+    const refund = await prisma.refund.findFirst({ where: { orderId } });
+    expect(refund!.amountCents).toBe(FARE.totalCents);
+    expect(refund!.reason).toBe('inspector_declined');
+
+    // The reason is the point of the endpoint, so it must survive in the audit
+    // trail, not only in the letter.
+    const event = await prisma.orderEvent.findFirst({
+      where: { orderId, type: 'inspector_declined' },
+    });
+    expect((event!.payload as { reason: string }).reason).toBe(
+      'My van broke down and I cannot reach the address today',
+    );
+
+    // It is counted against the inspector — the field that was always 0.
+    const profile = await prisma.inspectorProfile.findUnique({ where: { userId: assignedId } });
+    expect(profile!.cancelCount).toBe(1);
+
+    // The customer gets the hand-back letter, never the plain "you cancelled".
+    const notes = await prisma.notification.findMany({ where: { userId: customer.userId } });
+    const types = notes.map((n) => n.type);
+    expect(types).toContain('order.declined_by_inspector');
+    expect(types).not.toContain('order.cancelled');
+  });
+
+  it('9b. decline from EN_ROUTE also works', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(200);
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'The customer is not at the address' })
+      .expect(200);
+    expect(res.body.status).toBe('CANCELLED');
+    expect(res.body.refundCents).toBe(FARE.totalCents);
+  });
+
+  it('9c. a blank reason is refused and the order is untouched', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: '   ' })
+      .expect(400);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('ASSIGNED');
+    expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
+  });
+
+  it('9d. decline from IN_PROGRESS → 409, and a stranger cannot decline at all', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    // The customer is not the assigned inspector.
+    const stranger = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ reason: 'I want out' })
+      .expect(403);
+    expect(stranger.body.error.code).toBe('forbidden');
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'IN_PROGRESS' })
+      .expect(200);
+
+    // Once the inspection has started the exit is a dispute, not a hand-back.
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'The car is filthy' })
+      .expect(409);
+    expect(res.body.error.code).toBe('not_declinable');
+  });
+
+  // ============================================================
   // 10. Dispute from SUBMITTED → DISPUTED
   // ============================================================
   it('10. dispute from SUBMITTED → DISPUTED + Dispute row', async () => {

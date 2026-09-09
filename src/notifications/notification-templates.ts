@@ -278,6 +278,45 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
     }),
   },
   /**
+   * The inspector handed the job back, so the copy carries three things the
+   * plain cancellation does not: that the customer is not at fault, the reason
+   * the inspector typed, and that the FULL amount is coming back. The money was
+   * captured the moment the inspector accepted, so this is a real refund and
+   * takes a few working days — saying so here is what stops the support ticket.
+   */
+  'order.declined_by_inspector': {
+    de: (p) => ({
+      subject: `Prüfer hat die Bestellung zurückgegeben`,
+      body:
+        `Der Prüfer kann Bestellung ${str(p, 'orderNumber')} nicht durchführen. ` +
+        `Grund: „${str(p, 'reason')}“. ` +
+        `Der volle Betrag von ${formatEur(p.refundCents)} wird erstattet; ` +
+        `die Gutschrift braucht einige Werktage. ` +
+        `Sie können die Bestellung jederzeit erneut aufgeben.`,
+      short: `Prüfer hat ${str(p, 'orderNumber')} zurückgegeben — volle Erstattung.`,
+    }),
+    en: (p) => ({
+      subject: `The inspector gave the order back`,
+      body:
+        `The inspector cannot do order ${str(p, 'orderNumber')}. ` +
+        `Reason: "${str(p, 'reason')}". ` +
+        `The full amount of ${formatEur(p.refundCents)} is refunded; ` +
+        `the money needs a few working days to reach you. ` +
+        `You can make the order again at any time.`,
+      short: `The inspector gave ${str(p, 'orderNumber')} back — full refund.`,
+    }),
+    ru: (p) => ({
+      subject: `Инспектор отказался от заказа`,
+      body:
+        `Инспектор не может выполнить заказ ${str(p, 'orderNumber')}. ` +
+        `Причина: «${str(p, 'reason')}». ` +
+        `Вся сумма ${formatEur(p.refundCents)} возвращается; ` +
+        `деньги придут в течение нескольких рабочих дней. ` +
+        `Вы можете оформить заказ повторно в любой момент.`,
+      short: `Инспектор отказался от ${str(p, 'orderNumber')} — полный возврат.`,
+    }),
+  },
+  /**
    * The copy has one job beyond informing: stop the support ticket. An
    * authorization that has been released still sits in a card statement for a
    * few working days, and a customer who reads "cancelled" and then sees the
