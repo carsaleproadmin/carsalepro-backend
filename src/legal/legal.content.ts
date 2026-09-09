@@ -12,7 +12,11 @@ export type LegalDoc = 'privacy' | 'terms';
 
 export const LEGAL_LANGS: LegalLang[] = ['de', 'en', 'ru'];
 
-const LAST_UPDATED = '2026-06-03';
+// Bumped from 2026-06-03 on 2026-09-09 (DEN-263). Both documents gained a
+// paragraph on the registration document, which the report now prints: a
+// privacy policy that changes what is disclosed and keeps the old date tells
+// a reader who already accepted it that nothing has changed.
+const LAST_UPDATED = '2026-09-09';
 
 export interface LegalSection {
   heading: string;
@@ -89,6 +93,13 @@ const PRIVACY: Record<LegalLang, LegalContent> = {
           'Photos may contain metadata (date, GPS) and may incidentally include people or number plates that ' +
             'you choose to capture. You are responsible for the lawful basis of any third-party data in your ' +
             'photos.',
+          'The pages of the vehicle registration document that you photograph are printed in the report and ' +
+            'are stored with the cloud copy of it. They are shown wherever the report is shown, and that ' +
+            'includes the PUBLIC advert page of the vehicle, where anybody can open them without signing ' +
+            'in. Those pages usually name the owner and the address. Before you finish an inspection, cover ' +
+            'the data that must stay private: open the photo in the app and use the pencil, which writes ' +
+            'the covering into the photo itself. We do not examine what a photo shows and we do not remove ' +
+            'data from it, so what you leave visible stays visible to everybody.',
         ],
       },
       {
@@ -171,6 +182,14 @@ const PRIVACY: Record<LegalLang, LegalContent> = {
             'ersten Start zur Sprachvorschlag genutzt wird, und — sofern Sie zustimmen — Absturzdiagnosen.',
           'Fotos können Metadaten (Datum, GPS) enthalten und ggf. Personen oder Kennzeichen abbilden. Für die ' +
             'Rechtsgrundlage abgebildeter Dritter sind Sie verantwortlich.',
+          'Die von Ihnen fotografierten Seiten des Fahrzeugscheins werden im Bericht gedruckt und mit dessen ' +
+            'Cloud-Kopie gespeichert. Sie werden überall dort gezeigt, wo der Bericht gezeigt wird, und dazu ' +
+            'gehört die ÖFFENTLICHE Anzeigenseite des Fahrzeugs, auf der sie jeder ohne Anmeldung öffnen ' +
+            'kann. Diese Seiten nennen in der Regel den Halter und die Anschrift. Decken Sie vor Abschluss ' +
+            'der Begutachtung die Daten ab, die vertraulich bleiben müssen: Öffnen Sie das Foto in der App ' +
+            'und benutzen Sie den Stift, der die Abdeckung in das Foto selbst schreibt. Wir prüfen nicht, ' +
+            'was ein Foto zeigt, und entfernen keine Daten daraus. Was Sie sichtbar lassen, bleibt für alle ' +
+            'sichtbar.',
         ],
       },
       {
@@ -255,6 +274,13 @@ const PRIVACY: Record<LegalLang, LegalContent> = {
             'сбоев.',
           'Фотографии могут содержать метаданные (дата, GPS) и случайно изображать людей или номерные знаки. ' +
             'За правовое основание данных третьих лиц на ваших фото отвечаете вы.',
+          'Снятые вами страницы техпаспорта печатаются в отчёте и хранятся вместе с его облачной копией. ' +
+            'Они показываются везде, где показывается отчёт, в том числе на ПУБЛИЧНОЙ странице объявления ' +
+            'об автомобиле, где их может открыть любой без входа в аккаунт. На этих страницах обычно ' +
+            'указаны владелец и адрес. До завершения осмотра закройте данные, которые должны остаться ' +
+            'закрытыми: откройте фото в приложении и воспользуйтесь карандашом — он вписывает закрашивание ' +
+            'в саму фотографию. Мы не проверяем, что изображено на фото, и не удаляем с него данные, ' +
+            'поэтому всё оставленное открытым останется открытым для всех.',
         ],
       },
       {
@@ -335,6 +361,10 @@ const TERMS: Record<LegalLang, LegalContent> = {
           'You are solely responsible for the accuracy and lawful use of the inspection content you create, ' +
             'including any third-party personal data captured in photos. Reports reflect your professional ' +
             'assessment, not ours.',
+          'This includes the pages of the vehicle registration document, which the report prints and which ' +
+            'a published advert shows to anybody who opens it. The app gives you an editor to cover the ' +
+            'data on a photo before you finish. We are not liable for personal data that you leave visible ' +
+            'in a report you release.',
         ],
       },
       {
@@ -385,6 +415,10 @@ const TERMS: Record<LegalLang, LegalContent> = {
           'Sie sind allein verantwortlich für die Richtigkeit und rechtmäßige Nutzung der von Ihnen erstellten ' +
             'Inhalte, einschließlich personenbezogener Daten Dritter auf Fotos. Berichte spiegeln Ihre fachliche ' +
             'Einschätzung wider, nicht unsere.',
+          'Das gilt auch für die Seiten des Fahrzeugscheins, die der Bericht druckt und die eine ' +
+            'veröffentlichte Anzeige jedem zeigt, der sie öffnet. Die App stellt Ihnen einen Editor bereit, ' +
+            'um Daten auf einem Foto vor dem Abschluss abzudecken. Für personenbezogene Daten, die Sie in ' +
+            'einem herausgegebenen Bericht sichtbar lassen, haften wir nicht.',
         ],
       },
       {
@@ -432,6 +466,10 @@ const TERMS: Record<LegalLang, LegalContent> = {
           'Вы несёте полную ответственность за точность и законность создаваемого контента осмотра, включая ' +
             'персональные данные третьих лиц на фотографиях. Отчёты отражают вашу профессиональную оценку, не ' +
             'нашу.',
+          'Это относится и к страницам техпаспорта, которые печатаются в отчёте и которые опубликованное ' +
+            'объявление показывает каждому, кто его откроет. Приложение даёт редактор, чтобы закрыть данные ' +
+            'на фото до завершения осмотра. Мы не отвечаем за персональные данные, оставленные вами ' +
+            'открытыми в выданном отчёте.',
         ],
       },
       {
