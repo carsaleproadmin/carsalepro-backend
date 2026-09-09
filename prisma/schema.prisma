@@ -460,6 +460,15 @@ model Order {
   /// attempt would target a hold that does not exist. Null means "pre-manual-
   /// capture order — leave it alone".
   searchExpiresAt DateTime? @map("search_expires_at")
+  /// Deadline for the inspection to START, set on entry to ASSIGNED (DEN-269).
+  /// Past it in ASSIGNED or EN_ROUTE, the hourly sweep cancels the order and
+  /// refunds the customer in full: the money was captured on acceptance, and an
+  /// inspector who goes quiet must not be able to sit on it for ever.
+  ///
+  /// **Null is load-bearing and must never be backfilled**, exactly as for
+  /// `searchExpiresAt`: an order assigned before this shipped has no deadline,
+  /// and sweeping it would cancel live work on a rule it was never given.
+  inspectionDeadlineAt DateTime? @map("inspection_deadline_at")
   createdAt       DateTime  @default(now())
 
   customer  User              @relation("CustomerOrders", fields: [customerId], references: [id])

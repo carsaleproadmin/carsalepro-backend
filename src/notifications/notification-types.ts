@@ -17,6 +17,7 @@ export type NotificationType =
   | 'order.completed'
   | 'order.cancelled'
   | 'order.declined_by_inspector'
+  | 'order.inspector_no_show'
   | 'order.search_expired'
   | 'order.disputed'
   | 'payout.sent'
@@ -67,6 +68,12 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
    * (order again) rather than only note a status.
    */
   'order.declined_by_inspector': ['inapp', 'email'],
+  /**
+   * The inspector accepted and then never started, and the sweep gave the money
+   * back (DEN-269). Separate from `order.declined_by_inspector` because that
+   * letter quotes a reason, and the defining fact here is that there is none.
+   */
+  'order.inspector_no_show': ['inapp', 'email'],
   /**
    * Nobody accepted inside the search window: the hold is released, nothing was
    * charged. Distinct from `order.cancelled` because the customer did nothing

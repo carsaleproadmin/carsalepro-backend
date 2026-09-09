@@ -47,7 +47,15 @@ export class SchedulerService {
     }
   }
 
-  /** Hourly: auto-approve overdue SUBMITTED orders + expire overdue listings. */
+  /**
+   * Hourly: auto-approve overdue SUBMITTED orders, expire overdue listings, and
+   * cancel accepted orders whose inspection never started (DEN-269).
+   *
+   * Hourly is right for the last one where the search sweep needs five minutes:
+   * that window is six hours and holds an authorization, this one is seven days
+   * and the delay costs a customer, at worst, one more hour on a week they have
+   * already spent waiting.
+   */
   @Cron(CronExpression.EVERY_HOUR, { name: 'hourly-sweeps' })
   async hourlySweeps(): Promise<void> {
     if (this.disabled) return;
@@ -62,6 +70,16 @@ export class SchedulerService {
       if (expired > 0) this.logger.log(`expireOverdue: ${expired} listing(s) expired`);
     } catch (err) {
       this.logger.error(`listing expireOverdue failed: ${(err as Error).message}`);
+    }
+    try {
+      const { cancelled } = await this.orders.sweepAbandonedInspections();
+      if (cancelled > 0) {
+        this.logger.log(
+          `sweepAbandonedInspections: ${cancelled} order(s) cancelled, customers refunded`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(`sweepAbandonedInspections failed: ${(err as Error).message}`);
     }
     try {
       // Contracts whose inline PDF render failed (R2 blip, transient error).

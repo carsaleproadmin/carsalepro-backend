@@ -2007,10 +2007,18 @@ export class OrdersService {
        * disclosed because it was typed FOR the customer to read.
        */
       declined: (() => {
-        const event = events.find((e) => e.type === 'inspector_declined');
+        const event = events.find(
+          (e) => e.type === 'inspector_declined' || e.type === 'inspector_no_show',
+        );
         if (!event) return null;
         const payload = (event.payload ?? {}) as { reason?: unknown; refundCents?: unknown };
         return {
+          // The two are one panel with two headings, not two panels: the money
+          // fact and the "order it again" action are identical, and only the
+          // sentence about the inspector differs. A no-show carries no reason —
+          // nobody typed one — and the website must say so rather than print an
+          // empty quotation.
+          kind: event.type === 'inspector_no_show' ? ('no_show' as const) : ('declined' as const),
           reason: typeof payload.reason === 'string' ? payload.reason : '',
           refundCents: typeof payload.refundCents === 'number' ? payload.refundCents : null,
           at: event.createdAt.toISOString(),
@@ -2171,6 +2179,91 @@ export class OrdersService {
       }
     }
     return { expired };
+  }
+
+  /**
+   * An inspector accepted and then nothing happened (DEN-269).
+   *
+   * `ASSIGNED` and `EN_ROUTE` are the states with no timer of their own: the
+   * offer timeout is spent, the search window is closed, and the report gate is
+   * a long way off. Until this existed such an order lived for ever on money
+   * that was CAPTURED the moment it was accepted.
+   *
+   * `IN_PROGRESS` is never swept. The inspection has started, the inspector may
+   * be standing at the car, and taking the job away from them mid-inspection is
+   * a dispute's job, not a cron's.
+   *
+   * **A null deadline is skipped, and that is load-bearing** — the same rule
+   * `expireUnfilledSearches` follows for `searchExpiresAt`. Null means the order
+   * was assigned before this shipped: it was never given the rule, and
+   * cancelling live work under it would be the sweep's worst possible failure.
+   *
+   * The status change is a CLAIM, not a conclusion, for the same reason as the
+   * search sweep: an inspector pressing "start inspection" or handing the job
+   * back at the same moment must win, and `count === 0` says they did.
+   */
+  async sweepAbandonedInspections(): Promise<{ cancelled: number }> {
+    const now = new Date();
+    const stale = await this.prisma.order.findMany({
+      where: {
+        status: { in: [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE] },
+        inspectionDeadlineAt: { not: null, lt: now },
+      },
+    });
+
+    let cancelled = 0;
+    for (const order of stale) {
+      try {
+        const claimed = await this.prisma.order.updateMany({
+          where: {
+            id: order.id,
+            status: { in: [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE] },
+            inspectionDeadlineAt: { not: null, lt: now },
+          },
+          data: { status: OrderStatus.CANCELLED },
+        });
+        if (claimed.count === 0) continue;
+
+        // The whole amount, exactly as in a hand-back: the customer waited a
+        // week for an inspection that never started, and none of that is theirs
+        // to pay for. `settleRefund` never throws.
+        const outcome = await this.settleRefund(order, order.totalCents, 'inspector_no_show');
+        await this.writeEvent(order.id, 'system', 'inspector_no_show', null, null, {
+          deadlineAt: order.inspectionDeadlineAt?.toISOString() ?? null,
+          refundCents: outcome.amountCents,
+          refund: outcome.status,
+          detail: outcome.detail,
+        });
+        // The claim already wrote the status, so the `status_change` event that
+        // `transition` would have written is recorded here.
+        await this.writeEvent(
+          order.id,
+          'system',
+          'status_change',
+          order.status,
+          OrderStatus.CANCELLED,
+          null,
+        );
+        if (order.inspectorId) await this.countInspectorCancellation(order.inspectorId);
+        /*
+         * Not the DEN-268 letter. That one quotes the reason the inspector
+         * typed, and there is nobody to quote here — the whole event is that
+         * they said nothing. And not `order.cancelled` either, whose copy tells
+         * the reader they cancelled.
+         */
+        await this.notifications.notify(order.customerId, 'order.inspector_no_show', {
+          orderId: order.id,
+          orderNumber: order.number,
+          refundCents: outcome.amountCents,
+        });
+        cancelled += 1;
+      } catch (err) {
+        this.logger.error(
+          `sweepAbandonedInspections: order ${order.id} threw: ${(err as Error).message}`,
+        );
+      }
+    }
+    return { cancelled };
   }
 
   /**
@@ -3571,6 +3664,27 @@ export class OrdersService {
     // fires for BOTH acceptOffer and adminAssign. Best-effort — a failure here must
     // never break the assignment, so it is caught and logged.
     if (to === OrderStatus.ASSIGNED) {
+      /*
+       * DEN-269: the clock the inspector has to actually start the inspection.
+       * Set here rather than in `acceptOffer` so that EVERY route into ASSIGNED
+       * carries one — an admin assignment included; an order assigned by hand
+       * with no deadline would be exactly the order that goes quiet.
+       *
+       * Best-effort like the contract below: an order without a deadline lives
+       * on as orders did before this shipped, which is the same thing a null
+       * means everywhere else.
+       */
+      try {
+        const days = await this.settings.getNumber('inspectionStartDeadlineDays');
+        await this.prisma.order.update({
+          where: { id: orderId },
+          data: { inspectionDeadlineAt: new Date(Date.now() + days * 86_400_000) },
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Failed to set the inspection deadline for order ${orderId}: ${(err as Error).message}`,
+        );
+      }
       try {
         await this.legalContract.renderContractForOrder(orderId);
       } catch (err) {
@@ -3855,7 +3969,13 @@ export interface OrderDetail {
    * every other order, including one the CUSTOMER cancelled — the two look the
    * same in `status` and read very differently to the person who paid.
    */
-  declined?: { reason: string; refundCents: number | null; at: string } | null;
+  declined?: {
+    /** `declined` — the inspector handed it back. `no_show` — they went quiet. */
+    kind: 'declined' | 'no_show';
+    reason: string;
+    refundCents: number | null;
+    at: string;
+  } | null;
   /** The completeness gate. Present in EVERY status — see `getDetail`. */
   reportRequirement?: {
     minQualityScore: number;

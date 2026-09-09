@@ -317,6 +317,44 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
     }),
   },
   /**
+   * Nobody typed a reason here, so the letter does not pretend one exists. It
+   * states the fact (the inspector did not start), the money (all of it, on its
+   * way back) and the way forward (order it again) - the three things a reader
+   * who has waited a week for nothing needs in that order.
+   */
+  'order.inspector_no_show': {
+    de: (p) => ({
+      subject: `Prüfung wurde nicht begonnen`,
+      body:
+        `Der Prüfer hat die Prüfung für Bestellung ${str(p, 'orderNumber')} nicht begonnen. ` +
+        `Wir haben die Bestellung storniert. ` +
+        `Der volle Betrag von ${formatEur(p.refundCents)} wird erstattet; ` +
+        `die Gutschrift braucht einige Werktage. ` +
+        `Sie können die Bestellung jederzeit erneut aufgeben.`,
+      short: `${str(p, 'orderNumber')}: Prüfung nicht begonnen — volle Erstattung.`,
+    }),
+    en: (p) => ({
+      subject: `The inspection did not start`,
+      body:
+        `The inspector did not start the inspection for order ${str(p, 'orderNumber')}. ` +
+        `We have cancelled the order. ` +
+        `The full amount of ${formatEur(p.refundCents)} is refunded; ` +
+        `the money needs a few working days to reach you. ` +
+        `You can make the order again at any time.`,
+      short: `${str(p, 'orderNumber')}: the inspection did not start — full refund.`,
+    }),
+    ru: (p) => ({
+      subject: `Осмотр так и не начался`,
+      body:
+        `Инспектор не приступил к осмотру по заказу ${str(p, 'orderNumber')}. ` +
+        `Мы отменили заказ. ` +
+        `Вся сумма ${formatEur(p.refundCents)} возвращается; ` +
+        `деньги придут в течение нескольких рабочих дней. ` +
+        `Вы можете оформить заказ повторно в любой момент.`,
+      short: `${str(p, 'orderNumber')}: осмотр не начался — полный возврат.`,
+    }),
+  },
+  /**
    * The copy has one job beyond informing: stop the support ticket. An
    * authorization that has been released still sits in a card statement for a
    * few working days, and a customer who reads "cancelled" and then sees the
