@@ -2459,4 +2459,51 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       found.totalCents,
     );
   });
+
+  // ============================================================
+  // 16. The inspector's row carries both clocks that can take the job away
+  // ============================================================
+  it('16. GET /orders/me?role=inspector carries offerExpiresAt, then inspectionDeadlineAt', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    const offer = await pendingOfferFor(orderId);
+    expect(offer).toBeTruthy();
+    const token = inspectorTokens.get(offer!.inspectorId)!;
+
+    /*
+     * Before acceptance the row must name the OFFER deadline: `expireStaleOffers`
+     * passes the job to the next inspector at that stamp, and the list is where
+     * the inspector decides. `inspectionDeadlineAt` is not stamped yet.
+     */
+    const offered = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const beforeAccept = offered.body.items.find(
+      (o: { id: string }) => o.id === orderId,
+    );
+    expect(beforeAccept.offerExpiresAt).toBe(offer!.expiresAt.toISOString());
+    expect(beforeAccept.inspectionDeadlineAt).toBeNull();
+
+    await acceptPendingOffer(orderId);
+
+    /*
+     * After acceptance the offer clock is gone and the INSPECTION clock runs:
+     * past it, `sweepAbandonedInspections` cancels the order and refunds the
+     * customer in full.
+     */
+    const held = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const afterAccept = held.body.items.find(
+      (o: { id: string }) => o.id === orderId,
+    );
+    expect(afterAccept.offerExpiresAt).toBeNull();
+    expect(new Date(afterAccept.inspectionDeadlineAt).getTime()).toBeGreaterThan(
+      Date.now(),
+    );
+  });
 });

@@ -1788,6 +1788,7 @@ export class OrdersService {
   ): Promise<{ items: Array<ReturnType<OrdersService['toListItem']>> }> {
     const statusFilter = status ? { status: status as OrderStatus } : {};
     let orders: Order[];
+    const offerDeadlines = new Map<string, Date>();
     if (role === OrderRole.inspector) {
       const now = new Date();
       // Orders assigned to me OR for which I have an active offer.
@@ -1797,9 +1798,13 @@ export class OrdersService {
           status: 'PENDING',
           expiresAt: { gt: now },
         },
-        select: { orderId: true },
+        select: { orderId: true, expiresAt: true },
       });
       const offeredIds = offered.map((o) => o.orderId);
+      // Keep the deadline of the offer made to THIS inspector, so the row can
+      // count down to it. One order holds at most one PENDING offer per
+      // inspector; the last write wins if that ever changes.
+      for (const o of offered) offerDeadlines.set(o.orderId, o.expiresAt);
       orders = await this.prisma.order.findMany({
         where: {
           ...statusFilter,
@@ -1813,7 +1818,7 @@ export class OrdersService {
         orderBy: { createdAt: 'desc' },
       });
     }
-    return { items: orders.map((o) => this.toListItem(o)) };
+    return { items: orders.map((o) => this.toListItem(o, offerDeadlines.get(o.id) ?? null)) };
   }
 
   async getDetail(orderId: string, userId: string, role: Role): Promise<OrderDetail> {
@@ -3876,7 +3881,7 @@ export class OrdersService {
     });
   }
 
-  private toListItem(o: Order) {
+  private toListItem(o: Order, offerExpiresAt?: Date | null) {
     return {
       id: o.id,
       number: o.number,
@@ -3894,6 +3899,19 @@ export class OrdersService {
       inspectorShareCents: o.inspectorShareCents,
       currency: o.currency,
       createdAt: o.createdAt.toISOString(),
+      /*
+       * The two clocks that can take the job away, so the row can show how much
+       * time is left. Neither is a new rule: `offerExpiresAt` is the PENDING
+       * offer that `expireStaleOffers` passes on each minute, and
+       * `inspectionDeadlineAt` is the stamp `sweepAbandonedInspections` reads
+       * before it cancels the order and refunds the customer in full.
+       *
+       * `offerExpiresAt` is per-VIEWER, not per-order: it is the deadline of the
+       * offer made to the inspector who asked, and it is therefore null for the
+       * customer's list and for an order this inspector already holds.
+       */
+      offerExpiresAt: offerExpiresAt ? offerExpiresAt.toISOString() : null,
+      inspectionDeadlineAt: o.inspectionDeadlineAt ? o.inspectionDeadlineAt.toISOString() : null,
     };
   }
 }
