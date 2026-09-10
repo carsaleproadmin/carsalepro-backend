@@ -1397,16 +1397,61 @@ export class OrdersService {
       });
     }
 
-    // Money first, and it cannot throw — the same order as `cancel`, for the
-    // same reason: a refund failure must never be why the order stays open.
+    /*
+     * The status change is a CLAIM, taken BEFORE the money moves, exactly as
+     * `sweepAbandonedInspections` takes it.
+     *
+     * The two racers are this endpoint and that sweep, and both refund the
+     * whole amount. Nothing downstream separates them: they pass different
+     * reasons — `inspector_declined` and `inspector_no_show` — so the unique
+     * key on (orderId, reason) accepts both rows, and the Stripe idempotency
+     * key `refund_<id>_<reason>` differs too, so Stripe pays out twice. An
+     * inspector pressing "hand back" in the same seconds the hourly sweep
+     * reaches his overdue order would be refunded twice, and the `transition`
+     * that followed would return idempotently and report nothing.
+     *
+     * Claiming first makes the loser visible: `count === 0` means the sweep
+     * already took the order, and the inspector is told it is gone rather than
+     * being the second person to refund it.
+     */
+    const claimed = await this.prisma.order.updateMany({
+      where: { id: orderId, status: { in: declinable } },
+      data: { status: OrderStatus.CANCELLED },
+    });
+    if (claimed.count === 0) {
+      throw new ConflictException({
+        error: {
+          code: 'not_declinable',
+          message: 'The order can no longer be declined; open a dispute instead',
+        },
+      });
+    }
+
+    // `settleRefund` never throws: a refund failure must not be why the order
+    // stays open. It cannot leave the order uncancelled now in any case — the
+    // claim above already wrote that.
     const outcome = await this.settleRefund(order, order.totalCents, 'inspector_declined');
     await this.writeEvent(orderId, userId, 'inspector_declined', order.status, OrderStatus.CANCELLED, {
       reason: trimmed,
       refundCents: outcome.amountCents,
     });
-    await this.transition(orderId, OrderStatus.CANCELLED, userId, {
-      declinedByInspector: { reason: trimmed, refundCents: outcome.amountCents },
-    });
+    /*
+     * The claim wrote the status, so `transition` would find CANCELLED and
+     * return early — taking the `status_change` event and the customer's
+     * letter with it. Both are written here instead, the way the sweep does
+     * it. `notifyStatusChange` is reused rather than copied so the hand-back
+     * letter stays one mapping.
+     */
+    await this.writeEvent(orderId, userId, 'status_change', order.status, OrderStatus.CANCELLED, null);
+    try {
+      await this.notifyStatusChange({ ...order, status: OrderStatus.CANCELLED }, order.status, {
+        declinedByInspector: { reason: trimmed, refundCents: outcome.amountCents },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Hand-back notification failed for order ${orderId}: ${(err as Error).message}`,
+      );
+    }
     await this.countInspectorCancellation(userId);
 
     return {

@@ -445,6 +445,26 @@ export class ListingsService {
    * car they are no longer selling, nothing references them once the gallery
    * rows are gone, and leaving them would keep paying for storage of a listing
    * nobody can open.
+   *
+   * TWO key sets, and the second one is why the order below matters. The
+   * gallery rows name their own objects. The photos that came from the report
+   * have NO row: `mirrorShowroomPhotos` copies them into the public bucket
+   * under `mirroredPhotoKey(id, ref.s3Key)`, and the only way back to those
+   * keys is the report's `photosManifest` — reached through `report_id`, the
+   * column this method is here to clear. Once it is null the objects are
+   * unreachable: `erasePublicPhotoObjects` joins through the same relation and
+   * would enumerate nothing for this listing, so a later erasure request could
+   * not remove a permanent, unsigned, CDN-cached photo. They are therefore
+   * collected BEFORE the write, with `includeNeverPublic` for the same reason
+   * the erasure pass uses it — `NEVER_PUBLIC_KINDS` is empty today, and the
+   * registration document pages mirror like any other slot.
+   *
+   * The bucket work runs AFTER the transaction commits, not before. Delete
+   * first and a transaction that then throws leaves the listing alive with a
+   * gallery of 404s — the state the old ordering was written to avoid but in
+   * fact produced. Committing first inverts the failure: a stranded object is
+   * a storage cost that the erasure pass sweeps later, which is the cheaper
+   * half of the trade.
    */
   async remove(userId: string, id: string): Promise<{ id: string; deleted: true }> {
     const listing = await this.requireOwnedListing(userId, id);
@@ -460,11 +480,23 @@ export class ListingsService {
     }
 
     const photos = await this.prisma.listingPhoto.findMany({ where: { listingId: id } });
+    const mirrored = await this.mirroredPublicKeys(listing);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.listingPhoto.deleteMany({ where: { listingId: id } });
+      await tx.listing.update({
+        where: { id },
+        // `publicPhotosMirroredAt` goes with the objects it stands for. Left
+        // set, it says a copy is in the public bucket after the copy is gone.
+        data: { status: 'DELETED', reportId: null, publicPhotosMirroredAt: null },
+      });
+    });
+
     if (this.r2.isConfigured()) {
       for (const photo of photos) {
         // Same rule as `deletePhoto`: delete from the bucket the ROW names.
-        // Failures are swallowed — a stranded object is a cost, an exception
-        // here would leave the listing alive with half a gallery.
+        // Failures are swallowed — the rows are already gone, and a stranded
+        // object must not turn a completed delete into a 500.
         const location = photoLocation(photo.bucket, this.r2.isPublicBucketConfigured());
         const remove =
           location === 'public'
@@ -472,15 +504,14 @@ export class ListingsService {
             : this.r2.deleteObject(photo.r2Key);
         await remove.catch(() => undefined);
       }
+      for (const key of mirrored) {
+        await this.r2.publicDeleteObject(key).catch((err: Error) => {
+          // Logged rather than swallowed. This is the last pass that can name
+          // these keys: the manifest they came from is unreachable now.
+          this.logger.error(`Deleted listing ${id} left public object ${key}: ${err.message}`);
+        });
+      }
     }
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.listingPhoto.deleteMany({ where: { listingId: id } });
-      await tx.listing.update({
-        where: { id },
-        data: { status: 'DELETED', reportId: null },
-      });
-    });
 
     return { id, deleted: true };
   }
@@ -1061,6 +1092,32 @@ export class ListingsService {
       data: { status: 'ACTIVE', package: 'standard', publishedAt: new Date() },
     });
     await this.notifyListingPublished(id);
+  }
+
+  /**
+   * The public-bucket keys of the report photos mirrored for one listing.
+   *
+   * These objects have no `ListingPhoto` row — `mirrorShowroomPhotos` writes
+   * them straight from the report manifest — so this reconstruction is the
+   * only handle on them. `includeNeverPublic` is on for the reason
+   * `erasePublicPhotoObjects` gives: a kind that must not be public is exactly
+   * the one that must be swept if an older build mirrored it.
+   *
+   * The whole manifest is walked, not the mirrored top-N. The cap and the
+   * ordering have both changed, so an object written under the old rule can
+   * sit outside today's subset. A key that was never written 404s, and every
+   * caller treats that as success.
+   */
+  private async mirroredPublicKeys(listing: Listing): Promise<string[]> {
+    if (!this.r2.isPublicBucketConfigured()) return [];
+    if (!listing.reportId || !listing.publicPhotosMirroredAt) return [];
+    const report = await this.prisma.report.findUnique({
+      where: { id: listing.reportId },
+      select: { photosManifest: true },
+    });
+    return manifestPhotoRefs(report?.photosManifest, Number.MAX_SAFE_INTEGER, {
+      includeNeverPublic: true,
+    }).map((ref) => mirroredPhotoKey(listing.id, ref.s3Key));
   }
 
   /** Load a listing the user owns, or throw 404/403. */
