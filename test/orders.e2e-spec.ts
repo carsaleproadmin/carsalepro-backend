@@ -2080,6 +2080,39 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(detail.body.declined.refundCents).toBe(FARE.totalCents);
   });
 
+  it('9e2. the sweep and a hand-back cannot both refund the same order', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const inspectorId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(inspectorId)!;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/testing/orders/${orderId}/expire-inspection-deadline`)
+      .expect(200);
+
+    // The sweep gets there first and takes the order. The inspector's tab was
+    // rendered before that, so his hand-back arrives against a state that no
+    // longer exists — the race the claim in `declineByInspector` exists for.
+    await orders.sweepAbandonedInspections();
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'The seller does not answer' })
+      .expect(409);
+
+    // ONE refund. Both paths pay the whole fare, and they pass different
+    // reasons, so neither the (orderId, reason) key nor the Stripe idempotency
+    // key stops a second payout — only the claim does.
+    const refunds = await prisma.refund.findMany({ where: { orderId } });
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0].reason).toBe('inspector_no_show');
+
+    const profile = await prisma.inspectorProfile.findUnique({ where: { userId: inspectorId } });
+    expect(profile!.cancelCount).toBe(1);
+  });
+
   it('9f. an order inside its deadline is untouched', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);

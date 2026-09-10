@@ -1427,6 +1427,58 @@ describe('Listings (e2e)', () => {
         );
       });
 
+      it('29. deleting a listing takes its mirrored report photos with it', async () => {
+        const owner = await seller();
+        const code = uniqueCode();
+        const report = await seedReport({ code, userId: owner.userId });
+        reportIds.push(report.id);
+        const listing = await prisma.listing.create({
+          data: {
+            sellerId: owner.userId,
+            reportId: report.id,
+            source: 'report',
+            status: 'ACTIVE',
+            package: 'standard',
+            priceCents: 1390000,
+            city: 'Kassel',
+            make: 'BMW',
+            model: '320d',
+            year: 2018,
+            publishedAt: new Date(),
+          },
+        });
+        listingIds.push(listing.id);
+
+        await app.get(ListingsService).mirrorShowroomPhotos(listing.id);
+        const manifest = report.photosManifest as { s3Key: string }[];
+        const keys = manifest.map((m) => mirroredPhotoKey(listing.id, m.s3Key));
+        for (const key of keys) expect(objects.has(key)).toBe(true);
+
+        // A seller cannot delete an ACTIVE listing, so the delete follows the
+        // route the website offers: hide it, then remove it.
+        await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listing.id}/unpublish`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(201);
+        await request(app.getHttpServer())
+          .delete(`/api/v1/listings/${listing.id}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+
+        // These objects have no ListingPhoto row. Their keys come from the
+        // manifest, reached through `report_id` — which the delete clears. If
+        // they are not removed here, nothing can name them again, and a later
+        // erasure request would leave permanent public photos of the car.
+        for (const key of keys) expect(objects.has(key)).toBe(false);
+
+        const row = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+        expect(row.status).toBe('DELETED');
+        expect(row.reportId).toBeNull();
+        // The stamp says "a copy is in the public bucket". It must not outlive
+        // the copy.
+        expect(row.publicPhotosMirroredAt).toBeNull();
+      });
+
       it('28. the nightly backlog pass mirrors listings published before the cutover', async () => {
         const owner = await seller();
         const code = uniqueCode();
