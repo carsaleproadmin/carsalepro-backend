@@ -164,6 +164,26 @@ export class ListingsController {
     return this.listings.markSold(userId, id);
   }
 
+  // Declared before the photo routes so it cannot be shadowed by a future
+  // `@Delete(':id/...')` sibling; Nest matches in declaration order.
+  @Delete(':id')
+  @ApiOperation({
+    summary: 'Delete a draft or hidden listing and free its report code',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiResponse({
+    status: 400,
+    type: ErrorResponseDto,
+    description:
+      'listing_not_deletable — the listing is ACTIVE (unpublish it first) or SOLD',
+  })
+  remove(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<{ id: string; deleted: true }> {
+    return this.listings.remove(userId, id);
+  }
+
   // ============================================================
   // Seller photo gallery (BE-S2)
   // ============================================================

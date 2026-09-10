@@ -600,6 +600,102 @@ describe('Listings (e2e)', () => {
     }
   });
 
+  it('9b. deleting a draft frees the report code for a second claim', async () => {
+    // The whole point of the delete: `listing.report_id` is UNIQUE, so a
+    // listing that keeps it makes the code unusable forever.
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    let secondId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id;
+
+      await request(app.getHttpServer())
+        .delete(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+
+      const row = await prisma.listing.findUnique({ where: { id: listingId } });
+      expect(row?.status).toBe('DELETED');
+      expect(row?.reportId).toBeNull();
+
+      // Gone from the seller's cabinet, and the code works again.
+      const mine = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      expect(mine.body.items.find((i: { id: string }) => i.id === listingId)).toBeUndefined();
+
+      const again = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      secondId = again.body.id;
+      expect(secondId).not.toBe(listingId);
+    } finally {
+      await cleanup({ listingId: secondId, reportId: report.id });
+      if (listingId) await prisma.listing.deleteMany({ where: { id: listingId } });
+    }
+  });
+
+  it('9c. an ACTIVE listing is not deletable, and a stranger cannot delete a draft', async () => {
+    const owner = await registerUser(app);
+    const stranger = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id;
+
+      await request(app.getHttpServer())
+        .delete(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .expect(403);
+
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ priceCents: 990000, city: 'Bonn' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/publish`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ package: 'standard' })
+        .expect(201);
+
+      const refused = await request(app.getHttpServer())
+        .delete(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(400);
+      expect(refused.body.error.code).toBe('listing_not_deletable');
+
+      // Unpublish first, then it goes.
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/unpublish`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(201);
+      await request(app.getHttpServer())
+        .delete(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+    } finally {
+      await cleanup({ reportId: report.id });
+      if (listingId) await prisma.listing.deleteMany({ where: { id: listingId } });
+    }
+  });
+
   it('11. GET /api/v1/me/listings lists the user listings', async () => {
     const owner = await registerUser(app);
     const code = uniqueCode();

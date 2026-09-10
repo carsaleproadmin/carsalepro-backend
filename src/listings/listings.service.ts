@@ -422,6 +422,69 @@ export class ListingsService {
     return this.prisma.listing.update({ where: { id }, data: { status: 'SOLD' } });
   }
 
+  /**
+   * Delete a listing the seller no longer wants, and give the report code back.
+   *
+   * DRAFT and HIDDEN only. An ACTIVE listing must be unpublished first — one
+   * click cannot both take a car off the showroom and destroy it — and a SOLD
+   * one is the record of a sale: the buyer keeps a link to the report through
+   * it, so it is not the seller's alone to remove.
+   *
+   * SOFT delete. The row stays, marked DELETED, exactly as `eraseMe` marks a
+   * leaving user's listings: an order and a payment point at this id, and a
+   * hard delete would leave both hanging.
+   *
+   * The point of the operation is `reportId: null`. Claiming a report code
+   * writes it into `listing.report_id`, which is UNIQUE, and that index is the
+   * whole single-use rule (see `create`). Clearing it here is what frees the
+   * code — without it the seller deletes the listing and can never use their
+   * own report again. The report row itself is untouched: it belongs to the
+   * inspection, not to the listing.
+   *
+   * Photos go from R2 in the same call. They are the seller's own images of a
+   * car they are no longer selling, nothing references them once the gallery
+   * rows are gone, and leaving them would keep paying for storage of a listing
+   * nobody can open.
+   */
+  async remove(userId: string, id: string): Promise<{ id: string; deleted: true }> {
+    const listing = await this.requireOwnedListing(userId, id);
+    if (listing.status !== 'DRAFT' && listing.status !== 'HIDDEN') {
+      throw new BadRequestException({
+        error: {
+          code: 'listing_not_deletable',
+          message:
+            'Only a draft or a hidden listing can be deleted. Unpublish an active listing first.',
+          status: listing.status,
+        },
+      });
+    }
+
+    const photos = await this.prisma.listingPhoto.findMany({ where: { listingId: id } });
+    if (this.r2.isConfigured()) {
+      for (const photo of photos) {
+        // Same rule as `deletePhoto`: delete from the bucket the ROW names.
+        // Failures are swallowed — a stranded object is a cost, an exception
+        // here would leave the listing alive with half a gallery.
+        const location = photoLocation(photo.bucket, this.r2.isPublicBucketConfigured());
+        const remove =
+          location === 'public'
+            ? this.r2.publicDeleteObject(photo.r2Key)
+            : this.r2.deleteObject(photo.r2Key);
+        await remove.catch(() => undefined);
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.listingPhoto.deleteMany({ where: { listingId: id } });
+      await tx.listing.update({
+        where: { id },
+        data: { status: 'DELETED', reportId: null },
+      });
+    });
+
+    return { id, deleted: true };
+  }
+
   // ============================================================
   // Photos (BE-S2) — the seller's own gallery
   //
