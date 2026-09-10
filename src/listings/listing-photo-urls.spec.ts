@@ -171,23 +171,23 @@ describe('manifestPhotoRefs', () => {
 });
 
 /*
- * These four assertions were the inverse of themselves until 2026-09-09, when
- * the client asked for the registration document on the public car page beside
- * the VIN plate and the odometer (DEN-263). They are INVERTED rather than
- * deleted, so that a reader who finds the old rule in the history can see the
- * change was made on purpose and not lost in a refactor.
+ * These assertions were inverted on 2026-09-09 for DEN-263, which put the
+ * registration document on the public car page beside the VIN plate and the
+ * odometer. They are inverted back. The document still goes into the report
+ * and into the PDF - DEN-263 keeps those - but not onto the surface that
+ * gives a permanent, unsigned copy to everybody.
  */
-describe('isNeverPublicKind — nothing is banned outright any more', () => {
-  it('publishes the slot the registration document uses', () => {
-    expect(isNeverPublicKind('passport')).toBe(false);
+describe('isNeverPublicKind — the registration document', () => {
+  it('bans the slot the registration document uses', () => {
+    expect(isNeverPublicKind('passport')).toBe(true);
   });
 
-  it('publishes the numbered pages of it too', () => {
-    // The app takes up to three pages, and parity with the VIN plate covers
-    // every one of them - not just the first.
-    expect(isNeverPublicKind('passport-2')).toBe(false);
-    expect(isNeverPublicKind('passport_back')).toBe(false);
-    expect(isNeverPublicKind('PASSPORT-3')).toBe(false);
+  it('bans the numbered pages of it too', () => {
+    // The app takes up to three pages. A rule that covered only the first one
+    // would publish the other two.
+    expect(isNeverPublicKind('passport-2')).toBe(true);
+    expect(isNeverPublicKind('passport_back')).toBe(true);
+    expect(isNeverPublicKind('PASSPORT-3')).toBe(true);
   });
 
   it('keeps every kind the report is actually made of', () => {
@@ -209,18 +209,18 @@ describe('manifestPhotoRefs — the never-public rule', () => {
     { s3Key: 'c.jpg', kind: 'passport-2' },
   ];
 
-  it('carries the registration document to the public surface', () => {
-    // DEN-263. Every page, and the pages sort AFTER the walk-around angle -
-    // `comparePhotoKinds` ranks an unknown kind last, which is what keeps an
-    // advert opening on a picture of the car rather than on a document.
+  it('keeps the registration document off the public surface', () => {
+    // Every page, not only the first: `b.jpg` is `passport` and `c.jpg` is
+    // `passport-2`, and the prefix rule must catch both.
     const keys = manifestPhotoRefs(manifest, 10).map((ref) => ref.s3Key);
-    expect(keys).toEqual(['a.jpg', 'b.jpg', 'c.jpg']);
+    expect(keys).toEqual(['a.jpg']);
   });
 
   it('still returns everything for an erasure', () => {
     // The GDPR pass computes the keys to REMOVE from the public bucket, and it
     // must cover objects mirrored under ANY rule this file has ever had. The
-    // flag is why emptying the ban list did not weaken the erasure.
+    // flag is why the ban above does not weaken the erasure: an object that
+    // a build between 2026-09-09 and the ban mirrored must still be found.
     const keys = manifestPhotoRefs(manifest, 10, { includeNeverPublic: true }).map(
       (ref) => ref.s3Key,
     );

@@ -3,7 +3,11 @@ import request from 'supertest';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { R2Service } from '../src/r2/r2.service';
-import { mirroredPhotoKey } from '../src/listings/listing-photo-urls';
+import {
+  isNeverPublicKind,
+  manifestPhotoRefs,
+  mirroredPhotoKey,
+} from '../src/listings/listing-photo-urls';
 import { createTestApp } from './helpers/test-app';
 import { listingSearchColumns } from '../src/listings/listing-search-columns';
 
@@ -318,12 +322,13 @@ describe('Public showroom + report check (e2e)', () => {
       expect(res.body.reportData.damages[0].repairMethodName).toBe('Respray');
     });
 
-    it('10-7. never signs a photograph of the registration document', async () => {
+    it('10-7. signs the registration document, but never mirrors it', async () => {
       /*
-       * The pages of the registration document carry the name and the address
-       * of the owner. The mobile app does not upload them and the website
-       * removes them again, but both of those locks are on another machine.
-       * This is the lock on the surface that publishes.
+       * DEN-263 asks for the document on the free report page. It is served
+       * with an EXPIRING url, and `passport` stays in `NEVER_PUBLIC_KINDS`, so
+       * the mirror cannot make a permanent unsigned copy of a page that
+       * carries the name and the address of the owner. The two rules are
+       * different and this test holds both.
        */
       await prisma.report.update({
         where: { id: reportId },
@@ -338,19 +343,35 @@ describe('Public showroom + report check (e2e)', () => {
       const res = await request(app.getHttpServer())
         .get(`/api/v1/public/reports/${code}/full`)
         .expect(200);
-      const kinds = (res.body.photos as { kind?: string }[]).map((photo) => photo.kind);
-      expect(kinds).not.toContain('passport');
-      expect(kinds).not.toContain('passport-2');
-      expect(JSON.stringify(res.body.photos)).not.toContain('passport');
-      /*
-       * And the route did in fact sign something. Without this the three
-       * assertions above hold just as well on an empty list, which is what an
-       * unconfigured R2 returns - the test would then pass while proving
-       * nothing at all.
-       */
+      const photos = res.body.photos as { kind?: string; url: string }[];
+
       if (app.get(R2Service).isConfigured()) {
-        expect(kinds).toContain('exterior-front');
+        // The route did in fact sign something. Without this the assertions
+        // below hold just as well on the empty list an unconfigured R2
+        // returns, and the test would prove nothing.
+        expect(photos.map((photo) => photo.kind)).toContain('exterior-front');
+
+        // Every page, not only the first.
+        const pages = photos.filter((photo) => photo.kind?.startsWith('passport'));
+        expect(pages).toHaveLength(2);
+        // Signed, thus it expires. This is the whole permission: a reader of
+        // the page can open it, and nobody keeps it.
+        for (const page of pages) expect(page.url).toContain('X-Amz-Signature');
       }
+
+      // And the mirror still refuses the kind. This is the surface that makes
+      // a permanent, unsigned, CDN-cached object.
+      expect(isNeverPublicKind('passport')).toBe(true);
+      expect(isNeverPublicKind('passport-2')).toBe(true);
+      expect(
+        manifestPhotoRefs(
+          [
+            { s3Key: 'reports/x/exterior-front.jpg', kind: 'exterior-front' },
+            { s3Key: 'reports/x/passport.jpg', kind: 'passport' },
+          ],
+          10,
+        ).map((ref) => ref.s3Key),
+      ).toEqual(['reports/x/exterior-front.jpg']);
     });
   });
 
