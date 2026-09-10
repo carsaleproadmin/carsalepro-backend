@@ -88,9 +88,9 @@ export interface AppConfig {
   web: {
     /**
      * THE canonical origin — the first entry of `WEB_ORIGIN`. Absolute URLs are
-     * built from it (`auth.service.ts`, `vin-history.service.ts`,
-     * `listings.service.ts`, `payments.service.ts`), and those need exactly one
-     * answer, which is why the allow-list is a separate field.
+     * built from it (`auth.service.ts`, `listings.service.ts`,
+     * `payments.service.ts`), and those need exactly one answer, which is why
+     * the allow-list is a separate field.
      */
     origin: string;
     /** Every browser origin allowed by CORS: `WEB_ORIGIN` + `CORS_ORIGINS`. */
