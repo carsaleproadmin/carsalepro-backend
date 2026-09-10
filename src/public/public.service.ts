@@ -614,7 +614,15 @@ export class PublicService {
        * pictures it describes.
        */
       reportData: publicReportData(report.reportData, ['photos']),
-      photos: await this.signPhotos(report.photosManifest, MAX_REPORT_PHOTOS),
+      /*
+       * The registration document is included here, and ONLY here (DEN-263).
+       * These URLs expire; the mirrored ones in the showroom do not, which is
+       * why `passport` stays in `NEVER_PUBLIC_KINDS` and is let through at
+       * this one call instead.
+       */
+      photos: await this.signPhotos(report.photosManifest, MAX_REPORT_PHOTOS, {
+        includeNeverPublic: true,
+      }),
       /*
        * NO PDF. The document is the inspector's own file: it carries the
        * signature image, the full VIN and whatever else the mobile app put on
@@ -777,12 +785,29 @@ export class PublicService {
     return this.signPhotos(manifest, limit);
   }
 
+  /**
+   * Sign the manifest entries, one expiring URL each.
+   *
+   * `includeNeverPublic` lets ONE caller through the ban list: `reportFull`.
+   * The two rules are different, and this is where they separate. A kind in
+   * `NEVER_PUBLIC_KINDS` must not become a permanent unsigned object in the
+   * public bucket - that copy has no expiry, needs no authentication and
+   * outlives the listing that caused it. A signed URL is none of those things:
+   * it expires, and nothing caches it at the edge. The registration document
+   * can therefore be READ on the free report page, which is what DEN-263 asked
+   * for, while staying out of the mirror.
+   *
+   * The showroom gallery must NOT pass it. A card and a listing page take the
+   * mirrored subset, so a kind that is banned from the bucket has no key
+   * there.
+   */
   private async signPhotos(
     manifest: Prisma.JsonValue | null,
     limit: number,
+    options: { includeNeverPublic?: boolean } = {},
   ): Promise<{ url: string; kind?: string; angle?: string }[]> {
     if (!this.r2.isConfigured()) return [];
-    const refs = manifestPhotoRefs(manifest, limit);
+    const refs = manifestPhotoRefs(manifest, limit, options);
     /*
      * Together, not one after the other. The cap is 300 on the free report and
      * the route needs no authentication, so a serial loop made the response
