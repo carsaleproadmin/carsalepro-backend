@@ -261,9 +261,13 @@ export class R2Service implements OnModuleInit {
     const cmd = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
-      // Without this the browser saves the object under its KEY — a cuid and a
-      // locale suffix. Someone who paid for a vehicle history should get
-      // `carsalepro-vin-history-<VIN>.pdf` in their downloads folder.
+      // Without this the browser saves the object under its KEY — a tier, a
+      // device id and a cuid. A person who downloads a document should get a
+      // name that says what it is.
+      //
+      // No caller passes `filename` today: the VIN-history product, which was
+      // the one that did, is gone (DEN-246, DEN-284). The option stays because
+      // every key in this bucket has the same defect.
       ...(options?.filename
         ? { ResponseContentDisposition: contentDisposition(options.filename) }
         : {}),
