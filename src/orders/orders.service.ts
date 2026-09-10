@@ -1345,10 +1345,14 @@ export class OrdersService {
    * still in escrow — `releasePayout` runs on approve — so there is nothing to
    * claw back from them.
    *
-   * Only `ASSIGNED` and `EN_ROUTE` may be declined. From `IN_PROGRESS` the
-   * inspection has started and the customer is owed an argument, not a silent
-   * exit: that path stays `DISPUTED`. Both allowed edges already exist in the
-   * state machine, and the order does NOT go back to the search pool — see the
+   * `ASSIGNED`, `EN_ROUTE` and `IN_PROGRESS` may be declined (DEN-274). A
+   * blocker can show itself only after the start — no car at the address, no
+   * access from the seller, a car that is not safe to drive — and that is a
+   * hand-back with a reason, not an argument. The refund is the same 100% in
+   * all three statuses: the customer receives no report, so the customer pays
+   * nothing. `DISPUTED` stays available for the arguments that need it.
+   *
+   * The order does NOT go back to the search pool — see the
    * `ASSIGNED -> UNASSIGNED` note in `order-state-machine.ts`. The customer
    * makes a new order instead.
    */
@@ -1369,7 +1373,11 @@ export class OrdersService {
       });
     }
 
-    const declinable: OrderStatus[] = [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE];
+    const declinable: OrderStatus[] = [
+      OrderStatus.ASSIGNED,
+      OrderStatus.EN_ROUTE,
+      OrderStatus.IN_PROGRESS,
+    ];
     if (!declinable.includes(order.status)) {
       throw new ConflictException({
         error: {

@@ -134,7 +134,8 @@ export class OrdersController {
   @HttpCode(200)
   @ApiOperation({
     summary:
-      'Assigned inspector hands the order back (ASSIGNED|EN_ROUTE → CANCELLED). ' +
+      'Assigned inspector hands the order back ' +
+      '(ASSIGNED|EN_ROUTE|IN_PROGRESS → CANCELLED). ' +
       'A non-empty reason is required, and the customer is refunded 100% — the ' +
       'money was captured on acceptance and the customer is not at fault.',
   })

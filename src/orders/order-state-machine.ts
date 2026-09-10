@@ -12,7 +12,7 @@ import { OrderStatus } from '@prisma/client';
  *   UNASSIGNED  → ASSIGNED | CANCELLED
  *   ASSIGNED    → EN_ROUTE | CANCELLED
  *   EN_ROUTE    → IN_PROGRESS | CANCELLED
- *   IN_PROGRESS → SUBMITTED | DISPUTED
+ *   IN_PROGRESS → SUBMITTED | DISPUTED | CANCELLED
  *   SUBMITTED   → APPROVED | DISPUTED
  *   APPROVED    → COMPLETED
  *   DISPUTED    → REFUNDED | APPROVED | COMPLETED
@@ -27,6 +27,12 @@ import { OrderStatus } from '@prisma/client';
  * pool still carrying its `searchExpiresAt` deadline, and `expireUnfilledSearches`
  * would then try to release a hold that no longer exists: a captured order
  * cancelled, and a customer told nothing was ever taken.
+ *
+ * **`IN_PROGRESS → CANCELLED` was added for DEN-274.** The inspector can find
+ * a blocker after the start of the inspection — no car at the address, no
+ * access from the seller, a car that is not safe to drive. That is a hand-back
+ * with a reason, not an argument, so it must not need a dispute. Only
+ * `OrdersService.declineByInspector` performs this edge.
  */
 export const ORDER_TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatus[]>> = {
   [OrderStatus.CREATED]: [OrderStatus.PAID, OrderStatus.CANCELLED],
@@ -34,7 +40,7 @@ export const ORDER_TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatu
   [OrderStatus.UNASSIGNED]: [OrderStatus.ASSIGNED, OrderStatus.CANCELLED],
   [OrderStatus.ASSIGNED]: [OrderStatus.EN_ROUTE, OrderStatus.CANCELLED],
   [OrderStatus.EN_ROUTE]: [OrderStatus.IN_PROGRESS, OrderStatus.CANCELLED],
-  [OrderStatus.IN_PROGRESS]: [OrderStatus.SUBMITTED, OrderStatus.DISPUTED],
+  [OrderStatus.IN_PROGRESS]: [OrderStatus.SUBMITTED, OrderStatus.DISPUTED, OrderStatus.CANCELLED],
   [OrderStatus.SUBMITTED]: [OrderStatus.APPROVED, OrderStatus.DISPUTED],
   [OrderStatus.APPROVED]: [OrderStatus.COMPLETED],
   [OrderStatus.DISPUTED]: [OrderStatus.REFUNDED, OrderStatus.APPROVED, OrderStatus.COMPLETED],

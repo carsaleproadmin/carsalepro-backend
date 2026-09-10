@@ -1950,7 +1950,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
   });
 
-  it('9d. decline from IN_PROGRESS → 409, and a stranger cannot decline at all', async () => {
+  it('9d. decline from IN_PROGRESS refunds in full, and a stranger cannot decline at all', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);
     const { orderId } = await createPaidOrder(customer);
@@ -1976,11 +1976,43 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .send({ status: 'IN_PROGRESS' })
       .expect(200);
 
-    // Once the inspection has started the exit is a dispute, not a hand-back.
+    // A blocker found after the start is still a hand-back (DEN-274), and the
+    // refund is the same 100%: the customer receives no report.
     const res = await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/decline`)
       .set('Authorization', `Bearer ${inspToken}`)
-      .send({ reason: 'The car is filthy' })
+      .send({ reason: 'The seller refuses access to the car' })
+      .expect(200);
+    expect(res.body.status).toBe('CANCELLED');
+    expect(res.body.refundCents).toBe(FARE.totalCents);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('CANCELLED');
+  });
+
+  it('9d2. decline from SUBMITTED is refused; the exit there is a dispute', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    for (const status of ['EN_ROUTE', 'IN_PROGRESS']) {
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${inspToken}`)
+        .send({ status })
+        .expect(200);
+    }
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'SUBMITTED' },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'I changed my mind' })
       .expect(409);
     expect(res.body.error.code).toBe('not_declinable');
   });
