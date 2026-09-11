@@ -10,7 +10,7 @@
 // Placeholders use {{double_braces}} and are substituted by LegalContractService
 // when a contract is rendered for a concrete order:
 //   {{orderNumber}} {{contractDate}} {{customerName}} {{inspectorName}}
-//   {{inspectorCompany}} {{vehicle}} {{vin}} {{address}} {{scheduledAt}}
+//   {{inspectorCompany}} {{vehicle}} {{vin}} {{address}}
 //   {{totalEur}} {{platformFeeEur}} {{inspectorShareEur}}
 //   {{inspectorTaxId}} {{inspectorVatId}}
 //
@@ -63,7 +63,6 @@ The Inspector will inspect the following vehicle and produce an inspection repor
 - **Vehicle:** {{vehicle}}
 - **VIN:** {{vin}}
 - **Place of inspection:** {{address}}
-- **Scheduled for:** {{scheduledAt}}
 
 The inspection covers the items in the CarSalePro standard inspection checklist in force at the time of the order.
 
@@ -169,7 +168,6 @@ The Inspector will perform a visual and functional inspection and deliver an ins
 - **Vehicle:** {{vehicle}}
 - **VIN:** {{vin}}
 - **Inspection location:** {{address}}
-- **Scheduled for:** {{scheduledAt}}
 
 The inspection covers the items in the CarSalePro standard inspection checklist applicable at the time of the order.
 
@@ -239,7 +237,6 @@ Der Gutachter führt eine Sicht- und Funktionsprüfung durch und erstellt einen 
 - **Fahrzeug:** {{vehicle}}
 - **FIN:** {{vin}}
 - **Ort der Begutachtung:** {{address}}
-- **Geplant für:** {{scheduledAt}}
 
 Die Begutachtung umfasst die Punkte der zum Zeitpunkt des Auftrags geltenden CarSalePro-Standard-Prüfliste.
 

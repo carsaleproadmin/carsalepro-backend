@@ -7,16 +7,18 @@
  *
  *   billed     = measured distance × returnTripFactor  (same for the minutes)
  *   subtotal   = base + billed km × ratePerKm + billed min × ratePerMinute
- *   multiplier = surge × (peak window ? peakMultiplier : 1)
- *   total      = max(round(subtotal × multiplier), minimumFare)
+ *   total      = max(round(subtotal × surge), minimumFare)
  *
  * Every amount is integer cents. Rounding happens once per component and once
  * on the surged subtotal — never on a running float.
+ *
+ * There is no peak window (DEN-290). The customer does not choose an
+ * inspection time, so no time exists to price against.
  */
 
 import { chargeableKm } from './tariff-resolution';
 
-/** Tariff inputs, all integer cents except the unitless multipliers and hours. */
+/** Tariff inputs, all integer cents except the unitless multipliers. */
 export interface PricingTariff {
   baseFeeCents: number;
   ratePerKmCents: number;
@@ -24,11 +26,6 @@ export interface PricingTariff {
   minimumFareCents: number;
   platformFeePercent: number;
   surgeMultiplier: number;
-  peakMultiplier: number;
-  /** Local hour, inclusive. */
-  peakStartHour: number;
-  /** Local hour, exclusive. */
-  peakEndHour: number;
   /**
    * How many times the measured one-direction trip the customer pays for.
    *
@@ -61,8 +58,6 @@ export interface PricingInput {
   distanceKm: number;
   /** ONE-DIRECTION travel time in minutes. */
   durationMin: number;
-  /** When the inspection is scheduled — drives the peak window. */
-  scheduledAt: Date;
   tariff: PricingTariff;
 }
 
@@ -93,11 +88,10 @@ export interface PriceBreakdown {
   timeFeeCents: number;
   /** base + distance + time, before any multiplier. */
   subtotalCents: number;
-  /** surge × peak. 1 when both are off. */
+  /** The manual surge lever. 1 when it is off. */
   surgeMultiplier: number;
   /** The amount the multiplier added. 0 when no multiplier applies. */
   surgeFeeCents: number;
-  peakApplied: boolean;
   minimumFareCents: number;
   /** What the floor added. 0 when the fare already cleared it. */
   minimumFareTopUpCents: number;
@@ -116,23 +110,6 @@ function safeMultiplier(value: number): number {
 function safeNonNegative(value: number): number {
   if (!Number.isFinite(value) || value < 0) return 0;
   return value;
-}
-
-/**
- * Is `when` inside the peak window? The window is expressed in whole local hours,
- * start inclusive and end exclusive, and may wrap past midnight (e.g. 22 → 2).
- * A start equal to the end means "no window", not "all day" — an operator who
- * wants peak pricing off should leave the multiplier at 1, and this makes a
- * mistyped window fail safe rather than surcharging everyone.
- */
-export function isPeak(when: Date, startHour: number, endHour: number): boolean {
-  if (!Number.isFinite(startHour) || !Number.isFinite(endHour)) return false;
-  const start = Math.trunc(startHour);
-  const end = Math.trunc(endHour);
-  if (start === end) return false;
-
-  const hour = when.getHours();
-  return start < end ? hour >= start && hour < end : hour >= start || hour < end;
 }
 
 export function computePrice(input: PricingInput): PriceBreakdown {
@@ -162,10 +139,7 @@ export function computePrice(input: PricingInput): PriceBreakdown {
   const timeFeeCents = Math.round(billedDurationMin * safeNonNegative(tariff.ratePerMinuteCents));
   const subtotalCents = baseFeeCents + distanceFeeCents + timeFeeCents;
 
-  const peakApplied = isPeak(input.scheduledAt, tariff.peakStartHour, tariff.peakEndHour);
-  const surgeMultiplier =
-    safeMultiplier(tariff.surgeMultiplier) *
-    (peakApplied ? safeMultiplier(tariff.peakMultiplier) : 1);
+  const surgeMultiplier = safeMultiplier(tariff.surgeMultiplier);
 
   const surgedCents = Math.round(subtotalCents * surgeMultiplier);
   const surgeFeeCents = surgedCents - subtotalCents;
@@ -194,7 +168,6 @@ export function computePrice(input: PricingInput): PriceBreakdown {
     subtotalCents,
     surgeMultiplier,
     surgeFeeCents,
-    peakApplied,
     minimumFareCents,
     minimumFareTopUpCents,
     minimumFareApplied: minimumFareTopUpCents > 0,

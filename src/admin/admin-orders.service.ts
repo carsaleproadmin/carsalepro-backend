@@ -55,7 +55,7 @@ export class AdminOrdersService {
         model: o.model,
         totalCents: o.totalCents,
         currency: o.currency,
-        scheduledAt: o.scheduledAt.toISOString(),
+        scheduledAt: o.scheduledAt?.toISOString() ?? null,
         createdAt: o.createdAt.toISOString(),
       })),
       total,

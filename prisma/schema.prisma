@@ -408,7 +408,9 @@ model Order {
   listingUrl  String?                               @map("listing_url")
   address     String
   location    Unsupported("geography(Point, 4326)")
-  scheduledAt DateTime                              @map("scheduled_at")
+  /// Null for every order created after DEN-290: the customer no longer
+  /// chooses a time. Older orders keep the time they were created with.
+  scheduledAt DateTime?                             @map("scheduled_at")
   countryCode String                                @default("DE") @map("country_code")
 
   // money (integer cents)
@@ -438,7 +440,8 @@ model Order {
   /// return-trip basis as `distanceKm`.
   durationMin         Int?    @map("duration_min")
   timeFeeCents        Int     @default(0) @map("time_fee_cents")
-  /// surge × peak, frozen at quote time. 1 when neither applied.
+  /// The surge multiplier, frozen at quote time. 1 when it did not apply.
+  /// Rows written before DEN-290 can also include a peak multiplier.
   surgeMultiplier     Decimal @default(1) @map("surge_multiplier") @db.Decimal(4, 2)
   /// True when the minimum fare floor raised the total.
   minimumFareApplied  Boolean @default(false) @map("minimum_fare_applied")

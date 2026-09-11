@@ -10,7 +10,7 @@
  *
  * Field by field, and not row by row, is the whole design. A country that must
  * charge its own per-km rate should not have to restate the base fee, the
- * minimum fare and the peak window to say so — a restated value is a copy that
+ * minimum fare and the free radius to say so — a restated value is a copy that
  * stops tracking the original the day the original moves.
  *
  * **The global level never refuses.** It is a complete tariff, so an empty

@@ -12,7 +12,6 @@ import { createTestApp } from './helpers/test-app';
 // Berlin Mitte — the order/customer/inspector location used across the suite.
 const ORDER_LAT = 52.52;
 const ORDER_LNG = 13.405;
-const SCHEDULED_AT = '2026-07-01T09:00:00.000Z';
 
 function uniqueEmail(prefix = 'lc'): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@example.com`;
@@ -212,7 +211,7 @@ describe('LegalSync / Order Contract (e2e)', () => {
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,
-        scheduledAt: SCHEDULED_AT,
+        // No scheduledAt (DEN-290): the order and its contract have no time.
       })
       .expect(201);
     createdOrderIds.add(res.body.orderId);
@@ -301,6 +300,10 @@ describe('LegalSync / Order Contract (e2e)', () => {
     expect(html).toContain('Hans Müller');
     // The agreement is in English for every country (owner decision 2026-08-12).
     expect(html).toContain('Governing law and place of jurisdiction');
+    // DEN-290: the customer chooses no time, so the contract states none, and
+    // no placeholder is left unfilled.
+    expect(html).not.toContain('Scheduled for');
+    expect(html).not.toContain('{{');
     expect(html).not.toMatch(/\{\{.*?\}\}/);
   });
 
