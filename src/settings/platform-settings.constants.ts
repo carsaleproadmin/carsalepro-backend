@@ -27,7 +27,11 @@ export const SETTING_KEYS = {
   minReportQualityScore: 'minReportQualityScore',
   refundBeforeAssignPercent: 'refundBeforeAssignPercent',
   refundAfterAssignPercent: 'refundAfterAssignPercent',
-  signedUrlTtlMinutes: 'signedUrlTtlMinutes',
+  // `signedUrlTtlMinutes` was removed on 2026-09-11 (DEN-293). It changed only
+  // the `expiresAt` value that report access sent, while R2 signed every URL
+  // with the TTL from the environment. An admin who set 5 minutes got links
+  // that stayed valid for 15. The row can stay in the database: nothing reads
+  // it, and `getAll` lists only the keys in this map.
 } as const;
 
 export type SettingKey = keyof typeof SETTING_KEYS;
@@ -225,7 +229,6 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   minReportQualityScore: 85,
   refundBeforeAssignPercent: 100,
   refundAfterAssignPercent: 80,
-  signedUrlTtlMinutes: 15,
 };
 
 /**

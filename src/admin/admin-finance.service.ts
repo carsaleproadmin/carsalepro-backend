@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { revenueInWindow } from './revenue-window';
 
 export interface FinanceSummary {
   from: string;
@@ -41,7 +42,7 @@ export class AdminFinanceService {
     const window = { gte: fromDate, lte: toDate };
 
     const succeeded = await this.prisma.payment.findMany({
-      where: { status: 'succeeded', createdAt: window },
+      where: revenueInWindow(window),
       select: { purpose: true, amountCents: true },
     });
     const grossCents = succeeded.reduce((sum, p) => sum + p.amountCents, 0);

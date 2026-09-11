@@ -816,6 +816,24 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(audit).toBeTruthy();
       expect((audit!.after as { value: number }).value).toBe(75);
     });
+
+    it('25b. the removed signedUrlTtlMinutes key is not listed and cannot be set (DEN-293)', async () => {
+      const admin = await makeAdmin();
+      const list = await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/settings'),
+        admin.token,
+      ).expect(200);
+      expect(list.body.values).not.toHaveProperty('signedUrlTtlMinutes');
+      expect(list.body.defaults).not.toHaveProperty('signedUrlTtlMinutes');
+
+      const res = await bearer(
+        request(app.getHttpServer())
+          .patch('/api/v1/admin/settings/signedUrlTtlMinutes')
+          .send({ value: 5 }),
+        admin.token,
+      ).expect(404);
+      expect(res.body.error.code).toBe('unknown_setting');
+    });
   });
 
   // ============================================================
@@ -948,6 +966,59 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(captured.body.byPurpose.order.cents).toBe(
         before.body.byPurpose.order.cents + FARE.totalCents,
       );
+    });
+
+    it('27c. the revenue window reads the capture time, not the authorization time (DEN-293)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+      await acceptPendingOffer(orderId);
+
+      const payment = await prisma.payment.findFirstOrThrow({
+        where: { orderId, status: 'succeeded' },
+      });
+      expect(payment.capturedAt).not.toBeNull();
+
+      // Authorized 40 days ago, captured now: outside the default 30-day
+      // summary window by creation time, inside it by capture time.
+      const fortyDaysAgo = new Date(Date.now() - 40 * 86_400_000);
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: { createdAt: fortyDaysAgo },
+      });
+
+      const summary = () =>
+        bearer(
+          request(app.getHttpServer()).get('/api/v1/admin/finance/summary'),
+          admin.token,
+        ).expect(200);
+      const dashboard = () =>
+        bearer(request(app.getHttpServer()).get('/api/v1/admin/dashboard'), admin.token).expect(
+          200,
+        );
+
+      const summaryCapturedNow = await summary();
+      const dashboardCapturedNow = await dashboard();
+
+      // Move the capture out of both windows too. The payment must leave the
+      // 30-day summary AND today's dashboard figure, by exactly its amount.
+      // Differences, not absolute values: other suites share this database.
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: { capturedAt: fortyDaysAgo },
+      });
+      const summaryCapturedEarlier = await summary();
+      const dashboardCapturedEarlier = await dashboard();
+
+      expect(
+        summaryCapturedNow.body.byPurpose.order.cents -
+          summaryCapturedEarlier.body.byPurpose.order.cents,
+      ).toBe(payment.amountCents);
+      expect(
+        dashboardCapturedNow.body.revenueTodayCents -
+          dashboardCapturedEarlier.body.revenueTodayCents,
+      ).toBe(payment.amountCents);
     });
 
     it('28. DAC7 CSV: text/csv, header row, one row per inspector with paid payouts', async () => {
