@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { OrderStatus, Prisma, Role } from '@prisma/client';
+import { ADMIN_DECISION_EVENT, readAdminDecision } from '../orders/admin-decision';
 import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { clampPage, clampPageSize } from './admin-audit.service';
@@ -67,15 +68,27 @@ export class AdminOrdersService {
   /** Full admin detail: core order detail + payment/refunds/payout/dispute. */
   async detail(orderId: string, adminId: string) {
     const core = await this.orders.getDetail(orderId, adminId, Role.ADMIN);
-    const [payment, refunds, payout, dispute] = await this.prisma.$transaction([
+    const [payment, refunds, payout, dispute, decisionEvents] = await this.prisma.$transaction([
       this.prisma.payment.findUnique({ where: { orderId } }),
       this.prisma.refund.findMany({ where: { orderId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.payout.findUnique({ where: { orderId } }),
       this.prisma.dispute.findUnique({ where: { orderId } }),
+      this.prisma.orderEvent.findMany({
+        where: { orderId, type: ADMIN_DECISION_EVENT },
+        orderBy: { createdAt: 'asc' },
+      }),
     ]);
 
     return {
       ...core,
+      // Why each admin decision was made (DEN-294). The shared timeline in
+      // `core.events` leaves these out, so only this admin view has them.
+      decisions: decisionEvents.flatMap((e) => {
+        const decision = readAdminDecision(e.payload);
+        return decision
+          ? [{ ...decision, actor: e.actor, createdAt: e.createdAt.toISOString() }]
+          : [];
+      }),
       // Deliberately overrides the public `payment` block `getDetail` returns.
       // The website needs one word for where the money is; an operator needs the
       // raw ledger status, the provider handle, and WHEN each step happened —
