@@ -310,6 +310,16 @@ export class ListingsService {
     pkg: 'standard' | 'gold',
   ): Promise<PublishResultDto> {
     const listing = await this.requireOwnedListing(userId, id);
+    // An admin hide is not the seller's to undo (DEN-295). Before this check
+    // the "Publish" button on a HIDDEN row undid moderation in one click.
+    if (listing.adminHiddenAt) {
+      throw new ConflictException({
+        error: {
+          code: 'listing_hidden_by_admin',
+          message: 'The platform hid this listing. Only the platform can publish it again.',
+        },
+      });
+    }
     await this.assertPublishable(listing);
 
     if (pkg === 'standard') {
@@ -723,22 +733,51 @@ export class ListingsService {
   // Admin overrides (E9) — skip seller-ownership checks
   // ============================================================
 
-  /** Admin: hide any listing from the showroom. */
-  async adminHide(id: string): Promise<Listing> {
+  /**
+   * Admin: hide any listing from the showroom, with a reason the seller reads
+   * (DEN-295). The seller is told at once, and `adminHiddenAt` stops the
+   * seller from publishing the listing again until an admin restores it.
+   * `notify` never throws, so a failed notice cannot undo the hide.
+   */
+  async adminHide(id: string, reason: string): Promise<Listing> {
     await this.requireListing(id);
-    return this.prisma.listing.update({ where: { id }, data: { status: 'HIDDEN' } });
+    const listing = await this.prisma.listing.update({
+      where: { id },
+      data: { status: 'HIDDEN', adminHiddenAt: new Date(), adminHiddenReason: reason },
+    });
+    await this.notifications.notify(listing.sellerId, 'listing.hidden', {
+      listingId: listing.id,
+      make: listing.make,
+      model: listing.model,
+      reason,
+    });
+    return listing;
   }
 
   /**
    * Admin: restore a hidden listing to the showroom. A listing has no end
-   * date, so this is unconditional.
+   * date, so this is unconditional. It clears the admin hide, and tells the
+   * seller when the listing was hidden before.
    */
   async adminUnhide(id: string): Promise<Listing> {
-    const listing = await this.requireListing(id);
-    return this.prisma.listing.update({
+    const before = await this.requireListing(id);
+    const listing = await this.prisma.listing.update({
       where: { id },
-      data: { status: 'ACTIVE', publishedAt: listing.publishedAt ?? new Date() },
+      data: {
+        status: 'ACTIVE',
+        publishedAt: before.publishedAt ?? new Date(),
+        adminHiddenAt: null,
+        adminHiddenReason: null,
+      },
     });
+    if (before.status === 'HIDDEN') {
+      await this.notifications.notify(listing.sellerId, 'listing.unhidden', {
+        listingId: listing.id,
+        make: listing.make,
+        model: listing.model,
+      });
+    }
+    return listing;
   }
 
   /** Load a listing by id (no ownership check), or throw 404. */
@@ -798,6 +837,10 @@ export class ListingsService {
           : l._count.photos,
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
       viewsCount: l.viewsCount,
+      // DEN-295. The seller must see WHY the platform hid the listing, and
+      // that publishing it again is not theirs to do.
+      adminHiddenAt: l.adminHiddenAt ? l.adminHiddenAt.toISOString() : null,
+      adminHiddenReason: l.adminHiddenReason,
     }));
 
     return { items };

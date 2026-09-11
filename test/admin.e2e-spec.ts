@@ -800,7 +800,9 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(list.body.items[0].priceCents).toBeDefined();
 
       await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/hide`),
+        request(app.getHttpServer())
+          .post(`/api/v1/admin/listings/${listingId}/hide`)
+          .send({ reason: REASON }),
         admin.token,
       ).expect(200);
       let l = await prisma.listing.findUnique({ where: { id: listingId } });
@@ -819,9 +821,98 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(audit).toBeTruthy();
 
       await bearer(
-        request(app.getHttpServer()).post('/api/v1/admin/listings/nope/hide'),
+        request(app.getHttpServer())
+          .post('/api/v1/admin/listings/nope/hide')
+          .send({ reason: REASON }),
         admin.token,
       ).expect(404);
+    });
+
+    it('20b. hide needs a reason; the seller is told, sees it, and cannot publish again (DEN-295)', async () => {
+      const admin = await makeAdmin();
+      const seller = await makeUser('seller');
+      const listingId = await seedListing(seller, 'ACTIVE');
+      const reason = 'The price in the advert does not match the description';
+      const hide = (body: object) =>
+        bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/hide`).send(body),
+          admin.token,
+        );
+
+      // No reason; 9 characters after trimming; only spaces.
+      await hide({}).expect(400);
+      await hide({ reason: '   too short ' }).expect(400);
+      await hide({ reason: ' '.repeat(20) }).expect(400);
+      expect((await prisma.listing.findUnique({ where: { id: listingId } }))!.status).toBe(
+        'ACTIVE',
+      );
+
+      await hide({ reason: `  ${reason}  ` }).expect(200);
+      const hidden = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
+      expect(hidden.status).toBe('HIDDEN');
+      expect(hidden.adminHiddenReason).toBe(reason);
+      expect(hidden.adminHiddenAt).not.toBeNull();
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { entity: 'listing', entityId: listingId, action: 'listing.hide' },
+      });
+      expect((audit!.after as { reason: string }).reason).toBe(reason);
+
+      // The seller is told, with the reason (in-app row; dispatch is inline in tests).
+      const notice = await prisma.notification.findFirst({
+        where: { userId: seller.userId, type: 'listing.hidden', channel: 'inapp' },
+      });
+      expect((notice!.payload as { reason: string }).reason).toBe(reason);
+
+      // The seller sees the reason in the cabinet.
+      const mine = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(200);
+      const row = mine.body.items.find((i: { id: string }) => i.id === listingId);
+      expect(row.adminHiddenReason).toBe(reason);
+      expect(row.adminHiddenAt).toEqual(expect.any(String));
+
+      // An admin hide is not the seller's to undo.
+      const publish = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/publish`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ package: 'standard' })
+        .expect(409);
+      expect(publish.body.error.code).toBe('listing_hidden_by_admin');
+
+      // An admin unhide clears the hide and tells the seller.
+      await bearer(
+        request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/unhide`),
+        admin.token,
+      ).expect(200);
+      const restored = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
+      expect(restored.status).toBe('ACTIVE');
+      expect(restored.adminHiddenAt).toBeNull();
+      expect(restored.adminHiddenReason).toBeNull();
+      expect(
+        await prisma.notification.count({
+          where: { userId: seller.userId, type: 'listing.unhidden', channel: 'inapp' },
+        }),
+      ).toBe(1);
+    });
+
+    it('20c. a seller who unpublished the listing may still publish it again (DEN-295)', async () => {
+      const seller = await makeUser('seller');
+      const listingId = await seedListing(seller, 'ACTIVE');
+      // Both routes carry no @HttpCode, so Nest answers a POST with 201.
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/unpublish`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/publish`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ package: 'standard' })
+        .expect(201);
+      expect((await prisma.listing.findUnique({ where: { id: listingId } }))!.status).toBe(
+        'ACTIVE',
+      );
     });
 
   });
