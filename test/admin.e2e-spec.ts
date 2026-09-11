@@ -962,6 +962,57 @@ describe('Admin panel (E9) (e2e)', () => {
       );
     });
 
+    it('20d. an admin deletes a live listing with a reason; the seller is told', async () => {
+      const admin = await makeAdmin();
+      const user = await makeUser('nonadmin');
+      const seller = await makeUser('seller');
+      const listingId = await seedListing(seller, 'ACTIVE');
+      const reason = 'The photos show a different car';
+      const del = (token: string, body: object) =>
+        bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/delete`).send(body),
+          token,
+        );
+
+      await del(user.token, { reason }).expect(403);
+      await del(admin.token, {}).expect(400);
+      await del(admin.token, { reason: '   too short ' }).expect(400);
+      expect((await prisma.listing.findUniqueOrThrow({ where: { id: listingId } })).status).toBe(
+        'ACTIVE',
+      );
+
+      const res = await del(admin.token, { reason: `  ${reason}  ` }).expect(200);
+      expect(res.body.status).toBe('DELETED');
+
+      // Soft delete: the row stays, the gallery and the report link go.
+      const deleted = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
+      expect(deleted.status).toBe('DELETED');
+      expect(deleted.reportId).toBeNull();
+      expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(0);
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { entity: 'listing', entityId: listingId, action: 'listing.delete' },
+      });
+      expect(audit!.adminId).toBe(admin.userId);
+      expect(audit!.before).toMatchObject({ status: 'ACTIVE' });
+      expect(audit!.after).toMatchObject({ status: 'DELETED', reason });
+
+      const notice = await prisma.notification.findFirst({
+        where: { userId: seller.userId, type: 'listing.deleted', channel: 'inapp' },
+      });
+      expect((notice!.payload as { reason: string }).reason).toBe(reason);
+
+      // The listing leaves the seller's cabinet, like the seller's own delete.
+      const mine = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(200);
+      expect(mine.body.items.some((i: { id: string }) => i.id === listingId)).toBe(false);
+
+      const again = await del(admin.token, { reason }).expect(409);
+      expect(again.body.error.code).toBe('listing_already_deleted');
+    });
+
   });
 
   // ============================================================

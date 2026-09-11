@@ -41,3 +41,17 @@ export class AdminHideListingDto {
   @MaxLength(ADMIN_REASON_MAX_LENGTH)
   reason!: string;
 }
+
+export class AdminDeleteListingDto {
+  @ApiProperty({
+    description:
+      `Why the listing is deleted (${ADMIN_REASON_MIN_LENGTH}-${ADMIN_REASON_MAX_LENGTH} ` +
+      'characters after trimming). The seller receives this text.',
+    example: 'The photos show a different car.',
+  })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MinLength(ADMIN_REASON_MIN_LENGTH)
+  @MaxLength(ADMIN_REASON_MAX_LENGTH)
+  reason!: string;
+}

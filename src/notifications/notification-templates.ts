@@ -732,6 +732,32 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Объявление о ${str(p, 'make')} ${str(p, 'model')} снова видно.`,
     }),
   },
+  'listing.deleted': {
+    de: (p) => ({
+      subject: `Anzeige gelöscht`,
+      body:
+        `Die Plattform hat Ihre Anzeige für ${str(p, 'make')} ${str(p, 'model')} gelöscht.\n\n` +
+        `Grund: ${str(p, 'reason')}\n\n` +
+        `Die Anzeige und ihre Fotos sind entfernt. Bei Fragen wenden Sie sich an den Support.`,
+      short: `Anzeige für ${str(p, 'make')} ${str(p, 'model')} gelöscht.`,
+    }),
+    en: (p) => ({
+      subject: `Listing deleted`,
+      body:
+        `The platform deleted your listing for ${str(p, 'make')} ${str(p, 'model')}.\n\n` +
+        `Reason: ${str(p, 'reason')}\n\n` +
+        `The listing and its photos are removed. If you have questions, contact support.`,
+      short: `Listing for ${str(p, 'make')} ${str(p, 'model')} deleted.`,
+    }),
+    ru: (p) => ({
+      subject: `Объявление удалено`,
+      body:
+        `Платформа удалила ваше объявление о ${str(p, 'make')} ${str(p, 'model')}.\n\n` +
+        `Причина: ${str(p, 'reason')}\n\n` +
+        `Объявление и его фото удалены. Если есть вопросы, напишите в поддержку.`,
+      short: `Объявление о ${str(p, 'make')} ${str(p, 'model')} удалено.`,
+    }),
+  },
 };
 
 /** Resolve a supported locale, falling back to the platform default. */

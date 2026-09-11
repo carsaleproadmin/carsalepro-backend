@@ -489,6 +489,40 @@ export class ListingsService {
       });
     }
 
+    await this.deleteWithPhotos(listing);
+    return { id, deleted: true };
+  }
+
+  /**
+   * Admin: delete any listing that is not deleted yet, with a reason the seller
+   * reads. The effect is the seller's own delete (`deleteWithPhotos`): status
+   * DELETED, the gallery rows and objects go, the report code is free again.
+   *
+   * Unlike the seller, an admin can delete an ACTIVE or a SOLD listing: the
+   * usual reason is that it must leave the showroom at once. The delete stays
+   * soft - the row is kept for disputes and the audit log. `notify` never
+   * throws, so a failed notice cannot undo the delete.
+   */
+  async adminDelete(id: string, reason: string): Promise<Listing> {
+    const listing = await this.requireListing(id);
+    if (listing.status === 'DELETED') {
+      throw new ConflictException({
+        error: { code: 'listing_already_deleted', message: 'The listing is already deleted' },
+      });
+    }
+    await this.deleteWithPhotos(listing);
+    await this.notifications.notify(listing.sellerId, 'listing.deleted', {
+      listingId: listing.id,
+      make: listing.make,
+      model: listing.model,
+      reason,
+    });
+    return this.prisma.listing.findUniqueOrThrow({ where: { id } });
+  }
+
+  /** The delete itself, shared by the seller and the admin. See `remove`. */
+  private async deleteWithPhotos(listing: Listing): Promise<void> {
+    const id = listing.id;
     const photos = await this.prisma.listingPhoto.findMany({ where: { listingId: id } });
     const mirrored = await this.mirroredPublicKeys(listing);
 
@@ -522,8 +556,6 @@ export class ListingsService {
         });
       }
     }
-
-    return { id, deleted: true };
   }
 
   // ============================================================
