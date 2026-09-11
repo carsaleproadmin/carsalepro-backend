@@ -5,7 +5,11 @@ import { CurrentUser, Roles } from '../auth/auth.decorators';
 import { ListingsService } from '../listings/listings.service';
 import { AdminAuditService } from './admin-audit.service';
 import { AdminListingsService } from './admin-listings.service';
-import { AdminHideListingDto, AdminListingListQueryDto } from './dto/admin-listings.dto';
+import {
+  AdminDeleteListingDto,
+  AdminHideListingDto,
+  AdminListingListQueryDto,
+} from './dto/admin-listings.dto';
 
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -53,4 +57,32 @@ export class AdminListingsController {
     return { id: listing.id, status: listing.status };
   }
 
+  /**
+   * POST, not DELETE: the reason travels in the body, and a DELETE body is
+   * dropped by some proxies. The delete is soft, so the row stays for the
+   * audit log and for disputes.
+   */
+  @Post(':id/delete')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Delete a listing with a reason; the seller is notified (admin)',
+  })
+  @ApiParam({ name: 'id' })
+  async remove(
+    @CurrentUser('id') adminId: string,
+    @Param('id') id: string,
+    @Body() dto: AdminDeleteListingDto,
+  ) {
+    const before = await this.adminListings.status(id);
+    const listing = await this.listings.adminDelete(id, dto.reason);
+    await this.audit.log(
+      adminId,
+      'listing.delete',
+      'listing',
+      id,
+      { status: before },
+      { status: listing.status, reason: dto.reason },
+    );
+    return { id: listing.id, status: listing.status };
+  }
 }
