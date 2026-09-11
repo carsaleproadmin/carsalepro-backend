@@ -991,6 +991,43 @@ describe('Admin panel (E9) (e2e)', () => {
       expect((audit!.after as { value: number }).value).toBe(75);
     });
 
+    it('24b. a value outside the key range → 400 with the range, and nothing is stored (DEN-297)', async () => {
+      const admin = await makeAdmin();
+      const list = await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/settings'),
+        admin.token,
+      ).expect(200);
+      expect(list.body.limits.orderBaseFeeEur).toEqual({ min: 5, max: 200 });
+
+      const before = await settings.getNumber('orderBaseFeeEur');
+      // The ticket's own example: an extra two digits on the base fee.
+      const res = await bearer(
+        request(app.getHttpServer())
+          .patch('/api/v1/admin/settings/orderBaseFeeEur')
+          .send({ value: 3900 }),
+        admin.token,
+      ).expect(400);
+      expect(res.body.error.code).toBe('invalid_value');
+      expect(res.body.error.message).toContain('from 5 to 200');
+      settings.invalidate();
+      expect(await settings.getNumber('orderBaseFeeEur')).toBe(before);
+
+      // A zero timeout would expire every offer the moment it was sent.
+      await bearer(
+        request(app.getHttpServer())
+          .patch('/api/v1/admin/settings/offerTimeoutMinutes')
+          .send({ value: 0 }),
+        admin.token,
+      ).expect(400);
+      // 0 stays allowed where it is a documented lever.
+      await bearer(
+        request(app.getHttpServer())
+          .patch('/api/v1/admin/settings/orderCapKm')
+          .send({ value: PLATFORM_SETTING_DEFAULTS.orderCapKm }),
+        admin.token,
+      ).expect(200);
+    });
+
     it('25b. the removed signedUrlTtlMinutes key is not listed and cannot be set (DEN-293)', async () => {
       const admin = await makeAdmin();
       const list = await bearer(
