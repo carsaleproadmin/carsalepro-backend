@@ -16,6 +16,8 @@ const ORDER_LAT = 52.52;
 const ORDER_LNG = 13.405;
 const SCHEDULED_AT = '2026-07-01T09:00:00.000Z';
 const PASSWORD = 'Sup3rSecret9';
+/** Admin cancel and dispute resolution require a reason (DEN-294). */
+const REASON = 'Decision recorded by the e2e suite';
 
 function uniqueEmail(prefix = 'adm'): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@example.com`;
@@ -542,7 +544,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/cancel`)
-          .send({ refundPercent: 50 }),
+          .send({ refundPercent: 50, reason: REASON }),
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('CANCELLED');
@@ -565,7 +567,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/cancel`)
-          .send({ refundPercent: 50 }),
+          .send({ refundPercent: 50, reason: REASON }),
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('CANCELLED');
@@ -588,9 +590,81 @@ describe('Admin panel (E9) (e2e)', () => {
       await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/cancel`)
-          .send({ refundPercent: 150 }),
+          .send({ refundPercent: 150, reason: REASON }),
         admin.token,
       ).expect(400);
+    });
+
+    it('15b. cancel and resolve-dispute refuse a missing, short or blank reason → 400 (DEN-294)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+
+      // No reason; 9 characters after trimming; only spaces.
+      for (const body of [
+        { refundPercent: 0 },
+        { refundPercent: 0, reason: '   too short ' },
+        { refundPercent: 0, reason: ' '.repeat(20) },
+      ]) {
+        await bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/orders/${orderId}/cancel`).send(body),
+          admin.token,
+        ).expect(400);
+      }
+      await bearer(
+        request(app.getHttpServer())
+          .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
+          .send({ resolution: 'customer', refundPercent: 0 }),
+        admin.token,
+      ).expect(400);
+
+      const order = await prisma.order.findUnique({ where: { id: orderId } });
+      expect(order!.status).not.toBe('CANCELLED');
+    });
+
+    it('15c. the reason reaches the audit row and the admin detail, and never the customer (DEN-294)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+      const reason = 'The customer asked by phone to cancel the inspection';
+
+      await bearer(
+        request(app.getHttpServer())
+          .post(`/api/v1/admin/orders/${orderId}/cancel`)
+          .send({ refundPercent: 0, reason: `  ${reason}  ` }),
+        admin.token,
+      ).expect(200);
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { adminId: admin.userId, action: 'order.cancel', entityId: orderId },
+      });
+      expect((audit!.after as { reason: string }).reason).toBe(reason);
+
+      const detail = await bearer(
+        request(app.getHttpServer()).get(`/api/v1/admin/orders/${orderId}`),
+        admin.token,
+      ).expect(200);
+      expect(detail.body.decisions).toEqual([
+        expect.objectContaining({
+          action: 'cancel',
+          reason,
+          refundPercent: 0,
+          resolution: null,
+          actor: `admin:${admin.userId}`,
+        }),
+      ]);
+      // The shared timeline does not carry the decision, for any role.
+      expect(detail.body.events.map((e: { type: string }) => e.type)).not.toContain(
+        'admin_decision',
+      );
+
+      const own = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      expect(JSON.stringify(own.body)).not.toContain(reason);
     });
 
     it('16. resolve-dispute (customer win) → Refund + REFUNDED + RESOLVED_CUSTOMER', async () => {
@@ -602,7 +676,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
-          .send({ resolution: 'customer', refundPercent: 100 }),
+          .send({ resolution: 'customer', refundPercent: 100, reason: REASON }),
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('REFUNDED');
@@ -616,6 +690,15 @@ describe('Admin panel (E9) (e2e)', () => {
       const dispute = await prisma.dispute.findUnique({ where: { orderId } });
       expect(dispute!.status).toBe('RESOLVED_CUSTOMER');
       expect(dispute!.resolvedBy).toBe(admin.userId);
+      const decision = await prisma.orderEvent.findFirst({
+        where: { orderId, type: 'admin_decision' },
+      });
+      expect(decision!.payload).toEqual({
+        action: 'resolve_dispute',
+        reason: REASON,
+        refundPercent: 100,
+        resolution: 'customer',
+      });
     });
 
     it('17. resolve-dispute (inspector win) → Payout + COMPLETED + RESOLVED_INSPECTOR', async () => {
@@ -627,7 +710,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
-          .send({ resolution: 'inspector' }),
+          .send({ resolution: 'inspector', reason: REASON }),
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('COMPLETED');
@@ -651,7 +734,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
-          .send({ resolution: 'customer' }),
+          .send({ resolution: 'customer', reason: REASON }),
         admin.token,
       ).expect(409);
       expect(res.body.error.code).toBe('not_disputed');
