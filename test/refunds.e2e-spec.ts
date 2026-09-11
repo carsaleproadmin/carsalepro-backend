@@ -192,6 +192,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       .send({
         make: 'BMW',
         model: '320d',
+        listingUrl: '+4930123456',
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,

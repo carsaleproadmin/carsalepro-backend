@@ -234,6 +234,7 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
         vin: '1HGBH41JXMN109186',
         make: 'BMW',
         model: '320d',
+        listingUrl: '+4930123456',
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,
@@ -712,6 +713,11 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
       await authorize(orderId);
       const inspectorId = await acceptPendingOffer(orderId);
       const token = inspectorTokens.get(inspectorId) as string;
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/owner-contact`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ reached: true })
+        .expect(200);
       for (const status of ['EN_ROUTE', 'IN_PROGRESS']) {
         await request(app.getHttpServer())
           .post(`/api/v1/orders/${orderId}/status`)

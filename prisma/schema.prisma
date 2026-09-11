@@ -472,6 +472,11 @@ model Order {
   /// `searchExpiresAt`: an order assigned before this shipped has no deadline,
   /// and sweeping it would cancel live work on a rule it was never given.
   inspectionDeadlineAt DateTime? @map("inspection_deadline_at")
+  /// DEN-291: when the assigned inspector confirmed contact with the car owner.
+  /// While it is null, `ASSIGNED -> EN_ROUTE` refuses with 409
+  /// `owner_contact_required`. "Could not contact" does not write it: that
+  /// answer cancels the order instead.
+  ownerContactConfirmedAt DateTime? @map("owner_contact_confirmed_at")
   createdAt            DateTime  @default(now())
 
   customer  User              @relation("CustomerOrders", fields: [customerId], references: [id])
