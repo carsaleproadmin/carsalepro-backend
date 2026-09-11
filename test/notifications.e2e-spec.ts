@@ -6,6 +6,7 @@ import {
   PUSH_PROVIDER,
   PushProvider,
 } from '../src/notifications/notification-providers';
+import { renderTemplate } from '../src/notifications/notification-templates';
 import { NotificationsService } from '../src/notifications/notifications.service';
 import { OrdersService } from '../src/orders/orders.service';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -278,6 +279,62 @@ describe('Notifications (e2e)', () => {
       expect(typeof it.title).toBe('string');
       expect(typeof it.body).toBe('string');
     }
+  });
+
+  it('5a. GET /notifications?locale= renders the stored payload again in that locale (DEN-287)', async () => {
+    const user = await makeUser();
+    const payload = { orderNumber: 'ORD-287', make: 'BMW', model: '320d', totalCents: 5000 };
+    await notifications.notify(user.userId, 'order.created', payload);
+
+    const list = (locale?: string) =>
+      request(app.getHttpServer())
+        .get('/api/v1/notifications')
+        .query(locale ? { locale } : {})
+        .set('Authorization', `Bearer ${user.token}`)
+        .expect(200);
+
+    const stored = (await rows(user.userId, 'order.created')).find((r) => r.channel === 'inapp')!;
+    const storedTitle = (stored.payload as Record<string, unknown>)._title;
+
+    // No locale: the stored text, as before.
+    expect((await list()).body.items[0].title).toBe(storedTitle);
+
+    for (const locale of ['de', 'en', 'ru'] as const) {
+      const expected = renderTemplate('order.created', locale, payload);
+      const item = (await list(locale)).body.items[0];
+      expect(item.title).toBe(expected.subject);
+      expect(item.body).toBe(expected.body);
+    }
+    expect(renderTemplate('order.created', 'en', payload).subject).not.toBe(
+      renderTemplate('order.created', 'ru', payload).subject,
+    );
+
+    // A locale without templates gets the default locale, not a 400.
+    expect((await list('uk')).body.items[0].title).toBe(
+      renderTemplate('order.created', 'de', payload).subject,
+    );
+  });
+
+  it('5b. GET /notifications?locale= keeps the stored text when the row has no raw payload', async () => {
+    const user = await makeUser();
+    await prisma.notification.create({
+      data: {
+        userId: user.userId,
+        type: 'order.created',
+        channel: 'inapp',
+        status: 'sent',
+        payload: { _title: 'Stored title', _body: 'Stored body' },
+      },
+    });
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/notifications')
+      .query({ locale: 'en' })
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(200);
+
+    expect(res.body.items[0].title).toBe('Stored title');
+    expect(res.body.items[0].body).toBe('Stored body');
   });
 
   it('6. GET /notifications is paginated', async () => {
