@@ -900,6 +900,13 @@ model Listing {
   /// signed URLs.
   publicPhotosMirroredAt DateTime?     @map("public_photos_mirrored_at")
   publishedAt            DateTime?     @map("published_at")
+  /// Set when an ADMIN hides the listing, cleared when an admin restores it
+  /// (DEN-295). `status` alone cannot tell an admin hide apart from the
+  /// seller's own unpublish - both are HIDDEN - and the difference decides
+  /// whether the seller may publish again. While set, the seller cannot.
+  adminHiddenAt          DateTime?     @map("admin_hidden_at")
+  /// The admin's reason. The seller reads it in the cabinet and in the notice.
+  adminHiddenReason      String?       @map("admin_hidden_reason")
   createdAt              DateTime      @default(now())
 
   seller User           @relation(fields: [sellerId], references: [id])
