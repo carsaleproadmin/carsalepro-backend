@@ -11,6 +11,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { CurrentUser, Roles } from '../auth/auth.decorators';
+import type { AuthUser } from '../auth/jwt.types';
 import { UsersService } from '../users/users.service';
 import { AdminAuditService } from './admin-audit.service';
 import { AdminUsersService } from './admin-users.service';
@@ -47,17 +48,17 @@ export class AdminUsersController {
 
   @Post(':id/ban')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Ban a user (admin)' })
+  @ApiOperation({ summary: 'Ban a user (admin; a super admin to ban an admin)' })
   @ApiParam({ name: 'id' })
   async ban(
-    @CurrentUser('id') adminId: string,
+    @CurrentUser() actor: AuthUser,
     @Param('id') id: string,
     @Body() dto: BanUserDto,
   ) {
     const before = await this.adminUsers.require(id);
-    const after = await this.adminUsers.ban(id, adminId);
+    const after = await this.adminUsers.ban(id, actor);
     await this.audit.log(
-      adminId,
+      actor.id,
       'user.ban',
       'user',
       id,
@@ -69,13 +70,13 @@ export class AdminUsersController {
 
   @Post(':id/unban')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Unban a user (admin)' })
+  @ApiOperation({ summary: 'Unban a user (admin; a super admin to unban an admin)' })
   @ApiParam({ name: 'id' })
-  async unban(@CurrentUser('id') adminId: string, @Param('id') id: string) {
+  async unban(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
     const before = await this.adminUsers.require(id);
-    const after = await this.adminUsers.unban(id);
+    const after = await this.adminUsers.unban(id, actor);
     await this.audit.log(
-      adminId,
+      actor.id,
       'user.unban',
       'user',
       id,
@@ -87,17 +88,19 @@ export class AdminUsersController {
 
   @Post(':id/role')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Change a user role (admin)' })
+  @ApiOperation({
+    summary: 'Change a user role (admin: user to admin only; super admin: any change)',
+  })
   @ApiParam({ name: 'id' })
   async changeRole(
-    @CurrentUser('id') adminId: string,
+    @CurrentUser() actor: AuthUser,
     @Param('id') id: string,
     @Body() dto: ChangeRoleDto,
   ) {
     const before = await this.adminUsers.require(id);
-    const after = await this.adminUsers.changeRole(id, dto.role, adminId);
+    const after = await this.adminUsers.changeRole(id, dto.role, actor);
     await this.audit.log(
-      adminId,
+      actor.id,
       'user.role',
       'user',
       id,

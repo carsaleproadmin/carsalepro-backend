@@ -354,69 +354,116 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(res.body.error.code).toBe('cannot_target_self');
     });
 
-    it('8. change role USER→ADMIN; cannot demote self; cannot remove the last admin', async () => {
+    // ---- DEN-299: the super admin manages the admins ----
+
+    /** The guard reads the role from the database, so the token stays valid. */
+    async function makeSuperAdmin(): Promise<Registered> {
+      const a = await makeAdmin();
+      await prisma.user.update({ where: { id: a.userId }, data: { role: Role.SUPER_ADMIN } });
+      return a;
+    }
+
+    function setRole(actor: Registered, targetId: string, role: string) {
+      return bearer(
+        request(app.getHttpServer()).post(`/api/v1/admin/users/${targetId}/role`).send({ role }),
+        actor.token,
+      );
+    }
+
+    async function roleOf(id: string) {
+      return (await prisma.user.findUnique({ where: { id } }))!.role;
+    }
+
+    it('8. an ADMIN promotes a user to ADMIN, but cannot demote an admin or themselves', async () => {
       const admin = await makeAdmin();
       const target = await makeUser('promoteme');
 
-      // Promote target to ADMIN.
-      await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/users/${target.userId}/role`).send({ role: 'ADMIN' }),
-        admin.token,
-      ).expect(200);
-      const promoted = await prisma.user.findUnique({ where: { id: target.userId } });
-      expect(promoted!.role).toBe('ADMIN');
+      await setRole(admin, target.userId, 'ADMIN').expect(200);
+      expect(await roleOf(target.userId)).toBe('ADMIN');
 
-      // Self-demotion forbidden.
-      const selfRes = await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/users/${admin.userId}/role`).send({ role: 'USER' }),
-        admin.token,
-      ).expect(400);
-      expect(selfRes.body.error.code).toBe('cannot_demote_self');
+      const demote = await setRole(admin, target.userId, 'USER').expect(403);
+      expect(demote.body.error.code).toBe('super_admin_required');
+      expect(await roleOf(target.userId)).toBe('ADMIN');
 
-      // Demote target back to USER (admin + target were both ADMIN, so allowed).
-      await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/users/${target.userId}/role`).send({ role: 'USER' }),
-        admin.token,
-      ).expect(200);
-
-      // Now `admin` is (likely) the last admin among our seeds; the global count
-      // may include the seed admin, so assert the guard via a controlled set:
-      // demote target again would now fail if it were the only other admin — we
-      // already demoted it. Instead verify the last-admin guard directly by
-      // attempting to demote `admin` while it is the sole admin of this set.
-      // (Other suites' admins are cleaned between tests, so this is reliable.)
-      const remainingAdmins = await prisma.user.count({ where: { role: Role.ADMIN, deletedAt: null } });
-      if (remainingAdmins === 1) {
-        const lastRes = await bearer(
-          request(app.getHttpServer()).post(`/api/v1/admin/users/${admin.userId}/role`).send({ role: 'USER' }),
-          admin.token,
-        ).expect(400);
-        // Self-demote guard fires first for self; assert one of the two guards.
-        expect(['cannot_demote_self', 'last_admin']).toContain(lastRes.body.error.code);
-      }
+      const self = await setRole(admin, admin.userId, 'USER').expect(400);
+      expect(self.body.error.code).toBe('cannot_demote_self');
     });
 
-    it('9. last_admin guard: demoting the only admin (non-self) → 400', async () => {
-      // Two admins: adminA acts; adminB is the only OTHER admin. Demote adminA via
-      // adminB to leave adminB the last admin, then demote adminB via adminA fails.
-      const adminA = await makeAdmin();
-      const adminB = await makeAdmin();
+    it('9. an ADMIN cannot give or remove SUPER_ADMIN, or change a super admin', async () => {
+      const admin = await makeAdmin();
+      const superAdmin = await makeSuperAdmin();
+      const user = await makeUser('suptarget');
 
-      // adminB demotes adminA → ok (adminB remains).
+      const attempts: [string, string][] = [
+        [user.userId, 'SUPER_ADMIN'],
+        [admin.userId, 'SUPER_ADMIN'], // not even for themselves
+        [superAdmin.userId, 'ADMIN'],
+        [superAdmin.userId, 'USER'],
+      ];
+      for (const [targetId, role] of attempts) {
+        const res = await setRole(admin, targetId, role).expect(403);
+        expect(res.body.error.code).toBe('super_admin_required');
+      }
+      expect(await roleOf(user.userId)).toBe('USER');
+      expect(await roleOf(admin.userId)).toBe('ADMIN');
+      expect(await roleOf(superAdmin.userId)).toBe('SUPER_ADMIN');
+    });
+
+    it('9b. an ADMIN cannot ban or unban an admin; a SUPER_ADMIN can', async () => {
+      const admin = await makeAdmin();
+      const other = await makeAdmin();
+      const superAdmin = await makeSuperAdmin();
+
+      for (const targetId of [other.userId, superAdmin.userId]) {
+        const res = await bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/users/${targetId}/ban`).send({}),
+          admin.token,
+        ).expect(403);
+        expect(res.body.error.code).toBe('super_admin_required');
+      }
+      expect((await prisma.user.findUnique({ where: { id: other.userId } }))!.bannedAt).toBeNull();
+
       await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/users/${adminA.userId}/role`).send({ role: 'USER' }),
-        adminB.token,
+        request(app.getHttpServer()).post(`/api/v1/admin/users/${other.userId}/ban`).send({}),
+        superAdmin.token,
       ).expect(200);
 
-      // Now only adminB is ADMIN among non-deleted users (others cleaned per-test).
-      const total = await prisma.user.count({ where: { role: Role.ADMIN, deletedAt: null } });
-      if (total === 1) {
-        const res = await bearer(
-          request(app.getHttpServer()).post(`/api/v1/admin/users/${adminB.userId}/role`).send({ role: 'USER' }),
-          adminB.token,
-        ).expect(400);
-        expect(['cannot_demote_self', 'last_admin']).toContain(res.body.error.code);
-      }
+      const unban = await bearer(
+        request(app.getHttpServer()).post(`/api/v1/admin/users/${other.userId}/unban`),
+        admin.token,
+      ).expect(403);
+      expect(unban.body.error.code).toBe('super_admin_required');
+
+      await bearer(
+        request(app.getHttpServer()).post(`/api/v1/admin/users/${other.userId}/unban`),
+        superAdmin.token,
+      ).expect(200);
+      expect((await prisma.user.findUnique({ where: { id: other.userId } }))!.bannedAt).toBeNull();
+    });
+
+    it('9c. a SUPER_ADMIN opens the admin panel, demotes an admin and manages SUPER_ADMIN', async () => {
+      const superAdmin = await makeSuperAdmin();
+      const admin = await makeAdmin();
+
+      await bearer(request(app.getHttpServer()).get('/api/v1/admin/dashboard'), superAdmin.token).expect(200);
+
+      await setRole(superAdmin, admin.userId, 'USER').expect(200);
+      expect(await roleOf(admin.userId)).toBe('USER');
+      await setRole(superAdmin, admin.userId, 'SUPER_ADMIN').expect(200);
+      expect(await roleOf(admin.userId)).toBe('SUPER_ADMIN');
+      await setRole(superAdmin, admin.userId, 'ADMIN').expect(200);
+      expect(await roleOf(admin.userId)).toBe('ADMIN');
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { action: 'user.role', entityId: admin.userId },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(audit!.adminId).toBe(superAdmin.userId);
+      expect(audit!.after).toMatchObject({ role: 'ADMIN' });
+
+      // Nobody demotes themselves, a super admin included.
+      const self = await setRole(superAdmin, superAdmin.userId, 'ADMIN').expect(400);
+      expect(self.body.error.code).toBe('cannot_demote_self');
     });
 
     it('10. device-links: list, create (audited), unlink', async () => {

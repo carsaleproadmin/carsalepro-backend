@@ -8,6 +8,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
+import { ADMIN_ROLES, isAdminRole } from '../auth/roles';
 import { randomUUID } from 'node:crypto';
 import { GeoService, NearestInspector } from '../geo/geo.service';
 import { RouteEstimate, RoutingService } from '../geo/routing.service';
@@ -2036,7 +2037,7 @@ export class OrdersService {
     const isCustomer = order.customerId === userId;
     const isInspector = order.inspectorId === userId;
     const hasInspectorOffer = !!offer;
-    const isAdmin = role === Role.ADMIN;
+    const isAdmin = isAdminRole(role);
     if (!isCustomer && !isInspector && !hasInspectorOffer && !isAdmin) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
     }
@@ -2935,7 +2936,7 @@ export class OrdersService {
     exhausted: boolean,
   ): Promise<void> {
     const admins = await this.prisma.user.findMany({
-      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
+      where: { role: { in: [...ADMIN_ROLES] }, deletedAt: null, bannedAt: null },
       select: { id: true },
     });
     for (const admin of admins) {
@@ -3427,7 +3428,7 @@ export class OrdersService {
     terminal: boolean,
   ): Promise<void> {
     const admins = await this.prisma.user.findMany({
-      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
+      where: { role: { in: [...ADMIN_ROLES] }, deletedAt: null, bannedAt: null },
       select: { id: true },
     });
     for (const admin of admins) {
@@ -3454,7 +3455,7 @@ export class OrdersService {
     error: string,
   ): Promise<void> {
     const admins = await this.prisma.user.findMany({
-      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
+      where: { role: { in: [...ADMIN_ROLES] }, deletedAt: null, bannedAt: null },
       select: { id: true },
     });
     for (const admin of admins) {

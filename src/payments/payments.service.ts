@@ -6,7 +6,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
-import { OrderStatus, Payment, Prisma, Report, Role } from '@prisma/client';
+import { OrderStatus, Payment, Prisma, Report } from '@prisma/client';
+import { ADMIN_ROLES } from '../auth/roles';
 import { AppConfig } from '../config/configuration';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
@@ -586,7 +587,7 @@ export class PaymentsService {
     payload: Record<string, unknown>,
   ): Promise<void> {
     const admins = await this.prisma.user.findMany({
-      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
+      where: { role: { in: [...ADMIN_ROLES] }, deletedAt: null, bannedAt: null },
       select: { id: true },
     });
     for (const admin of admins) {
