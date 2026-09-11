@@ -21,9 +21,15 @@ export class QuoteOrderDto {
   @IsLongitude()
   lng!: number;
 
-  @ApiProperty({ example: '2026-07-01T09:00:00.000Z' })
+  /**
+   * DEPRECATED (DEN-290). The customer no longer chooses a time, and the price
+   * does not depend on one. Accepted only so a website deployed before that
+   * change does not get a 400. Do not send it from new code.
+   */
+  @ApiPropertyOptional({ example: '2026-07-01T09:00:00.000Z', deprecated: true })
+  @IsOptional()
   @IsISO8601()
-  scheduledAt!: string;
+  scheduledAt?: string;
 }
 
 export class CreateOrderDto {
@@ -63,9 +69,15 @@ export class CreateOrderDto {
   @IsLongitude()
   lng!: number;
 
-  @ApiProperty({ example: '2026-07-01T09:00:00.000Z' })
+  /**
+   * DEPRECATED (DEN-290). The customer no longer chooses a time, and the price
+   * does not depend on one. Accepted only so a website deployed before that
+   * change does not get a 400. Do not send it from new code.
+   */
+  @ApiPropertyOptional({ example: '2026-07-01T09:00:00.000Z', deprecated: true })
+  @IsOptional()
   @IsISO8601()
-  scheduledAt!: string;
+  scheduledAt?: string;
 }
 
 /** Statuses an assigned inspector may push the order into via /status. */

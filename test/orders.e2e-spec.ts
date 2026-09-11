@@ -262,6 +262,35 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   // ============================================================
+  // 1b. DEN-290: the quote needs no time, and a sent time changes nothing
+  // ============================================================
+  it('1b. quote without scheduledAt is priced, and a peak-hour time does not change the price', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+
+    const withoutTime = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG })
+      .expect(200);
+
+    // 17:30 was inside the old 16-19 peak window. An older website still sends
+    // a time, and it must get the same price as a website that sends none.
+    const peakHour = new Date(Date.now() + 2 * 24 * 3_600_000);
+    peakHour.setUTCHours(17, 30, 0, 0);
+    const withPeakTime = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: peakHour.toISOString() })
+      .expect(200);
+
+    expect(withoutTime.body.available).toBe(true);
+    expect(withPeakTime.body.totalCents).toBe(withoutTime.body.totalCents);
+    expect(withoutTime.body.breakdown.surgeMultiplier).toBe(1);
+    expect(withoutTime.body.breakdown.peakApplied).toBeUndefined();
+  });
+
+  // ============================================================
   // 2. Quote with no inspector in range → waitlist
   // ============================================================
   it('2. quote with no inspector in range returns available:false + creates a WaitlistEntry', async () => {

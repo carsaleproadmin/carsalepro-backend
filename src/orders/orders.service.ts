@@ -101,7 +101,6 @@ export interface QuoteResult {
     subtotalCents: number;
     surgeMultiplier: number;
     surgeFeeCents: number;
-    peakApplied: boolean;
     minimumFareCents: number;
     minimumFareTopUpCents: number;
     minimumFareApplied: boolean;
@@ -329,9 +328,6 @@ export class OrdersService {
       minimumFareCents,
       platformFeePercent,
       surgeMultiplier,
-      peakMultiplier,
-      peakStartHour,
-      peakEndHour,
       returnTripFactor,
       freeRadiusKm,
     ] = await Promise.all([
@@ -341,9 +337,6 @@ export class OrdersService {
       this.settings.getCents('orderMinimumFareEur'),
       this.settings.getNumber('platformFeePercent'),
       this.settings.getNumber('orderSurgeMultiplier'),
-      this.settings.getNumber('orderPeakMultiplier'),
-      this.settings.getNumber('orderPeakStartHour'),
-      this.settings.getNumber('orderPeakEndHour'),
       this.settings.getNumber('orderReturnTripFactor'),
       this.settings.getNumber('orderFreeRadiusKm'),
     ]);
@@ -354,9 +347,6 @@ export class OrdersService {
       minimumFareCents,
       platformFeePercent,
       surgeMultiplier,
-      peakMultiplier,
-      peakStartHour,
-      peakEndHour,
       returnTripFactor,
       freeRadiusKm,
     };
@@ -413,7 +403,6 @@ export class OrdersService {
   private async priceQuote(
     lat: number,
     lng: number,
-    scheduledAt: Date,
     customerId?: string,
   ): Promise<PricedQuote> {
     const [
@@ -424,9 +413,6 @@ export class OrdersService {
       platformFeePercent,
       radiusKm,
       surgeMultiplier,
-      peakMultiplier,
-      peakStartHour,
-      peakEndHour,
       detourFactor,
       returnTripFactor,
       freeRadiusKm,
@@ -440,9 +426,6 @@ export class OrdersService {
       this.settings.getNumber('platformFeePercent'),
       this.settings.getNumber('expertSearchRadiusKm'),
       this.settings.getNumber('orderSurgeMultiplier'),
-      this.settings.getNumber('orderPeakMultiplier'),
-      this.settings.getNumber('orderPeakStartHour'),
-      this.settings.getNumber('orderPeakEndHour'),
       this.settings.getNumber('orderDetourFactor'),
       this.settings.getNumber('orderReturnTripFactor'),
       this.settings.getNumber('orderFreeRadiusKm'),
@@ -457,9 +440,6 @@ export class OrdersService {
       minimumFareCents,
       platformFeePercent,
       surgeMultiplier,
-      peakMultiplier,
-      peakStartHour,
-      peakEndHour,
       returnTripFactor,
       freeRadiusKm,
     };
@@ -491,7 +471,7 @@ export class OrdersService {
         countryCode,
         candidates: [],
         routingSource: 'haversine',
-        price: computePrice({ distanceKm: 0, durationMin: 0, scheduledAt, tariff }),
+        price: computePrice({ distanceKm: 0, durationMin: 0, tariff }),
       };
     }
 
@@ -515,7 +495,7 @@ export class OrdersService {
         countryCode,
         candidates: [],
         routingSource: route.source,
-        price: computePrice({ distanceKm: 0, durationMin: 0, scheduledAt, tariff }),
+        price: computePrice({ distanceKm: 0, durationMin: 0, tariff }),
       };
     }
 
@@ -536,7 +516,6 @@ export class OrdersService {
       price: computePrice({
         distanceKm: route.distanceKm,
         durationMin: route.durationMin,
-        scheduledAt,
         tariff: await this.tariffForInspector(tariff, nearest.userId),
       }),
     };
@@ -571,7 +550,7 @@ export class OrdersService {
    * email.
    */
   async quote(userId: string | undefined, dto: QuoteOrderDto): Promise<QuoteResult> {
-    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
+    const priced = await this.priceQuote(dto.lat, dto.lng, userId);
 
     if (!priced.available) {
       // A waitlist entry is recorded for BOTH refusals: "too far" is a lead in
@@ -605,7 +584,6 @@ export class OrdersService {
         subtotalCents: p.subtotalCents,
         surgeMultiplier: p.surgeMultiplier,
         surgeFeeCents: p.surgeFeeCents,
-        peakApplied: p.peakApplied,
         minimumFareCents: p.minimumFareCents,
         minimumFareTopUpCents: p.minimumFareTopUpCents,
         minimumFareApplied: p.minimumFareApplied,
@@ -644,12 +622,12 @@ export class OrdersService {
     dto: CreateOrderDto,
   ): Promise<{ orderId: string; paymentClientSecret: string | null; mock?: boolean }> {
     // Re-run the quote server-side; the client price is never trusted. This
-    // also re-evaluates surge and the peak window against the scheduled time,
-    // so a stale quote cannot lock in yesterday's multiplier.
+    // also re-reads the surge lever, so a stale quote cannot lock in
+    // yesterday's multiplier.
     // `userId` is passed so the customer is excluded from their own candidate
     // set here too — otherwise a self-dealing account would pay for an order
     // that dispatch could never fill.
-    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
+    const priced = await this.priceQuote(dto.lat, dto.lng, userId);
     if (!priced.available) {
       // Two codes, because the two refusals need different words from the UI:
       // "we are not there yet" invites a waitlist signup, "that is too far" is
@@ -892,6 +870,10 @@ export class OrdersService {
     const returnTripFactor = new Prisma.Decimal(p.returnTripFactor.toFixed(2));
     const freeRadiusKm = new Prisma.Decimal(p.freeRadiusKm.toFixed(2));
     const surgeMultiplier = new Prisma.Decimal(p.surgeMultiplier.toFixed(2));
+    // DEN-290: the customer no longer chooses a time, so a new order stores
+    // NULL. A website deployed before that change still sends one, and it is
+    // kept, so that website can still show the date it asked for.
+    const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : null;
     await this.prisma.$executeRaw`
       INSERT INTO "order" (
         id, number, customer_id, status, vin, make, model, listing_url, address,
@@ -904,7 +886,7 @@ export class OrdersService {
         ${dto.vin?.toUpperCase() ?? null}, ${dto.make}, ${dto.model},
         ${dto.listingUrl ?? null}, ${dto.address},
         ST_SetSRID(ST_MakePoint(${dto.lng}, ${dto.lat}), 4326)::geography,
-        ${new Date(dto.scheduledAt)}, ${countryCode},
+        ${scheduledAt}, ${countryCode},
         ${p.baseFeeCents}, ${distanceKm}, ${returnTripFactor}, ${freeRadiusKm}, ${p.distanceFeeCents}, ${p.billedDurationMin},
         ${p.timeFeeCents}, ${surgeMultiplier}, ${p.minimumFareApplied}, ${priced.routingSource},
         ${p.totalCents}, ${p.platformFeeCents}, ${p.inspectorShareCents},
@@ -1062,7 +1044,6 @@ export class OrdersService {
       const price = computePrice({
         distanceKm: base.distanceKm,
         durationMin: base.durationMin,
-        scheduledAt: order.scheduledAt,
         tariff,
       });
       if (price.totalCents <= order.totalCents) return { candidate, price };
@@ -2007,7 +1988,7 @@ export class OrdersService {
       status: order.status,
       vehicle: { vin: order.vin, make: order.make, model: order.model },
       address: order.address,
-      scheduledAt: order.scheduledAt.toISOString(),
+      scheduledAt: order.scheduledAt?.toISOString() ?? null,
       money: {
         baseFeeCents: order.baseFeeCents,
         distanceKm: money.distanceKm,
@@ -3934,7 +3915,7 @@ export class OrdersService {
       make: o.make,
       model: o.model,
       address: o.address,
-      scheduledAt: o.scheduledAt.toISOString(),
+      scheduledAt: o.scheduledAt?.toISOString() ?? null,
       totalCents: o.totalCents,
       // The split rides on the row because the inspector's list is the FIRST
       // place a job is priced for them, and `totalCents` there is the
@@ -3988,7 +3969,12 @@ export interface OrderDetail {
   status: OrderStatus;
   vehicle: { vin: string | null; make: string; model: string };
   address: string;
-  scheduledAt: string;
+  /**
+   * Null for every order created after DEN-290: the customer no longer
+   * chooses a time. Kept on the wire so a website that still reads it sees
+   * null rather than a missing key.
+   */
+  scheduledAt: string | null;
   money: {
     baseFeeCents: number;
     /**
