@@ -71,6 +71,10 @@ export class UsersService {
    * hide listings. Orders/payments are kept for accounting but no longer carry
    * personal data (it lived on the User row). KYC document purge from R2 is
    * handled by the KYC module (E8); here we drop the metadata rows.
+   *
+   * Two callers: the user (`DELETE /users/me`) and a super admin who acts on
+   * an erasure request (`POST /admin/users/:id/erase`, DEN-300). Both use
+   * this one method, so the two erasures cannot differ.
    */
   async eraseMe(userId: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -7,6 +8,7 @@ import {
 import { Prisma, Role, User } from '@prisma/client';
 import { ADMIN_ROLES, isAdminRole } from '../auth/roles';
 import { PrismaService } from '../prisma/prisma.service';
+import { UsersService } from '../users/users.service';
 import { clampPage, clampPageSize } from './admin-audit.service';
 import { AdminUserListQueryDto } from './dto/admin-users.dto';
 import { banDenial, roleChangeDenial, type RoleDenial } from './role-policy';
@@ -33,7 +35,10 @@ function refuse(denial: RoleDenial): never {
 
 @Injectable()
 export class AdminUsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly users: UsersService,
+  ) {}
 
   async list(query: AdminUserListQueryDto) {
     const page = clampPage(query.page);
@@ -65,6 +70,7 @@ export class AdminUsersService {
           role: true,
           kycVerified: true,
           bannedAt: true,
+          deletedAt: true,
           createdAt: true,
           _count: { select: { ordersAsCustomer: true, listings: true } },
         },
@@ -80,6 +86,7 @@ export class AdminUsersService {
         role: u.role,
         kycVerified: u.kycVerified,
         bannedAt: u.bannedAt ? u.bannedAt.toISOString() : null,
+        deletedAt: u.deletedAt ? u.deletedAt.toISOString() : null,
         createdAt: u.createdAt.toISOString(),
         orderCount: u._count.ordersAsCustomer,
         listingCount: u._count.listings,
@@ -213,5 +220,51 @@ export class AdminUsersService {
       }
     }
     return this.prisma.user.update({ where: { id }, data: { role } });
+  }
+
+  /**
+   * GDPR erasure when the request comes by e-mail (DEN-300). Only a super
+   * admin, never on yourself (use the account settings), never on the last
+   * super admin. The erasure is `UsersService.eraseMe`, the same one the user
+   * runs, so orders and payments stay without personal data.
+   *
+   * The controller keeps `@Roles(Role.ADMIN)`, and this method refuses an
+   * admin. So an admin gets `super_admin_required`, which the admin panel
+   * knows, and not the general `forbidden` of the guard.
+   */
+  async erase(id: string, actor: AdminActor): Promise<User> {
+    if (id === actor.id) {
+      throw new BadRequestException({
+        error: {
+          code: 'cannot_target_self',
+          message: 'You cannot erase your own account here. Use the account settings.',
+        },
+      });
+    }
+    if (actor.role !== Role.SUPER_ADMIN) {
+      throw new ForbiddenException({
+        error: { code: 'super_admin_required', message: 'Only a super admin can erase an account' },
+      });
+    }
+    const user = await this.require(id);
+    if (user.deletedAt) {
+      throw new ConflictException({
+        error: { code: 'already_erased', message: 'The account is already erased' },
+      });
+    }
+    // Not reachable today (the caller is a different super admin), kept as
+    // the last guard of the rule, as in `changeRole`.
+    if (user.role === Role.SUPER_ADMIN) {
+      const superAdmins = await this.prisma.user.count({
+        where: { role: Role.SUPER_ADMIN, deletedAt: null },
+      });
+      if (superAdmins <= 1) {
+        throw new BadRequestException({
+          error: { code: 'last_super_admin', message: 'Cannot remove the last super admin' },
+        });
+      }
+    }
+    await this.users.eraseMe(id);
+    return this.require(id);
   }
 }

@@ -466,6 +466,65 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(self.body.error.code).toBe('cannot_demote_self');
     });
 
+    it('9d. only a SUPER_ADMIN erases an account; the reason is audited and orders stay (DEN-300)', async () => {
+      const admin = await makeAdmin();
+      const superAdmin = await makeSuperAdmin();
+      const target = await makeUser('erasetarget');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(target);
+      const erase = (actor: Registered, id: string, body: object = { reason: REASON }) =>
+        bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/users/${id}/erase`).send(body),
+          actor.token,
+        );
+
+      const denied = await erase(admin, target.userId).expect(403);
+      expect(denied.body.error.code).toBe('super_admin_required');
+      await erase(superAdmin, target.userId, { reason: 'short' }).expect(400);
+      await erase(superAdmin, target.userId, {}).expect(400);
+      const self = await erase(superAdmin, superAdmin.userId).expect(400);
+      expect(self.body.error.code).toBe('cannot_target_self');
+      expect((await prisma.user.findUnique({ where: { id: target.userId } }))!.deletedAt).toBeNull();
+
+      const res = await erase(superAdmin, target.userId).expect(200);
+      expect(res.body.deletedAt).toBeTruthy();
+
+      // The same result as the user's own erasure.
+      const erased = await prisma.user.findUnique({ where: { id: target.userId } });
+      expect(erased!.email).toBe(`deleted+${target.userId}@carsalepro.invalid`);
+      expect(erased!.passwordHash).toBeNull();
+      expect(erased!.name).toBeNull();
+      expect(erased!.deletedAt).toBeTruthy();
+
+      // The old token and the old password stop working.
+      await bearer(request(app.getHttpServer()).get('/api/v1/users/me'), target.token).expect(401);
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email: target.email, password: PASSWORD })
+        .expect(401);
+
+      // Orders and payments stay for accounting.
+      expect(await prisma.order.findUnique({ where: { id: orderId } })).not.toBeNull();
+      expect(await prisma.payment.count({ where: { orderId } })).toBeGreaterThan(0);
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { action: 'user.erase', entityId: target.userId },
+      });
+      expect(audit!.adminId).toBe(superAdmin.userId);
+      expect(audit!.after).toMatchObject({ reason: REASON });
+      expect(JSON.stringify(audit)).not.toContain(target.email);
+
+      const again = await erase(superAdmin, target.userId).expect(409);
+      expect(again.body.error.code).toBe('already_erased');
+
+      // The erased account is still visible to an admin, marked as erased.
+      const detail = await bearer(
+        request(app.getHttpServer()).get(`/api/v1/admin/users/${target.userId}`),
+        admin.token,
+      ).expect(200);
+      expect(detail.body.deletedAt).toBeTruthy();
+    });
+
     it('10. device-links: list, create (audited), unlink', async () => {
       const admin = await makeAdmin();
       const target = await makeUser('devlinks');

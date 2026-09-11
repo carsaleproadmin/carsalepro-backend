@@ -20,6 +20,7 @@ import {
   AdminUserListQueryDto,
   BanUserDto,
   ChangeRoleDto,
+  EraseUserDto,
 } from './dto/admin-users.dto';
 
 @ApiTags('admin')
@@ -108,6 +109,33 @@ export class AdminUsersController {
       { role: after.role },
     );
     return { id: after.id, role: after.role };
+  }
+
+  /**
+   * GDPR erasure on request (DEN-300). POST with a body, as the listing
+   * delete: the reason travels in the body. The audit row keeps the reason
+   * and the time, and no personal data.
+   */
+  @Post(':id/erase')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Anonymize a user account on request (super admin only)' })
+  @ApiParam({ name: 'id' })
+  async erase(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: EraseUserDto,
+  ) {
+    const after = await this.adminUsers.erase(id, actor);
+    const deletedAt = after.deletedAt?.toISOString() ?? null;
+    await this.audit.log(
+      actor.id,
+      'user.erase',
+      'user',
+      id,
+      { deletedAt: null },
+      { deletedAt, reason: dto.reason },
+    );
+    return { id: after.id, deletedAt };
   }
 
   @Get(':id/device-links')
