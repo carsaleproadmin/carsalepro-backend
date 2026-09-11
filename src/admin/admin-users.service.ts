@@ -1,8 +1,35 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma, Role, User } from '@prisma/client';
+import { ADMIN_ROLES, isAdminRole } from '../auth/roles';
 import { PrismaService } from '../prisma/prisma.service';
 import { clampPage, clampPageSize } from './admin-audit.service';
 import { AdminUserListQueryDto } from './dto/admin-users.dto';
+import { banDenial, roleChangeDenial, type RoleDenial } from './role-policy';
+
+/** The caller of an admin action: who they are, and which admin role they hold. */
+export interface AdminActor {
+  id: string;
+  role: Role;
+}
+
+function refuse(denial: RoleDenial): never {
+  if (denial === 'cannot_demote_self') {
+    throw new BadRequestException({
+      error: { code: 'cannot_demote_self', message: 'You cannot demote yourself' },
+    });
+  }
+  throw new ForbiddenException({
+    error: {
+      code: 'super_admin_required',
+      message: 'Only a super admin can change the role of an admin or ban an admin',
+    },
+  });
+}
 
 @Injectable()
 export class AdminUsersService {
@@ -129,33 +156,55 @@ export class AdminUsersService {
     return user;
   }
 
-  async ban(id: string, adminId: string): Promise<User> {
-    if (id === adminId) {
+  /** Only a super admin can ban an admin or a super admin (DEN-299). */
+  async ban(id: string, actor: AdminActor): Promise<User> {
+    if (id === actor.id) {
       throw new BadRequestException({
         error: { code: 'cannot_target_self', message: 'You cannot ban yourself' },
       });
     }
     const user = await this.require(id);
+    const denial = banDenial(actor.role, user.role);
+    if (denial) refuse(denial);
     if (user.bannedAt) return user; // idempotent no-op
     return this.prisma.user.update({ where: { id }, data: { bannedAt: new Date() } });
   }
 
-  async unban(id: string): Promise<User> {
-    await this.require(id);
+  async unban(id: string, actor: AdminActor): Promise<User> {
+    const user = await this.require(id);
+    const denial = banDenial(actor.role, user.role);
+    if (denial) refuse(denial);
     return this.prisma.user.update({ where: { id }, data: { bannedAt: null } });
   }
 
-  async changeRole(id: string, role: Role, adminId: string): Promise<User> {
+  /**
+   * An admin can make a user an admin. Every other change to an admin role
+   * needs a super admin (DEN-299, rules in `role-policy.ts`).
+   */
+  async changeRole(id: string, role: Role, actor: AdminActor): Promise<User> {
     const user = await this.require(id);
-    if (id === adminId && role !== Role.ADMIN) {
-      throw new BadRequestException({
-        error: { code: 'cannot_demote_self', message: 'You cannot demote yourself' },
+    const denial = roleChangeDenial(actor.role, user.role, role, id === actor.id);
+    if (denial) refuse(denial);
+    if (user.role === role) return user; // idempotent
+
+    /*
+     * Through this route neither count can fall to zero today: the caller holds
+     * an admin role and cannot demote themselves. The checks stay as the last
+     * guard of the rule, so a later change to the policy cannot break it.
+     */
+    if (user.role === Role.SUPER_ADMIN) {
+      const superAdmins = await this.prisma.user.count({
+        where: { role: Role.SUPER_ADMIN, deletedAt: null },
       });
+      if (superAdmins <= 1) {
+        throw new BadRequestException({
+          error: { code: 'last_super_admin', message: 'Cannot remove the last super admin' },
+        });
+      }
     }
-    // Removing the last remaining ADMIN is forbidden.
-    if (user.role === Role.ADMIN && role !== Role.ADMIN) {
+    if (isAdminRole(user.role) && !isAdminRole(role)) {
       const adminCount = await this.prisma.user.count({
-        where: { role: Role.ADMIN, deletedAt: null },
+        where: { role: { in: [...ADMIN_ROLES] }, deletedAt: null },
       });
       if (adminCount <= 1) {
         throw new BadRequestException({
@@ -163,7 +212,6 @@ export class AdminUsersService {
         });
       }
     }
-    if (user.role === role) return user; // idempotent
     return this.prisma.user.update({ where: { id }, data: { role } });
   }
 }

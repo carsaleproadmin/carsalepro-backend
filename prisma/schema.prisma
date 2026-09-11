@@ -133,6 +133,8 @@ model ReportPhoto {
 enum Role {
   USER
   ADMIN
+  /// DEN-299: an admin who can also demote, promote and ban other admins.
+  SUPER_ADMIN
 }
 
 model User {
