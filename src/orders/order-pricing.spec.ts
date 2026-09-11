@@ -1,5 +1,5 @@
 // Category: MONEY MATHS. Pure arithmetic, no DB, no network, no Nest container.
-import { PricingTariff, computePrice, describeStoredFare, isPeak } from './order-pricing';
+import { PricingTariff, computePrice, describeStoredFare } from './order-pricing';
 
 /** The shipped defaults, in cents — see platform-settings.constants.ts. */
 const TARIFF: PricingTariff = {
@@ -9,21 +9,14 @@ const TARIFF: PricingTariff = {
   minimumFareCents: 4900,
   platformFeePercent: 20,
   surgeMultiplier: 1,
-  peakMultiplier: 1,
-  peakStartHour: 16,
-  peakEndHour: 19,
   returnTripFactor: 2,
   freeRadiusKm: 10,
 };
 
-/** Noon on a Wednesday — comfortably outside the default peak window. */
-const OFF_PEAK = new Date(2026, 6, 1, 12, 0, 0);
-
-function price(distanceKm: number, durationMin: number, tariff: Partial<PricingTariff> = {}, when = OFF_PEAK) {
+function price(distanceKm: number, durationMin: number, tariff: Partial<PricingTariff> = {}) {
   return computePrice({
     distanceKm,
     durationMin,
-    scheduledAt: when,
     tariff: { ...TARIFF, ...tariff },
   });
 }
@@ -88,12 +81,11 @@ describe('computePrice', () => {
     });
   });
 
-  describe('surge and peak', () => {
+  describe('surge', () => {
     it('is inert at 1.0 and reports a zero surge line', () => {
       const p = price(20, 25);
       expect(p.surgeMultiplier).toBe(1);
       expect(p.surgeFeeCents).toBe(0);
-      expect(p.peakApplied).toBe(false);
     });
 
     it('applies the manual surge lever', () => {
@@ -101,20 +93,6 @@ describe('computePrice', () => {
       expect(p.subtotalCents).toBe(6250);
       expect(p.totalCents).toBe(Math.round(6250 * 1.5));
       expect(p.surgeFeeCents).toBe(p.totalCents - 6250);
-    });
-
-    it('compounds surge with peak inside the window', () => {
-      const inPeak = new Date(2026, 6, 1, 17, 30, 0);
-      const p = price(20, 25, { surgeMultiplier: 1.2, peakMultiplier: 1.5 }, inPeak);
-      expect(p.peakApplied).toBe(true);
-      expect(p.surgeMultiplier).toBeCloseTo(1.8, 10);
-      expect(p.totalCents).toBe(Math.round(6250 * 1.8));
-    });
-
-    it('ignores the peak multiplier outside the window', () => {
-      const p = price(20, 25, { peakMultiplier: 2 }, OFF_PEAK);
-      expect(p.peakApplied).toBe(false);
-      expect(p.totalCents).toBe(6250);
     });
 
     it('treats a nonsensical multiplier as off rather than free', () => {
@@ -236,33 +214,6 @@ describe('computePrice', () => {
       expect(p.distanceFeeCents).toBe(201);
       expect(Number.isInteger(p.totalCents)).toBe(true);
     });
-  });
-});
-
-describe('isPeak', () => {
-  const at = (hour: number) => new Date(2026, 6, 1, hour, 0, 0);
-
-  it('is inclusive of the start hour and exclusive of the end hour', () => {
-    expect(isPeak(at(15), 16, 19)).toBe(false);
-    expect(isPeak(at(16), 16, 19)).toBe(true);
-    expect(isPeak(at(18), 16, 19)).toBe(true);
-    expect(isPeak(at(19), 16, 19)).toBe(false);
-  });
-
-  it('handles a window that wraps past midnight', () => {
-    expect(isPeak(at(23), 22, 2)).toBe(true);
-    expect(isPeak(at(1), 22, 2)).toBe(true);
-    expect(isPeak(at(2), 22, 2)).toBe(false);
-    expect(isPeak(at(12), 22, 2)).toBe(false);
-  });
-
-  it('treats an empty window as "no peak", not "all day"', () => {
-    // A mistyped window must fail safe rather than surcharge every booking.
-    for (let h = 0; h < 24; h++) expect(isPeak(at(h), 16, 16)).toBe(false);
-  });
-
-  it('is false for non-finite bounds', () => {
-    expect(isPeak(at(17), Number.NaN, 19)).toBe(false);
   });
 });
 

@@ -101,19 +101,41 @@ export function mirroredPhotoKey(listingId: string, sourceKey: string): string {
 /**
  * Slot kinds that must never reach a public surface, whatever a manifest says.
  *
- * `passport` holds the pages of the vehicle registration document, which carry
- * the name and the address of the owner. Three separate locks already stand in
- * front of it: the mobile app does not upload it (`sync_providers.dart` skips
- * `PhotoKind.passport`), it is not drawn into the PDF, and the website removes
- * it again in `lib/report-photos.ts`. All three are on a different machine from
- * this one. This is the lock on the surface that PUBLISHES - the only place
- * where a leak is a leak rather than a mistake in a client.
+ * ## `passport` is here again, and the history is the reason to keep it
  *
- * Matched by PREFIX as well as in full. The app takes up to three pages, and a
- * later build that numbers them `passport-2` must not walk past a rule written
- * for a single slot.
+ * `passport` is the pages of the vehicle registration document. They carry the
+ * name and the address of the owner. The kind was on this list until
+ * 2026-09-09, when DEN-263 emptied the list so that the document could appear
+ * on the public car page beside the VIN plate and the odometer. It is back.
+ *
+ * Understand what an absent kind gets, because it is more than a picture on a
+ * page: `mirrorPublicPhotos` copies it into the PUBLIC BUCKET as a permanent,
+ * unsigned, CDN-cached object. Anyone who holds the URL can read it. There is
+ * no authentication and no expiry, and the object stays after the listing that
+ * caused the copy is gone. The only control in front of it was the inspector,
+ * who was told to hide the address with the photo editor before he finished.
+ * Nothing downstream examined his work.
+ *
+ * DEN-263 also removed three other controls: the app now uploads the kind, the
+ * PDF now draws it, and the website no longer drops it. Those stay as they
+ * are.
+ *
+ * ## The ban is on the BUCKET, not on the eye
+ *
+ * A reader of the free report page still sees the document: `reportFull` in
+ * `public.service.ts` passes `includeNeverPublic` and signs it. That URL
+ * expires and no edge caches it, so it gives the page what DEN-263 asked for
+ * without giving anybody a permanent copy. This list governs the mirror, and
+ * the mirror is what this kind must never reach.
+ *
+ * The erasure sweep (`erasePublicPhotoObjects`) passes `includeNeverPublic:
+ * true` and must continue to. A build that ran between 2026-09-09 and this
+ * change could have mirrored these pages, and that pass is what removes them.
+ *
+ * Matching is by PREFIX as well as in full, thus a build that numbers the
+ * pages `passport-2` cannot go past a rule written for one slot.
  */
-const NEVER_PUBLIC_KINDS = ['passport'] as const;
+const NEVER_PUBLIC_KINDS: readonly string[] = ['passport'];
 
 /** True when a slot kind must not be published, at any index. */
 export function isNeverPublicKind(kind: string | null | undefined): boolean {
@@ -145,12 +167,18 @@ export function isNeverPublicKind(kind: string | null | undefined): boolean {
  * written by the current mirror, so on an older manifest it is absent, and the
  * website would show an uncaptioned gallery until the report was touched.
  *
- * `includeNeverPublic` is for ERASURE and for nothing else. The default drops
- * the kinds that must never be published, which is what every read path and the
- * mirror want. The GDPR pass wants the opposite: it computes the keys to DELETE
- * from the public bucket, so a kind an OLD build mirrored before this rule
- * existed has to stay in that list, or the erasure would walk past the one
- * object it most needs to remove.
+ * `includeNeverPublic` has exactly two callers, and the default is what every
+ * other path wants: drop the kinds that must not reach the public bucket.
+ *
+ * The GDPR pass is the first. It computes the keys to DELETE from that bucket,
+ * so a kind an OLD build mirrored before the rule existed has to stay in the
+ * list, or the erasure would walk past the one object it most needs to remove.
+ *
+ * `reportFull` is the second. It signs each URL rather than mirroring it, and
+ * a signed URL expires - the property the ban exists to protect is not touched
+ * by it. Any THIRD caller has to make the same argument before it passes the
+ * flag: if the output can become a permanent unsigned object, the answer is
+ * no.
  */
 export function manifestPhotoRefs(
   manifest: unknown,

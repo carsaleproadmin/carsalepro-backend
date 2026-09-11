@@ -170,14 +170,21 @@ describe('manifestPhotoRefs', () => {
   });
 });
 
+/*
+ * These assertions were inverted on 2026-09-09 for DEN-263, which put the
+ * registration document on the public car page beside the VIN plate and the
+ * odometer. They are inverted back. The document still goes into the report
+ * and into the PDF - DEN-263 keeps those - but not onto the surface that
+ * gives a permanent, unsigned copy to everybody.
+ */
 describe('isNeverPublicKind — the registration document', () => {
-  it('drops the slot the registration document uses', () => {
+  it('bans the slot the registration document uses', () => {
     expect(isNeverPublicKind('passport')).toBe(true);
   });
 
-  it('drops the numbered pages of it', () => {
-    // The app takes up to three pages. A rule written for one slot must not
-    // walk past `passport-2` and publish page two of the owner's address.
+  it('bans the numbered pages of it too', () => {
+    // The app takes up to three pages. A rule that covered only the first one
+    // would publish the other two.
     expect(isNeverPublicKind('passport-2')).toBe(true);
     expect(isNeverPublicKind('passport_back')).toBe(true);
     expect(isNeverPublicKind('PASSPORT-3')).toBe(true);
@@ -202,15 +209,18 @@ describe('manifestPhotoRefs — the never-public rule', () => {
     { s3Key: 'c.jpg', kind: 'passport-2' },
   ];
 
-  it('leaves the registration document out by default', () => {
+  it('keeps the registration document off the public surface', () => {
+    // Every page, not only the first: `b.jpg` is `passport` and `c.jpg` is
+    // `passport-2`, and the prefix rule must catch both.
     const keys = manifestPhotoRefs(manifest, 10).map((ref) => ref.s3Key);
     expect(keys).toEqual(['a.jpg']);
   });
 
-  it('returns it for an erasure, which has to delete it', () => {
-    // The GDPR pass computes the keys to REMOVE from the public bucket. A
-    // build older than this rule could have mirrored one, and skipping it here
-    // would leave the one object the erasure most needs to take away.
+  it('still returns everything for an erasure', () => {
+    // The GDPR pass computes the keys to REMOVE from the public bucket, and it
+    // must cover objects mirrored under ANY rule this file has ever had. The
+    // flag is why the ban above does not weaken the erasure: an object that
+    // a build between 2026-09-09 and the ban mirrored must still be found.
     const keys = manifestPhotoRefs(manifest, 10, { includeNeverPublic: true }).map(
       (ref) => ref.s3Key,
     );

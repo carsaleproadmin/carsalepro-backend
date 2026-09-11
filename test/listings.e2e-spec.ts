@@ -426,13 +426,9 @@ describe('Listings (e2e)', () => {
         .send({ package: 'standard' })
         .expect(201);
       expect(res.body.status).toBe('ACTIVE');
-      expect(typeof res.body.expiresAt).toBe('string');
-
-      const expiresAt = new Date(res.body.expiresAt).getTime();
-      const in29Days = Date.now() + 29 * 86400000;
-      const in31Days = Date.now() + 31 * 86400000;
-      expect(expiresAt).toBeGreaterThan(in29Days);
-      expect(expiresAt).toBeLessThan(in31Days);
+      // A published listing has NO end date: the publish answer carries none,
+      // and the row keeps a null expiry.
+      expect(res.body.expiresAt).toBeUndefined();
 
       const showroom = await request(app.getHttpServer())
         .get('/api/v1/public/listings?city=Munich')
@@ -503,7 +499,6 @@ describe('Listings (e2e)', () => {
       expect(goldListing!.status).toBe('ACTIVE');
       expect(goldListing!.package).toBe('gold');
       expect(goldListing!.publishedAt).toBeTruthy();
-      expect(goldListing!.expiresAt).toBeTruthy();
 
       const goldPayment = await prisma.payment.findFirst({
         where: { userId: owner.userId, purpose: 'gold' },
@@ -605,69 +600,99 @@ describe('Listings (e2e)', () => {
     }
   });
 
-  it('10. renew an expired listing sets ACTIVE with a future expiresAt', async () => {
+  it('9b. deleting a draft frees the report code for a second claim', async () => {
+    // The whole point of the delete: `listing.report_id` is UNIQUE, so a
+    // listing that keeps it makes the code unusable forever.
     const owner = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code, userId: owner.userId });
-    // Seed an EXPIRED listing directly.
-    const listing = await prisma.listing.create({
-      data: {
-        sellerId: owner.userId,
-        reportId: report.id,
-        status: 'EXPIRED',
-        package: 'standard',
-        priceCents: 1000000,
-        city: 'Bremen',
-        publishedAt: new Date(Date.now() - 40 * 86400000),
-        expiresAt: new Date(Date.now() - 10 * 86400000),
-      },
-    });
+    let listingId: string | undefined;
+    let secondId: string | undefined;
     try {
-      const res = await request(app.getHttpServer())
-        .post(`/api/v1/listings/${listing.id}/renew`)
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
         .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
         .expect(201);
-      expect(res.body.status).toBe('ACTIVE');
-      expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+      listingId = created.body.id;
+
+      await request(app.getHttpServer())
+        .delete(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+
+      const row = await prisma.listing.findUnique({ where: { id: listingId } });
+      expect(row?.status).toBe('DELETED');
+      expect(row?.reportId).toBeNull();
+
+      // Gone from the seller's cabinet, and the code works again.
+      const mine = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      expect(mine.body.items.find((i: { id: string }) => i.id === listingId)).toBeUndefined();
+
+      const again = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      secondId = again.body.id;
+      expect(secondId).not.toBe(listingId);
     } finally {
-      await cleanup({ listingId: listing.id, reportId: report.id });
+      await cleanup({ listingId: secondId, reportId: report.id });
+      if (listingId) await prisma.listing.deleteMany({ where: { id: listingId } });
     }
   });
 
-  it('10b. renewing an ACTIVE listing ADDS to the time it has left', async () => {
-    // The cabinet offers renewal in the advert's last week (DEN-177). Measuring
-    // the new expiry from `now` would take those days away from the seller, so
-    // the extension runs from the current expiry while it is still in future.
+  it('9c. an ACTIVE listing is not deletable, and a stranger cannot delete a draft', async () => {
     const owner = await registerUser(app);
+    const stranger = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code, userId: owner.userId });
-    const expiresAt = new Date(Date.now() + 5 * 86400000);
-    const listing = await prisma.listing.create({
-      data: {
-        sellerId: owner.userId,
-        reportId: report.id,
-        status: 'ACTIVE',
-        package: 'standard',
-        priceCents: 1000000,
-        city: 'Bremen',
-        publishedAt: new Date(Date.now() - 25 * 86400000),
-        expiresAt,
-      },
-    });
+    let listingId: string | undefined;
     try {
-      const res = await request(app.getHttpServer())
-        .post(`/api/v1/listings/${listing.id}/renew`)
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id;
+
+      await request(app.getHttpServer())
+        .delete(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .expect(403);
+
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ priceCents: 990000, city: 'Bonn' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/publish`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ package: 'standard' })
+        .expect(201);
+
+      const refused = await request(app.getHttpServer())
+        .delete(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(400);
+      expect(refused.body.error.code).toBe('listing_not_deletable');
+
+      // Unpublish first, then it goes.
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/unpublish`)
         .set('Authorization', `Bearer ${owner.token}`)
         .expect(201);
-      expect(res.body.status).toBe('ACTIVE');
-      // The five unused days survive: the extension is measured from the old
-      // expiry, so the new one clears "today plus five days" by the whole
-      // renewal period. Asserted against a one-day floor rather than the
-      // seeded 30, so an admin changing listingDurationDays cannot fail this.
-      const renewed = new Date(res.body.expiresAt).getTime();
-      expect(renewed).toBeGreaterThan(expiresAt.getTime() + 86400000);
+      await request(app.getHttpServer())
+        .delete(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
     } finally {
-      await cleanup({ listingId: listing.id, reportId: report.id });
+      await cleanup({ reportId: report.id });
+      if (listingId) await prisma.listing.deleteMany({ where: { id: listingId } });
     }
   });
 
@@ -709,34 +734,6 @@ describe('Listings (e2e)', () => {
 
   it('11b. GET /api/v1/me/listings without a token returns 401', async () => {
     await request(app.getHttpServer()).get('/api/v1/me/listings').expect(401);
-  });
-
-  it('12. expireOverdue() flips an ACTIVE past-expiry listing to EXPIRED', async () => {
-    const owner = await registerUser(app);
-    const code = uniqueCode();
-    const report = await seedReport({ code, userId: owner.userId });
-    const listing = await prisma.listing.create({
-      data: {
-        sellerId: owner.userId,
-        reportId: report.id,
-        status: 'ACTIVE',
-        package: 'standard',
-        priceCents: 1000000,
-        city: 'Leipzig',
-        publishedAt: new Date(Date.now() - 40 * 86400000),
-        expiresAt: new Date(Date.now() - 1 * 86400000),
-      },
-    });
-    try {
-      const service = app.get(ListingsService);
-      const count = await service.expireOverdue();
-      expect(count).toBeGreaterThanOrEqual(1);
-
-      const after = await prisma.listing.findUnique({ where: { id: listing.id } });
-      expect(after!.status).toBe('EXPIRED');
-    } finally {
-      await cleanup({ listingId: listing.id, reportId: report.id });
-    }
   });
 
   // ============================================================
@@ -1212,7 +1209,6 @@ describe('Listings (e2e)', () => {
           model: '320d',
           year: 2018,
           publishedAt: new Date(),
-          expiresAt: new Date(Date.now() + 30 * 86400000),
         },
       });
       listingIds.push(listing.id);
@@ -1431,6 +1427,58 @@ describe('Listings (e2e)', () => {
         );
       });
 
+      it('29. deleting a listing takes its mirrored report photos with it', async () => {
+        const owner = await seller();
+        const code = uniqueCode();
+        const report = await seedReport({ code, userId: owner.userId });
+        reportIds.push(report.id);
+        const listing = await prisma.listing.create({
+          data: {
+            sellerId: owner.userId,
+            reportId: report.id,
+            source: 'report',
+            status: 'ACTIVE',
+            package: 'standard',
+            priceCents: 1390000,
+            city: 'Kassel',
+            make: 'BMW',
+            model: '320d',
+            year: 2018,
+            publishedAt: new Date(),
+          },
+        });
+        listingIds.push(listing.id);
+
+        await app.get(ListingsService).mirrorShowroomPhotos(listing.id);
+        const manifest = report.photosManifest as { s3Key: string }[];
+        const keys = manifest.map((m) => mirroredPhotoKey(listing.id, m.s3Key));
+        for (const key of keys) expect(objects.has(key)).toBe(true);
+
+        // A seller cannot delete an ACTIVE listing, so the delete follows the
+        // route the website offers: hide it, then remove it.
+        await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listing.id}/unpublish`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(201);
+        await request(app.getHttpServer())
+          .delete(`/api/v1/listings/${listing.id}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+
+        // These objects have no ListingPhoto row. Their keys come from the
+        // manifest, reached through `report_id` — which the delete clears. If
+        // they are not removed here, nothing can name them again, and a later
+        // erasure request would leave permanent public photos of the car.
+        for (const key of keys) expect(objects.has(key)).toBe(false);
+
+        const row = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+        expect(row.status).toBe('DELETED');
+        expect(row.reportId).toBeNull();
+        // The stamp says "a copy is in the public bucket". It must not outlive
+        // the copy.
+        expect(row.publicPhotosMirroredAt).toBeNull();
+      });
+
       it('28. the nightly backlog pass mirrors listings published before the cutover', async () => {
         const owner = await seller();
         const code = uniqueCode();
@@ -1449,7 +1497,6 @@ describe('Listings (e2e)', () => {
             model: '320d',
             year: 2018,
             publishedAt: new Date(Date.now() - 10 * 86400000),
-            expiresAt: new Date(Date.now() + 20 * 86400000),
           },
         });
         listingIds.push(listing.id);

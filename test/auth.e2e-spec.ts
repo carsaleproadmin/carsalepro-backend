@@ -277,11 +277,8 @@ describe('Auth + users (e2e)', () => {
     );
     expect(prices.orderMinimumFareCents).toBe(Math.round(res.body.orderMinimumFareEur * 100));
 
-    // Operator levers stay private — publishing them would let a caller time a
-    // booking around the peak window.
+    // The surge lever is an operator lever and stays private.
     expect(res.body.orderSurgeMultiplier).toBeUndefined();
-    expect(res.body.orderPeakMultiplier).toBeUndefined();
-    expect(res.body.orderPeakStartHour).toBeUndefined();
   });
 
   /*
@@ -311,7 +308,6 @@ describe('Auth + users (e2e)', () => {
     expect(gold.amountCents).toBe(settings.body.prices.goldPackageCents);
     expect(gold.currency).toBe('EUR');
     expect(standard.amountCents).toBe(settings.body.prices.standardListingCents);
-    expect(standard.durationDays).toBe(settings.body.listingDurationDays);
   });
 
   it('13. erases the account (GDPR) and blocks subsequent login', async () => {

@@ -117,7 +117,6 @@ export class LegalContractService {
       vehicle: `${order.make} ${order.model}`.trim(),
       vin: order.vin ?? '—',
       address: order.address,
-      scheduledAt: formatDate(order.scheduledAt),
       totalEur: centsToEur(order.totalCents),
       platformFeeEur: centsToEur(order.platformFeeCents),
       inspectorShareEur: centsToEur(order.inspectorShareCents),

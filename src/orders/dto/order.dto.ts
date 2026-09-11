@@ -1,9 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsBoolean,
   IsEnum,
   IsISO8601,
   IsLatitude,
   IsLongitude,
+  IsNotEmpty,
   IsOptional,
   IsString,
   Length,
@@ -21,9 +23,15 @@ export class QuoteOrderDto {
   @IsLongitude()
   lng!: number;
 
-  @ApiProperty({ example: '2026-07-01T09:00:00.000Z' })
+  /**
+   * DEPRECATED (DEN-290). The customer no longer chooses a time, and the price
+   * does not depend on one. Accepted only so a website deployed before that
+   * change does not get a 400. Do not send it from new code.
+   */
+  @ApiPropertyOptional({ example: '2026-07-01T09:00:00.000Z', deprecated: true })
+  @IsOptional()
   @IsISO8601()
-  scheduledAt!: string;
+  scheduledAt?: string;
 }
 
 export class CreateOrderDto {
@@ -44,11 +52,18 @@ export class CreateOrderDto {
   @MaxLength(64)
   model!: string;
 
-  @ApiPropertyOptional({ example: 'https://mobile.de/listing/123' })
-  @IsOptional()
+  /**
+   * The seller's phone number OR a link to the listing, as free text (DEN-116).
+   * Required since DEN-291: the assigned inspector must contact the car owner
+   * before the trip, and this is the only channel the order carries. The name
+   * stayed `listingUrl` so the wire contract did not change.
+   */
+  @ApiProperty({ example: '+4930123456 or https://mobile.de/listing/123' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
+  @IsNotEmpty()
   @MaxLength(2048)
-  listingUrl?: string;
+  listingUrl!: string;
 
   @ApiProperty({ example: 'Musterstraße 1, 10115 Berlin' })
   @IsString()
@@ -63,9 +78,15 @@ export class CreateOrderDto {
   @IsLongitude()
   lng!: number;
 
-  @ApiProperty({ example: '2026-07-01T09:00:00.000Z' })
+  /**
+   * DEPRECATED (DEN-290). The customer no longer chooses a time, and the price
+   * does not depend on one. Accepted only so a website deployed before that
+   * change does not get a 400. Do not send it from new code.
+   */
+  @ApiPropertyOptional({ example: '2026-07-01T09:00:00.000Z', deprecated: true })
+  @IsOptional()
   @IsISO8601()
-  scheduledAt!: string;
+  scheduledAt?: string;
 }
 
 /** Statuses an assigned inspector may push the order into via /status. */
@@ -78,6 +99,16 @@ export class UpdateOrderStatusDto {
   @ApiProperty({ enum: InspectorStatusUpdate })
   @IsEnum(InspectorStatusUpdate)
   status!: InspectorStatusUpdate;
+}
+
+/**
+ * DEN-291. The result of the assigned inspector's call to the car owner.
+ * `true` unlocks the trip. `false` cancels the order with a full refund.
+ */
+export class OwnerContactDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  reached!: boolean;
 }
 
 const REPORT_CODE_PATTERN =
@@ -116,6 +147,22 @@ export class DisputeOrderDto {
   @ApiProperty({ example: 'Inspector never showed up' })
   @IsString()
   @MaxLength(1000)
+  reason!: string;
+}
+
+/**
+ * The reason an inspector must give to hand an accepted order back.
+ *
+ * The reason is NOT optional and NOT allowed to be blank: the customer reads it
+ * in the cancellation letter, and "the inspector cancelled, no reason given" is
+ * the answer that makes them call support. `Transform` trims first, so a body of
+ * spaces fails `Length` instead of passing as text.
+ */
+export class DeclineOrderDto {
+  @ApiProperty({ example: 'My van broke down and I cannot reach the address today' })
+  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Length(3, 1000)
   reason!: string;
 }
 

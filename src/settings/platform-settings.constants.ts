@@ -10,9 +10,6 @@ export const SETTING_KEYS = {
   orderRatePerMinuteEur: 'orderRatePerMinuteEur',
   orderMinimumFareEur: 'orderMinimumFareEur',
   orderSurgeMultiplier: 'orderSurgeMultiplier',
-  orderPeakMultiplier: 'orderPeakMultiplier',
-  orderPeakStartHour: 'orderPeakStartHour',
-  orderPeakEndHour: 'orderPeakEndHour',
   orderDetourFactor: 'orderDetourFactor',
   orderReturnTripFactor: 'orderReturnTripFactor',
   orderFreeRadiusKm: 'orderFreeRadiusKm',
@@ -22,11 +19,11 @@ export const SETTING_KEYS = {
   payPerViewPriceEur: 'payPerViewPriceEur',
   goldPackagePriceEur: 'goldPackagePriceEur',
   standardListingPriceEur: 'standardListingPriceEur',
-  listingDurationDays: 'listingDurationDays',
   expertSearchRadiusKm: 'expertSearchRadiusKm',
   offerTimeoutMinutes: 'offerTimeoutMinutes',
   orderSearchWindowMinutes: 'orderSearchWindowMinutes',
   autoApproveAfterDays: 'autoApproveAfterDays',
+  inspectionStartDeadlineDays: 'inspectionStartDeadlineDays',
   minReportQualityScore: 'minReportQualityScore',
   refundBeforeAssignPercent: 'refundBeforeAssignPercent',
   refundAfterAssignPercent: 'refundAfterAssignPercent',
@@ -39,7 +36,7 @@ export type SettingKey = keyof typeof SETTING_KEYS;
  * Seed defaults — doc 07 §4. All values are configurable from the admin panel.
  *
  * The order tariff is a ride-hailing-style model: base + per-km + per-minute,
- * scaled by surge/peak, floored at a minimum fare. Two things shape the
+ * scaled by surge, floored at a minimum fare. Two things shape the
  * distance before the rate touches it: the first 10 km carry no travel charge
  * (`orderFreeRadiusKm`), and what remains is charged BOTH WAYS
  * (`orderReturnTripFactor`). Worked examples, distances one direction:
@@ -85,14 +82,13 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    * charge, not this number quietly going back up.
    */
   orderMinimumFareEur: 5,
-  /** Manual admin lever. 1 = off. Applied on top of the peak multiplier. */
+  /**
+   * Manual admin lever. 1 = off.
+   *
+   * The peak window that used to compound with it is gone (DEN-290): the
+   * customer no longer chooses a time, so there is no hour to price against.
+   */
   orderSurgeMultiplier: 1,
-  /** 1 = off. Set above 1 to charge more inside the peak window below. */
-  orderPeakMultiplier: 1,
-  /** Local hour, inclusive. */
-  orderPeakStartHour: 16,
-  /** Local hour, exclusive. */
-  orderPeakEndHour: 19,
   /** Great-circle → road estimate when the routing provider is unavailable. */
   orderDetourFactor: 1.3,
   /**
@@ -153,7 +149,6 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   payPerViewPriceEur: 14.99,
   goldPackagePriceEur: 9.99,
   standardListingPriceEur: 0,
-  listingDurationDays: 30,
   /**
    * How far dispatch looks for an inspector, as a STRAIGHT LINE.
    *
@@ -178,6 +173,20 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    */
   orderSearchWindowMinutes: 360,
   autoApproveAfterDays: 7,
+  /**
+   * How long an accepted order may sit without the inspection starting, before
+   * the sweep cancels it and refunds the customer in full (DEN-269).
+   *
+   * The clock starts at ACCEPTANCE, not at the appointment: a customer who
+   * books three weeks out still gets an answer inside a week. Seven days is the
+   * owner's number — long enough for a rescheduled visit and a quiet week, short
+   * enough that captured money is never stranded for a month behind an
+   * inspector who stopped answering.
+   *
+   * Measured in DAYS rather than the minutes `orderSearchWindowMinutes` uses,
+   * because this window is the length of a holiday, not of a wait.
+   */
+  inspectionStartDeadlineDays: 7,
   /**
    * Completeness gate: an order may only be closed with a report scoring at
    * least this. **`0` disables the gate** — that is the operational lever, and
@@ -225,8 +234,8 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
  * The first seven are a frozen shape — `test/auth.e2e-spec.ts` asserts both that
  * `payPerViewPriceEur` is present and that `platformFeePercent` is absent, and
  * the website reads them today. Additions are fine; removals are not.
- * `orderSurgeMultiplier`, `orderPeakMultiplier` and the peak window stay private:
- * they are operator levers, not a published tariff.
+ * `orderSurgeMultiplier` stays private: it is an operator lever, not a
+ * published tariff.
  */
 export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   'orderBaseFeeEur',
@@ -234,7 +243,6 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   'payPerViewPriceEur',
   'goldPackagePriceEur',
   'standardListingPriceEur',
-  'listingDurationDays',
   'expertSearchRadiusKm',
   'orderRatePerMinuteEur',
   'orderMinimumFareEur',

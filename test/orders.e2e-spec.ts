@@ -191,6 +191,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .send({
         make: 'BMW',
         model: '320d',
+        listingUrl: '+4930123456',
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,
@@ -259,6 +260,35 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       res.body.breakdown.platformFeeCents +
         res.body.breakdown.inspectorShareCents,
     ).toBe(res.body.totalCents);
+  });
+
+  // ============================================================
+  // 1b. DEN-290: the quote needs no time, and a sent time changes nothing
+  // ============================================================
+  it('1b. quote without scheduledAt is priced, and a peak-hour time does not change the price', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+
+    const withoutTime = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG })
+      .expect(200);
+
+    // 17:30 was inside the old 16-19 peak window. An older website still sends
+    // a time, and it must get the same price as a website that sends none.
+    const peakHour = new Date(Date.now() + 2 * 24 * 3_600_000);
+    peakHour.setUTCHours(17, 30, 0, 0);
+    const withPeakTime = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: peakHour.toISOString() })
+      .expect(200);
+
+    expect(withoutTime.body.available).toBe(true);
+    expect(withPeakTime.body.totalCents).toBe(withoutTime.body.totalCents);
+    expect(withoutTime.body.breakdown.surgeMultiplier).toBe(1);
+    expect(withoutTime.body.breakdown.peakApplied).toBeUndefined();
   });
 
   // ============================================================
@@ -438,6 +468,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         vin: '1HGBH41JXMN109186',
         make: 'BMW',
         model: '320d',
+        listingUrl: '+4930123456',
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,
@@ -506,6 +537,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'ul. Testowa 1, Poznań',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -537,6 +569,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'Musterstraße 1, Berlin',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -612,6 +645,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'Musterstraße 1, Berlin',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -777,6 +811,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'Musterstraße 1, Berlin',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -1131,6 +1166,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'ul. Testowa 1, Poznań',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -1258,6 +1294,14 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
      * assignment, which is exactly what this used to do.
      */
     for (const stage of ['ASSIGNED', 'EN_ROUTE', 'IN_PROGRESS'] as const) {
+      if (stage === 'EN_ROUTE') {
+        // DEN-291: the trip is locked until the owner was reached.
+        await request(app.getHttpServer())
+          .post(`/api/v1/orders/${orderId}/owner-contact`)
+          .set('Authorization', `Bearer ${inspector.token}`)
+          .send({ reached: true })
+          .expect(200);
+      }
       if (stage !== 'ASSIGNED') {
         await request(app.getHttpServer())
           .post(`/api/v1/orders/${orderId}/status`)
@@ -1506,6 +1550,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
 
     const { orderId } = await createPaidOrder(customer);
     await acceptPendingOffer(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ reached: true })
+      .expect(200);
     for (const status of ['EN_ROUTE', 'IN_PROGRESS'] as const) {
       await request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/status`)
@@ -1752,6 +1801,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const inspToken = inspectorTokens.get(assignedId)!;
 
     await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
       .send({ status: 'EN_ROUTE' })
@@ -1772,6 +1826,111 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .send({ status: 'EN_ROUTE' })
       .expect(409);
     expect(bad.body.error.code).toBe('illegal_transition');
+  });
+
+  // ============================================================
+  // 6b-6c. DEN-291: the owner-contact step between acceptance and the trip
+  // ============================================================
+  it('6b. the trip is locked until the inspector reports "owner contacted"', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    const locked = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(409);
+    expect(locked.body.error.code).toBe('owner_contact_required');
+
+    // Only the assigned inspector answers.
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ reached: true })
+      .expect(403);
+
+    const ok = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    expect(ok.body.status).toBe('ASSIGNED');
+    expect(ok.body.ownerContactConfirmedAt).toEqual(expect.any(String));
+
+    // The step is reported once. A late "not reached" must not cancel an order
+    // whose trip is already unlocked.
+    const again = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: false })
+      .expect(409);
+    expect(again.body.error.code).toBe('owner_contact_not_pending');
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(detail.body.ownerContactConfirmedAt).toEqual(expect.any(String));
+    expect(detail.body.status).toBe('ASSIGNED');
+
+    const note = await prisma.notification.findFirst({
+      where: { userId: customer.userId, type: 'order.owner_contacted' },
+    });
+    expect(note).not.toBeNull();
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(200);
+  });
+
+  it('6c. "owner not reached" cancels with a FULL refund and is not counted against the inspector', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+    const before = await prisma.inspectorProfile.findUnique({
+      where: { userId: assignedId },
+      select: { cancelCount: true },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: false })
+      .expect(200);
+    expect(res.body.status).toBe('CANCELLED');
+    expect(res.body.refundCents).toBe(FARE.totalCents);
+    expect(res.body.refundMode).toBe('refunded');
+
+    const refund = await prisma.refund.findFirst({ where: { orderId } });
+    expect(refund!.amountCents).toBe(FARE.totalCents);
+    expect(refund!.reason).toBe('owner_unreachable');
+
+    // Owner's decision: an owner who does not answer is not the inspector's fault.
+    const after = await prisma.inspectorProfile.findUnique({
+      where: { userId: assignedId },
+      select: { cancelCount: true },
+    });
+    expect(after!.cancelCount).toBe(before!.cancelCount);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(detail.body.status).toBe('CANCELLED');
+    expect(detail.body.declined.kind).toBe('owner_unreachable');
+    expect(detail.body.declined.refundCents).toBe(FARE.totalCents);
+
+    const note = await prisma.notification.findFirst({
+      where: { userId: customer.userId, type: 'order.owner_unreachable' },
+    });
+    expect(note).not.toBeNull();
   });
 
   // ============================================================
@@ -1850,6 +2009,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
     await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
       .send({ status: 'EN_ROUTE' })
@@ -1868,8 +2032,336 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   // ============================================================
+  // 9a-9d. The inspector hands an accepted order back (DEN-268)
+  // ============================================================
+  it('9a. decline from ASSIGNED → CANCELLED, FULL refund, reason recorded, customer told', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'My van broke down and I cannot reach the address today' })
+      .expect(200);
+    expect(res.body.status).toBe('CANCELLED');
+    // The whole amount, NOT the 80% of case 8: the customer did nothing wrong.
+    expect(res.body.refundCents).toBe(FARE.totalCents);
+    expect(res.body.refundMode).toBe('refunded');
+
+    const refund = await prisma.refund.findFirst({ where: { orderId } });
+    expect(refund!.amountCents).toBe(FARE.totalCents);
+    expect(refund!.reason).toBe('inspector_declined');
+
+    // The reason is the point of the endpoint, so it must survive in the audit
+    // trail, not only in the letter.
+    const event = await prisma.orderEvent.findFirst({
+      where: { orderId, type: 'inspector_declined' },
+    });
+    expect((event!.payload as { reason: string }).reason).toBe(
+      'My van broke down and I cannot reach the address today',
+    );
+
+    // It is counted against the inspector — the field that was always 0.
+    const profile = await prisma.inspectorProfile.findUnique({ where: { userId: assignedId } });
+    expect(profile!.cancelCount).toBe(1);
+
+    // The customer gets the hand-back letter, never the plain "you cancelled".
+    const notes = await prisma.notification.findMany({ where: { userId: customer.userId } });
+    const types = notes.map((n) => n.type);
+    expect(types).toContain('order.declined_by_inspector');
+    expect(types).not.toContain('order.cancelled');
+  });
+
+  it('9b. decline from EN_ROUTE also works', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(200);
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'The customer is not at the address' })
+      .expect(200);
+    expect(res.body.status).toBe('CANCELLED');
+    expect(res.body.refundCents).toBe(FARE.totalCents);
+  });
+
+  it('9c. a blank reason is refused and the order is untouched', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: '   ' })
+      .expect(400);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('ASSIGNED');
+    expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
+  });
+
+  it('9d. decline from IN_PROGRESS refunds in full, and a stranger cannot decline at all', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    // The customer is not the assigned inspector.
+    const stranger = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ reason: 'I want out' })
+      .expect(403);
+    expect(stranger.body.error.code).toBe('forbidden');
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'IN_PROGRESS' })
+      .expect(200);
+
+    // A blocker found after the start is still a hand-back (DEN-274), and the
+    // refund is the same 100%: the customer receives no report.
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'The seller refuses access to the car' })
+      .expect(200);
+    expect(res.body.status).toBe('CANCELLED');
+    expect(res.body.refundCents).toBe(FARE.totalCents);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('CANCELLED');
+  });
+
+  it('9d2. decline from SUBMITTED is refused; the exit there is a dispute', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    for (const status of ['EN_ROUTE', 'IN_PROGRESS']) {
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/status`)
+        .set('Authorization', `Bearer ${inspToken}`)
+        .send({ status })
+        .expect(200);
+    }
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'SUBMITTED' },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'I changed my mind' })
+      .expect(409);
+    expect(res.body.error.code).toBe('not_declinable');
+  });
+
+  // ============================================================
   // 10. Dispute from SUBMITTED → DISPUTED
   // ============================================================
+  // ============================================================
+  // 9e-9h. The accepted order that never starts (DEN-269)
+  // ============================================================
+  it('9e. an ASSIGNED order past its deadline is cancelled and refunded in full', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+
+    // Acceptance sets the clock, so the deadline exists before anything is done
+    // to it — the property the sweep depends on.
+    const assigned = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(assigned!.inspectionDeadlineAt).toBeTruthy();
+
+    // Seven days are not testable; `src/testing` moves the deadline instead of
+    // the spec writing the column, so the cron meets a state the app produces.
+    await request(app.getHttpServer())
+      .post(`/api/v1/testing/orders/${orderId}/expire-inspection-deadline`)
+      .expect(200);
+
+    const { cancelled } = await orders.sweepAbandonedInspections();
+    expect(cancelled).toBeGreaterThanOrEqual(1);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('CANCELLED');
+
+    // The money was captured on acceptance, so all of it goes back.
+    const refund = await prisma.refund.findFirst({ where: { orderId } });
+    expect(refund!.amountCents).toBe(FARE.totalCents);
+    expect(refund!.reason).toBe('inspector_no_show');
+
+    const profile = await prisma.inspectorProfile.findUnique({ where: { userId: assignedId } });
+    expect(profile!.cancelCount).toBe(1);
+
+    // Its own letter: there is no reason to quote, and `order.cancelled` would
+    // tell the reader they cancelled.
+    const notes = await prisma.notification.findMany({ where: { userId: customer.userId } });
+    const types = notes.map((n) => n.type);
+    expect(types).toContain('order.inspector_no_show');
+    expect(types).not.toContain('order.cancelled');
+
+    // And the inspector gets his own. He loses the fee and carries the
+    // `cancelCount` above; a mark on a record its holder never read is the fact
+    // that surfaces first in a dispute.
+    const inspectorNotes = await prisma.notification.findMany({
+      where: { userId: assignedId },
+    });
+    expect(inspectorNotes.map((n) => n.type)).toContain('order.inspector_no_show_self');
+
+    // The website reads the panel off this block, and must be able to tell a
+    // silent inspector from one who wrote a reason.
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(detail.body.declined.kind).toBe('no_show');
+    expect(detail.body.declined.reason).toBe('');
+    expect(detail.body.declined.refundCents).toBe(FARE.totalCents);
+  });
+
+  it('9e2. the sweep and a hand-back cannot both refund the same order', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const inspectorId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(inspectorId)!;
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/testing/orders/${orderId}/expire-inspection-deadline`)
+      .expect(200);
+
+    // The sweep gets there first and takes the order. The inspector's tab was
+    // rendered before that, so his hand-back arrives against a state that no
+    // longer exists — the race the claim in `declineByInspector` exists for.
+    await orders.sweepAbandonedInspections();
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/decline`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reason: 'The seller does not answer' })
+      .expect(409);
+
+    // ONE refund. Both paths pay the whole fare, and they pass different
+    // reasons, so neither the (orderId, reason) key nor the Stripe idempotency
+    // key stops a second payout — only the claim does.
+    const refunds = await prisma.refund.findMany({ where: { orderId } });
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0].reason).toBe('inspector_no_show');
+
+    const profile = await prisma.inspectorProfile.findUnique({ where: { userId: inspectorId } });
+    expect(profile!.cancelCount).toBe(1);
+  });
+
+  it('9f. an order inside its deadline is untouched', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    await acceptPendingOffer(orderId);
+
+    const { cancelled } = await orders.sweepAbandonedInspections();
+    expect(cancelled).toBe(0);
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('ASSIGNED');
+    expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
+  });
+
+  it('9g. an IN_PROGRESS order is never swept, deadline or no deadline', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'IN_PROGRESS' })
+      .expect(200);
+    // The deadline is moved directly here: the testing affordance is
+    // status-blind on purpose, and what this pins is that the SWEEP refuses.
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { inspectionDeadlineAt: new Date(Date.now() - 60_000) },
+    });
+
+    const { cancelled } = await orders.sweepAbandonedInspections();
+    expect(cancelled).toBe(0);
+
+    // The inspector may be standing at the car. Taking the job away here is a
+    // dispute's decision, not a cron's.
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('IN_PROGRESS');
+  });
+
+  it('9h. an order with NO deadline is left alone', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    await acceptPendingOffer(orderId);
+
+    // An order assigned before the rule shipped. Null is never backfilled, and
+    // sweeping one would cancel live work under a rule it never had.
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { inspectionDeadlineAt: null },
+    });
+
+    const { cancelled } = await orders.sweepAbandonedInspections();
+    expect(cancelled).toBe(0);
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(order!.status).toBe('ASSIGNED');
+  });
+
   it('10. dispute from SUBMITTED → DISPUTED + Dispute row', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);
@@ -1899,6 +2391,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const { orderId } = await createPaidOrder(customer);
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
     await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
@@ -1976,6 +2473,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
     await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
       .send({ status: 'EN_ROUTE' })
@@ -2032,6 +2534,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const { orderId } = await createPaidOrder(customer);
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
     for (const status of ['EN_ROUTE', 'IN_PROGRESS']) {
       await request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/status`)
@@ -2182,6 +2689,53 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
      */
     expect(found.platformFeeCents + found.inspectorShareCents).toBe(
       found.totalCents,
+    );
+  });
+
+  // ============================================================
+  // 16. The inspector's row carries both clocks that can take the job away
+  // ============================================================
+  it('16. GET /orders/me?role=inspector carries offerExpiresAt, then inspectionDeadlineAt', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    const offer = await pendingOfferFor(orderId);
+    expect(offer).toBeTruthy();
+    const token = inspectorTokens.get(offer!.inspectorId)!;
+
+    /*
+     * Before acceptance the row must name the OFFER deadline: `expireStaleOffers`
+     * passes the job to the next inspector at that stamp, and the list is where
+     * the inspector decides. `inspectionDeadlineAt` is not stamped yet.
+     */
+    const offered = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const beforeAccept = offered.body.items.find(
+      (o: { id: string }) => o.id === orderId,
+    );
+    expect(beforeAccept.offerExpiresAt).toBe(offer!.expiresAt.toISOString());
+    expect(beforeAccept.inspectionDeadlineAt).toBeNull();
+
+    await acceptPendingOffer(orderId);
+
+    /*
+     * After acceptance the offer clock is gone and the INSPECTION clock runs:
+     * past it, `sweepAbandonedInspections` cancels the order and refunds the
+     * customer in full.
+     */
+    const held = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const afterAccept = held.body.items.find(
+      (o: { id: string }) => o.id === orderId,
+    );
+    expect(afterAccept.offerExpiresAt).toBeNull();
+    expect(new Date(afterAccept.inspectionDeadlineAt).getTime()).toBeGreaterThan(
+      Date.now(),
     );
   });
 });

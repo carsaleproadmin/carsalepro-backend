@@ -101,7 +101,6 @@ export interface QuoteResult {
     subtotalCents: number;
     surgeMultiplier: number;
     surgeFeeCents: number;
-    peakApplied: boolean;
     minimumFareCents: number;
     minimumFareTopUpCents: number;
     minimumFareApplied: boolean;
@@ -185,6 +184,17 @@ export type CaptureOutcome =
  * — and the website words the confirmation differently for each.
  */
 export type RefundMode = 'refunded' | 'refund_pending' | 'authorization_released' | 'none';
+
+/**
+ * What a transition knows about ITSELF that its from/to pair cannot say.
+ *
+ * Only the notification matrix reads it. `CANCELLED` is reached by several
+ * different events — the customer cancelling, a capture failing, an inspector
+ * handing the job back — and they owe the reader different letters.
+ */
+export interface TransitionContext {
+  declinedByInspector?: { reason: string; refundCents: number };
+}
 
 /** Where an order's money is, as the website's `orderPhase()` reads it. */
 export type OrderPaymentState =
@@ -318,9 +328,6 @@ export class OrdersService {
       minimumFareCents,
       platformFeePercent,
       surgeMultiplier,
-      peakMultiplier,
-      peakStartHour,
-      peakEndHour,
       returnTripFactor,
       freeRadiusKm,
     ] = await Promise.all([
@@ -330,9 +337,6 @@ export class OrdersService {
       this.settings.getCents('orderMinimumFareEur'),
       this.settings.getNumber('platformFeePercent'),
       this.settings.getNumber('orderSurgeMultiplier'),
-      this.settings.getNumber('orderPeakMultiplier'),
-      this.settings.getNumber('orderPeakStartHour'),
-      this.settings.getNumber('orderPeakEndHour'),
       this.settings.getNumber('orderReturnTripFactor'),
       this.settings.getNumber('orderFreeRadiusKm'),
     ]);
@@ -343,9 +347,6 @@ export class OrdersService {
       minimumFareCents,
       platformFeePercent,
       surgeMultiplier,
-      peakMultiplier,
-      peakStartHour,
-      peakEndHour,
       returnTripFactor,
       freeRadiusKm,
     };
@@ -402,7 +403,6 @@ export class OrdersService {
   private async priceQuote(
     lat: number,
     lng: number,
-    scheduledAt: Date,
     customerId?: string,
   ): Promise<PricedQuote> {
     const [
@@ -413,9 +413,6 @@ export class OrdersService {
       platformFeePercent,
       radiusKm,
       surgeMultiplier,
-      peakMultiplier,
-      peakStartHour,
-      peakEndHour,
       detourFactor,
       returnTripFactor,
       freeRadiusKm,
@@ -429,9 +426,6 @@ export class OrdersService {
       this.settings.getNumber('platformFeePercent'),
       this.settings.getNumber('expertSearchRadiusKm'),
       this.settings.getNumber('orderSurgeMultiplier'),
-      this.settings.getNumber('orderPeakMultiplier'),
-      this.settings.getNumber('orderPeakStartHour'),
-      this.settings.getNumber('orderPeakEndHour'),
       this.settings.getNumber('orderDetourFactor'),
       this.settings.getNumber('orderReturnTripFactor'),
       this.settings.getNumber('orderFreeRadiusKm'),
@@ -446,9 +440,6 @@ export class OrdersService {
       minimumFareCents,
       platformFeePercent,
       surgeMultiplier,
-      peakMultiplier,
-      peakStartHour,
-      peakEndHour,
       returnTripFactor,
       freeRadiusKm,
     };
@@ -480,7 +471,7 @@ export class OrdersService {
         countryCode,
         candidates: [],
         routingSource: 'haversine',
-        price: computePrice({ distanceKm: 0, durationMin: 0, scheduledAt, tariff }),
+        price: computePrice({ distanceKm: 0, durationMin: 0, tariff }),
       };
     }
 
@@ -504,7 +495,7 @@ export class OrdersService {
         countryCode,
         candidates: [],
         routingSource: route.source,
-        price: computePrice({ distanceKm: 0, durationMin: 0, scheduledAt, tariff }),
+        price: computePrice({ distanceKm: 0, durationMin: 0, tariff }),
       };
     }
 
@@ -525,7 +516,6 @@ export class OrdersService {
       price: computePrice({
         distanceKm: route.distanceKm,
         durationMin: route.durationMin,
-        scheduledAt,
         tariff: await this.tariffForInspector(tariff, nearest.userId),
       }),
     };
@@ -560,7 +550,7 @@ export class OrdersService {
    * email.
    */
   async quote(userId: string | undefined, dto: QuoteOrderDto): Promise<QuoteResult> {
-    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
+    const priced = await this.priceQuote(dto.lat, dto.lng, userId);
 
     if (!priced.available) {
       // A waitlist entry is recorded for BOTH refusals: "too far" is a lead in
@@ -594,7 +584,6 @@ export class OrdersService {
         subtotalCents: p.subtotalCents,
         surgeMultiplier: p.surgeMultiplier,
         surgeFeeCents: p.surgeFeeCents,
-        peakApplied: p.peakApplied,
         minimumFareCents: p.minimumFareCents,
         minimumFareTopUpCents: p.minimumFareTopUpCents,
         minimumFareApplied: p.minimumFareApplied,
@@ -633,12 +622,12 @@ export class OrdersService {
     dto: CreateOrderDto,
   ): Promise<{ orderId: string; paymentClientSecret: string | null; mock?: boolean }> {
     // Re-run the quote server-side; the client price is never trusted. This
-    // also re-evaluates surge and the peak window against the scheduled time,
-    // so a stale quote cannot lock in yesterday's multiplier.
+    // also re-reads the surge lever, so a stale quote cannot lock in
+    // yesterday's multiplier.
     // `userId` is passed so the customer is excluded from their own candidate
     // set here too — otherwise a self-dealing account would pay for an order
     // that dispatch could never fill.
-    const priced = await this.priceQuote(dto.lat, dto.lng, new Date(dto.scheduledAt), userId);
+    const priced = await this.priceQuote(dto.lat, dto.lng, userId);
     if (!priced.available) {
       // Two codes, because the two refusals need different words from the UI:
       // "we are not there yet" invites a waitlist signup, "that is too far" is
@@ -881,6 +870,10 @@ export class OrdersService {
     const returnTripFactor = new Prisma.Decimal(p.returnTripFactor.toFixed(2));
     const freeRadiusKm = new Prisma.Decimal(p.freeRadiusKm.toFixed(2));
     const surgeMultiplier = new Prisma.Decimal(p.surgeMultiplier.toFixed(2));
+    // DEN-290: the customer no longer chooses a time, so a new order stores
+    // NULL. A website deployed before that change still sends one, and it is
+    // kept, so that website can still show the date it asked for.
+    const scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : null;
     await this.prisma.$executeRaw`
       INSERT INTO "order" (
         id, number, customer_id, status, vin, make, model, listing_url, address,
@@ -893,7 +886,7 @@ export class OrdersService {
         ${dto.vin?.toUpperCase() ?? null}, ${dto.make}, ${dto.model},
         ${dto.listingUrl ?? null}, ${dto.address},
         ST_SetSRID(ST_MakePoint(${dto.lng}, ${dto.lat}), 4326)::geography,
-        ${new Date(dto.scheduledAt)}, ${countryCode},
+        ${scheduledAt}, ${countryCode},
         ${p.baseFeeCents}, ${distanceKm}, ${returnTripFactor}, ${freeRadiusKm}, ${p.distanceFeeCents}, ${p.billedDurationMin},
         ${p.timeFeeCents}, ${surgeMultiplier}, ${p.minimumFareApplied}, ${priced.routingSource},
         ${p.totalCents}, ${p.platformFeeCents}, ${p.inspectorShareCents},
@@ -1051,7 +1044,6 @@ export class OrdersService {
       const price = computePrice({
         distanceKm: base.distanceKm,
         durationMin: base.durationMin,
-        scheduledAt: order.scheduledAt,
         tariff,
       });
       if (price.totalCents <= order.totalCents) return { candidate, price };
@@ -1321,8 +1313,276 @@ export class OrdersService {
       });
     }
     const target = status === InspectorStatusUpdate.EN_ROUTE ? OrderStatus.EN_ROUTE : OrderStatus.IN_PROGRESS;
+    // DEN-291: no trip before the inspector has reached the car owner.
+    if (
+      target === OrderStatus.EN_ROUTE &&
+      order.status === OrderStatus.ASSIGNED &&
+      !order.ownerContactConfirmedAt
+    ) {
+      throw new ConflictException({
+        error: {
+          code: 'owner_contact_required',
+          message: 'Confirm contact with the car owner before the trip',
+        },
+      });
+    }
     await this.transition(orderId, target, userId);
     return { orderId, status: target };
+  }
+
+  /**
+   * The assigned inspector hands the job back, with a reason.
+   *
+   * Deliberately NOT `cancel`'s percentage: the money was CAPTURED the moment
+   * this inspector accepted, and the customer did nothing wrong, so the refund
+   * is the whole `totalCents` under its own reason key. The inspector's share is
+   * still in escrow — `releasePayout` runs on approve — so there is nothing to
+   * claw back from them.
+   *
+   * `ASSIGNED`, `EN_ROUTE` and `IN_PROGRESS` may be declined (DEN-274). A
+   * blocker can show itself only after the start — no car at the address, no
+   * access from the seller, a car that is not safe to drive — and that is a
+   * hand-back with a reason, not an argument. The refund is the same 100% in
+   * all three statuses: the customer receives no report, so the customer pays
+   * nothing. `DISPUTED` stays available for the arguments that need it.
+   *
+   * The order does NOT go back to the search pool — see the
+   * `ASSIGNED -> UNASSIGNED` note in `order-state-machine.ts`. The customer
+   * makes a new order instead.
+   */
+  async declineByInspector(
+    orderId: string,
+    userId: string,
+    reason: string,
+  ): Promise<{
+    orderId: string;
+    status: OrderStatus;
+    refundCents: number;
+    refundMode: RefundMode;
+  }> {
+    const order = await this.requireOrder(orderId);
+    if (order.inspectorId !== userId) {
+      throw new ForbiddenException({
+        error: { code: 'forbidden', message: 'You are not the assigned inspector' },
+      });
+    }
+
+    const declinable: OrderStatus[] = [
+      OrderStatus.ASSIGNED,
+      OrderStatus.EN_ROUTE,
+      OrderStatus.IN_PROGRESS,
+    ];
+    if (!declinable.includes(order.status)) {
+      throw new ConflictException({
+        error: {
+          code: 'not_declinable',
+          message: 'The order can no longer be declined; open a dispute instead',
+        },
+      });
+    }
+
+    // The DTO trims and length-checks this, but the guard is repeated here
+    // because the reason is the whole point of the endpoint: an empty one puts
+    // "cancelled, no reason given" in front of the customer.
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      throw new BadRequestException({
+        error: { code: 'reason_required', message: 'A reason is required to decline an order' },
+      });
+    }
+
+    /*
+     * The status change is a CLAIM, taken BEFORE the money moves, exactly as
+     * `sweepAbandonedInspections` takes it.
+     *
+     * The two racers are this endpoint and that sweep, and both refund the
+     * whole amount. Nothing downstream separates them: they pass different
+     * reasons — `inspector_declined` and `inspector_no_show` — so the unique
+     * key on (orderId, reason) accepts both rows, and the Stripe idempotency
+     * key `refund_<id>_<reason>` differs too, so Stripe pays out twice. An
+     * inspector pressing "hand back" in the same seconds the hourly sweep
+     * reaches his overdue order would be refunded twice, and the `transition`
+     * that followed would return idempotently and report nothing.
+     *
+     * Claiming first makes the loser visible: `count === 0` means the sweep
+     * already took the order, and the inspector is told it is gone rather than
+     * being the second person to refund it.
+     */
+    const claimed = await this.prisma.order.updateMany({
+      where: { id: orderId, status: { in: declinable } },
+      data: { status: OrderStatus.CANCELLED },
+    });
+    if (claimed.count === 0) {
+      throw new ConflictException({
+        error: {
+          code: 'not_declinable',
+          message: 'The order can no longer be declined; open a dispute instead',
+        },
+      });
+    }
+
+    // `settleRefund` never throws: a refund failure must not be why the order
+    // stays open. It cannot leave the order uncancelled now in any case — the
+    // claim above already wrote that.
+    const outcome = await this.settleRefund(order, order.totalCents, 'inspector_declined');
+    await this.writeEvent(orderId, userId, 'inspector_declined', order.status, OrderStatus.CANCELLED, {
+      reason: trimmed,
+      refundCents: outcome.amountCents,
+    });
+    /*
+     * The claim wrote the status, so `transition` would find CANCELLED and
+     * return early — taking the `status_change` event and the customer's
+     * letter with it. Both are written here instead, the way the sweep does
+     * it. `notifyStatusChange` is reused rather than copied so the hand-back
+     * letter stays one mapping.
+     */
+    await this.writeEvent(orderId, userId, 'status_change', order.status, OrderStatus.CANCELLED, null);
+    try {
+      await this.notifyStatusChange({ ...order, status: OrderStatus.CANCELLED }, order.status, {
+        declinedByInspector: { reason: trimmed, refundCents: outcome.amountCents },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Hand-back notification failed for order ${orderId}: ${(err as Error).message}`,
+      );
+    }
+    await this.countInspectorCancellation(userId);
+
+    return {
+      orderId,
+      status: OrderStatus.CANCELLED,
+      refundCents: outcome.amountCents,
+      refundMode: refundModeOf(outcome.status),
+    };
+  }
+
+  /**
+   * DEN-291. The assigned inspector reports the call to the car owner.
+   *
+   * Only in `ASSIGNED`, and only once: both answers claim the row with a
+   * conditional `updateMany` on `ownerContactConfirmedAt: null`, so a double
+   * click, or the sweep in the same second, makes the loser a 409 instead of a
+   * second refund.
+   *
+   * - `reached: true` stamps `ownerContactConfirmedAt`, which unlocks
+   *   `ASSIGNED -> EN_ROUTE`, and tells the customer.
+   * - `reached: false` cancels the order with a FULL refund under its own
+   *   reason, `owner_unreachable`. It is deliberately NOT counted against the
+   *   inspector (owner's decision): an owner who does not answer is not the
+   *   inspector's fault. The event in the timeline keeps any abuse visible.
+   */
+  async recordOwnerContact(
+    orderId: string,
+    userId: string,
+    reached: boolean,
+  ): Promise<{
+    orderId: string;
+    status: OrderStatus;
+    ownerContactConfirmedAt: string | null;
+    refundCents: number;
+    refundMode: RefundMode;
+  }> {
+    const order = await this.requireOrder(orderId);
+    if (order.inspectorId !== userId) {
+      throw new ForbiddenException({
+        error: { code: 'forbidden', message: 'You are not the assigned inspector' },
+      });
+    }
+    const notPending = () =>
+      new ConflictException({
+        error: {
+          code: 'owner_contact_not_pending',
+          message: 'The owner contact can be reported only once, while the order is ASSIGNED',
+        },
+      });
+    const pendingWhere = {
+      id: orderId,
+      inspectorId: userId,
+      status: OrderStatus.ASSIGNED,
+      ownerContactConfirmedAt: null,
+    };
+    const payload = {
+      orderId: order.id,
+      orderNumber: order.number,
+      make: order.make,
+      model: order.model,
+    };
+
+    if (reached) {
+      const now = new Date();
+      const claimed = await this.prisma.order.updateMany({
+        where: pendingWhere,
+        data: { ownerContactConfirmedAt: now },
+      });
+      if (claimed.count === 0) throw notPending();
+      await this.writeEvent(orderId, userId, 'owner_contacted', null, null, null);
+      try {
+        await this.notifications.notify(order.customerId, 'order.owner_contacted', payload);
+      } catch (err) {
+        this.logger.warn(
+          `Owner-contact notification failed for order ${orderId}: ${(err as Error).message}`,
+        );
+      }
+      return {
+        orderId,
+        status: OrderStatus.ASSIGNED,
+        ownerContactConfirmedAt: now.toISOString(),
+        refundCents: 0,
+        refundMode: 'none',
+      };
+    }
+
+    // The same claim-before-money rule as `declineByInspector`: the status is
+    // taken first, so the hourly sweep and this call cannot both refund.
+    const claimed = await this.prisma.order.updateMany({
+      where: pendingWhere,
+      data: { status: OrderStatus.CANCELLED },
+    });
+    if (claimed.count === 0) throw notPending();
+
+    const outcome = await this.settleRefund(order, order.totalCents, 'owner_unreachable');
+    await this.writeEvent(orderId, userId, 'owner_unreachable', order.status, OrderStatus.CANCELLED, {
+      refundCents: outcome.amountCents,
+    });
+    // The claim wrote the status, so `transition` is not called and its
+    // `status_change` event is written here, as the hand-back does it.
+    await this.writeEvent(orderId, userId, 'status_change', order.status, OrderStatus.CANCELLED, null);
+    try {
+      await this.notifications.notify(order.customerId, 'order.owner_unreachable', {
+        ...payload,
+        refundCents: outcome.amountCents,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Owner-unreachable notification failed for order ${orderId}: ${(err as Error).message}`,
+      );
+    }
+
+    return {
+      orderId,
+      status: OrderStatus.CANCELLED,
+      ownerContactConfirmedAt: null,
+      refundCents: outcome.amountCents,
+      refundMode: refundModeOf(outcome.status),
+    };
+  }
+
+  /**
+   * Record the hand-back against the inspector. Never throws: the order is
+   * already cancelled and the customer already refunded, and a bookkeeping
+   * failure must not turn that into a 500 for the inspector.
+   */
+  private async countInspectorCancellation(userId: string): Promise<void> {
+    try {
+      await this.prisma.inspectorProfile.update({
+        where: { userId },
+        data: { cancelCount: { increment: 1 } },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to count the cancellation for inspector ${userId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   // ============================================================
@@ -1678,6 +1938,7 @@ export class OrdersService {
   ): Promise<{ items: Array<ReturnType<OrdersService['toListItem']>> }> {
     const statusFilter = status ? { status: status as OrderStatus } : {};
     let orders: Order[];
+    const offerDeadlines = new Map<string, Date>();
     if (role === OrderRole.inspector) {
       const now = new Date();
       // Orders assigned to me OR for which I have an active offer.
@@ -1687,9 +1948,13 @@ export class OrdersService {
           status: 'PENDING',
           expiresAt: { gt: now },
         },
-        select: { orderId: true },
+        select: { orderId: true, expiresAt: true },
       });
       const offeredIds = offered.map((o) => o.orderId);
+      // Keep the deadline of the offer made to THIS inspector, so the row can
+      // count down to it. One order holds at most one PENDING offer per
+      // inspector; the last write wins if that ever changes.
+      for (const o of offered) offerDeadlines.set(o.orderId, o.expiresAt);
       orders = await this.prisma.order.findMany({
         where: {
           ...statusFilter,
@@ -1703,7 +1968,7 @@ export class OrdersService {
         orderBy: { createdAt: 'desc' },
       });
     }
-    return { items: orders.map((o) => this.toListItem(o)) };
+    return { items: orders.map((o) => this.toListItem(o, offerDeadlines.get(o.id) ?? null)) };
   }
 
   async getDetail(orderId: string, userId: string, role: Role): Promise<OrderDetail> {
@@ -1847,7 +2112,19 @@ export class OrdersService {
       status: order.status,
       vehicle: { vin: order.vin, make: order.make, model: order.model },
       address: order.address,
-      scheduledAt: order.scheduledAt.toISOString(),
+      /*
+       * The seller's contact (a phone number or a listing link), typed by the
+       * customer at checkout. DEN-291: the inspector must reach the car owner
+       * before the trip. `isInspector` is true only AFTER acceptance, so an
+       * inspector who holds a pending offer does not see it. It is the SELLER's
+       * channel, not the customer's, so the rule above (the customer's channels
+       * go to an admin only) is unchanged.
+       */
+      listingUrl: isCustomer || isInspector || isAdmin ? order.listingUrl : null,
+      // DEN-291: null until the inspector reports "contacted"; the trip is
+      // locked while it is null and the order is ASSIGNED.
+      ownerContactConfirmedAt: order.ownerContactConfirmedAt?.toISOString() ?? null,
+      scheduledAt: order.scheduledAt?.toISOString() ?? null,
       money: {
         baseFeeCents: order.baseFeeCents,
         distanceKm: money.distanceKm,
@@ -1895,6 +2172,41 @@ export class OrdersService {
               events.find((e) => e.type === 'search_expired')?.createdAt.toISOString() ?? null,
           }
         : null,
+      /*
+       * Why the order was handed back, when it was.
+       *
+       * Derived from the `inspector_declined` event rather than a column, the
+       * same way `search.expiredAt` is: the timeline already holds the fact.
+       * The reason is the ONLY part of any event payload this endpoint
+       * discloses — payloads elsewhere carry operational detail — and it is
+       * disclosed because it was typed FOR the customer to read.
+       */
+      declined: (() => {
+        const event = events.find(
+          (e) =>
+            e.type === 'inspector_declined' ||
+            e.type === 'inspector_no_show' ||
+            e.type === 'owner_unreachable',
+        );
+        if (!event) return null;
+        const payload = (event.payload ?? {}) as { reason?: unknown; refundCents?: unknown };
+        return {
+          // The two are one panel with two headings, not two panels: the money
+          // fact and the "order it again" action are identical, and only the
+          // sentence about the inspector differs. A no-show carries no reason —
+          // nobody typed one — and the website must say so rather than print an
+          // empty quotation.
+          kind:
+            event.type === 'inspector_no_show'
+              ? ('no_show' as const)
+              : event.type === 'owner_unreachable'
+                ? ('owner_unreachable' as const)
+                : ('declined' as const),
+          reason: typeof payload.reason === 'string' ? payload.reason : '',
+          refundCents: typeof payload.refundCents === 'number' ? payload.refundCents : null,
+          at: event.createdAt.toISOString(),
+        };
+      })(),
       // Returned in EVERY status on purpose. Its entire job is to be read while
       // the order is ASSIGNED — before the inspector drives anywhere — so they
       // know what the report has to reach to close the job. Telling them at
@@ -2050,6 +2362,115 @@ export class OrdersService {
       }
     }
     return { expired };
+  }
+
+  /**
+   * An inspector accepted and then nothing happened (DEN-269).
+   *
+   * `ASSIGNED` and `EN_ROUTE` are the states with no timer of their own: the
+   * offer timeout is spent, the search window is closed, and the report gate is
+   * a long way off. Until this existed such an order lived for ever on money
+   * that was CAPTURED the moment it was accepted.
+   *
+   * `IN_PROGRESS` is never swept. The inspection has started, the inspector may
+   * be standing at the car, and taking the job away from them mid-inspection is
+   * a dispute's job, not a cron's.
+   *
+   * **A null deadline is skipped, and that is load-bearing** — the same rule
+   * `expireUnfilledSearches` follows for `searchExpiresAt`. Null means the order
+   * was assigned before this shipped: it was never given the rule, and
+   * cancelling live work under it would be the sweep's worst possible failure.
+   *
+   * The status change is a CLAIM, not a conclusion, for the same reason as the
+   * search sweep: an inspector pressing "start inspection" or handing the job
+   * back at the same moment must win, and `count === 0` says they did.
+   */
+  async sweepAbandonedInspections(): Promise<{ cancelled: number }> {
+    const now = new Date();
+    /*
+     * Only for the letter to the inspector. The deadline itself is the stamped
+     * `inspectionDeadlineAt`, so a setting changed mid-week moves no order that
+     * is already running; reading it here can therefore name a number one day
+     * out on that one order, which is a far smaller fault than a letter that
+     * says "in time" and names nothing.
+     */
+    const deadlineDays = await this.settings
+      .getNumber('inspectionStartDeadlineDays')
+      .catch(() => 7);
+    const stale = await this.prisma.order.findMany({
+      where: {
+        status: { in: [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE] },
+        inspectionDeadlineAt: { not: null, lt: now },
+      },
+    });
+
+    let cancelled = 0;
+    for (const order of stale) {
+      try {
+        const claimed = await this.prisma.order.updateMany({
+          where: {
+            id: order.id,
+            status: { in: [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE] },
+            inspectionDeadlineAt: { not: null, lt: now },
+          },
+          data: { status: OrderStatus.CANCELLED },
+        });
+        if (claimed.count === 0) continue;
+
+        // The whole amount, exactly as in a hand-back: the customer waited a
+        // week for an inspection that never started, and none of that is theirs
+        // to pay for. `settleRefund` never throws.
+        const outcome = await this.settleRefund(order, order.totalCents, 'inspector_no_show');
+        await this.writeEvent(order.id, 'system', 'inspector_no_show', null, null, {
+          deadlineAt: order.inspectionDeadlineAt?.toISOString() ?? null,
+          refundCents: outcome.amountCents,
+          refund: outcome.status,
+          detail: outcome.detail,
+        });
+        // The claim already wrote the status, so the `status_change` event that
+        // `transition` would have written is recorded here.
+        await this.writeEvent(
+          order.id,
+          'system',
+          'status_change',
+          order.status,
+          OrderStatus.CANCELLED,
+          null,
+        );
+        if (order.inspectorId) await this.countInspectorCancellation(order.inspectorId);
+        /*
+         * Not the DEN-268 letter. That one quotes the reason the inspector
+         * typed, and there is nobody to quote here — the whole event is that
+         * they said nothing. And not `order.cancelled` either, whose copy tells
+         * the reader they cancelled.
+         */
+        await this.notifications.notify(order.customerId, 'order.inspector_no_show', {
+          orderId: order.id,
+          orderNumber: order.number,
+          refundCents: outcome.amountCents,
+        });
+        /*
+         * And the inspector, who until now lost the job, the fee and a mark on
+         * his record in silence. He was shown the deadline in the accept
+         * dialog, so this letter states the outcome rather than apologising for
+         * it. Best-effort like every other notify here: the order is already
+         * cancelled and the customer already refunded.
+         */
+        if (order.inspectorId) {
+          await this.notifications.notify(order.inspectorId, 'order.inspector_no_show_self', {
+            orderId: order.id,
+            orderNumber: order.number,
+            days: deadlineDays,
+          });
+        }
+        cancelled += 1;
+      } catch (err) {
+        this.logger.error(
+          `sweepAbandonedInspections: order ${order.id} threw: ${(err as Error).message}`,
+        );
+      }
+    }
+    return { cancelled };
   }
 
   /**
@@ -3423,7 +3844,12 @@ export class OrdersService {
    * from === to (no-op). Every applied transition writes an OrderEvent.
    * Illegal edges throw 409 illegal_transition.
    */
-  async transition(orderId: string, to: OrderStatus, actor: string): Promise<Order> {
+  async transition(
+    orderId: string,
+    to: OrderStatus,
+    actor: string,
+    context?: TransitionContext,
+  ): Promise<Order> {
     const order = await this.requireOrder(orderId);
     if (order.status === to) return order; // idempotent
     if (!canTransition(order.status, to)) {
@@ -3445,6 +3871,27 @@ export class OrdersService {
     // fires for BOTH acceptOffer and adminAssign. Best-effort — a failure here must
     // never break the assignment, so it is caught and logged.
     if (to === OrderStatus.ASSIGNED) {
+      /*
+       * DEN-269: the clock the inspector has to actually start the inspection.
+       * Set here rather than in `acceptOffer` so that EVERY route into ASSIGNED
+       * carries one — an admin assignment included; an order assigned by hand
+       * with no deadline would be exactly the order that goes quiet.
+       *
+       * Best-effort like the contract below: an order without a deadline lives
+       * on as orders did before this shipped, which is the same thing a null
+       * means everywhere else.
+       */
+      try {
+        const days = await this.settings.getNumber('inspectionStartDeadlineDays');
+        await this.prisma.order.update({
+          where: { id: orderId },
+          data: { inspectionDeadlineAt: new Date(Date.now() + days * 86_400_000) },
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Failed to set the inspection deadline for order ${orderId}: ${(err as Error).message}`,
+        );
+      }
       try {
         await this.legalContract.renderContractForOrder(orderId);
       } catch (err) {
@@ -3458,7 +3905,7 @@ export class OrdersService {
     // is internally non-throwing, but the whole block is also guarded so a failure
     // can never break the transition.
     try {
-      await this.notifyStatusChange(updated, from);
+      await this.notifyStatusChange(updated, from, context);
     } catch (err) {
       this.logger.warn(
         `Status notification failed for order ${orderId} (${to}): ${(err as Error).message}`,
@@ -3473,7 +3920,11 @@ export class OrdersService {
    * Recipients are derived from the order's customer/inspector. Each entry is
    * fired through notify(), which is itself non-throwing.
    */
-  private async notifyStatusChange(order: Order, _from: OrderStatus): Promise<void> {
+  private async notifyStatusChange(
+    order: Order,
+    _from: OrderStatus,
+    context?: TransitionContext,
+  ): Promise<void> {
     const payload = {
       orderId: order.id,
       orderNumber: order.number,
@@ -3510,6 +3961,18 @@ export class OrdersService {
         await emit(inspector, 'order.completed');
         break;
       case OrderStatus.CANCELLED:
+        // An inspector hand-back is its own event. `order.cancelled` tells the
+        // reader they cancelled, which is the opposite of what happened, and it
+        // carries neither the reason nor the refund the customer is owed. The
+        // inspector who declined is not told anything: they just did it.
+        if (context?.declinedByInspector) {
+          await this.notifications.notify(customer, 'order.declined_by_inspector', {
+            ...payload,
+            reason: context.declinedByInspector.reason,
+            refundCents: context.declinedByInspector.refundCents,
+          });
+          break;
+        }
         // Notify the "other party" — whoever did not initiate. We don't have the
         // actor's role here cheaply, so notify both known parties; each only gets
         // an in-app row plus their enabled channels.
@@ -3588,7 +4051,7 @@ export class OrdersService {
     });
   }
 
-  private toListItem(o: Order) {
+  private toListItem(o: Order, offerExpiresAt?: Date | null) {
     return {
       id: o.id,
       number: o.number,
@@ -3596,7 +4059,7 @@ export class OrdersService {
       make: o.make,
       model: o.model,
       address: o.address,
-      scheduledAt: o.scheduledAt.toISOString(),
+      scheduledAt: o.scheduledAt?.toISOString() ?? null,
       totalCents: o.totalCents,
       // The split rides on the row because the inspector's list is the FIRST
       // place a job is priced for them, and `totalCents` there is the
@@ -3606,6 +4069,19 @@ export class OrdersService {
       inspectorShareCents: o.inspectorShareCents,
       currency: o.currency,
       createdAt: o.createdAt.toISOString(),
+      /*
+       * The two clocks that can take the job away, so the row can show how much
+       * time is left. Neither is a new rule: `offerExpiresAt` is the PENDING
+       * offer that `expireStaleOffers` passes on each minute, and
+       * `inspectionDeadlineAt` is the stamp `sweepAbandonedInspections` reads
+       * before it cancels the order and refunds the customer in full.
+       *
+       * `offerExpiresAt` is per-VIEWER, not per-order: it is the deadline of the
+       * offer made to the inspector who asked, and it is therefore null for the
+       * customer's list and for an order this inspector already holds.
+       */
+      offerExpiresAt: offerExpiresAt ? offerExpiresAt.toISOString() : null,
+      inspectionDeadlineAt: o.inspectionDeadlineAt ? o.inspectionDeadlineAt.toISOString() : null,
     };
   }
 }
@@ -3637,7 +4113,19 @@ export interface OrderDetail {
   status: OrderStatus;
   vehicle: { vin: string | null; make: string; model: string };
   address: string;
-  scheduledAt: string;
+  /**
+   * The seller's phone number or listing link. Null for an inspector with only
+   * a pending offer, and for orders created before DEN-291 made it required.
+   */
+  listingUrl: string | null;
+  /** DEN-291: when the inspector confirmed contact with the car owner. */
+  ownerContactConfirmedAt: string | null;
+  /**
+   * Null for every order created after DEN-290: the customer no longer
+   * chooses a time. Kept on the wire so a website that still reads it sees
+   * null rather than a missing key.
+   */
+  scheduledAt: string | null;
   money: {
     baseFeeCents: number;
     /**
@@ -3708,6 +4196,21 @@ export interface OrderDetail {
   } | null;
   /** The inspector search window. Null for pre-manual-capture orders. */
   search?: { deadlineAt: string; expiredAt: string | null } | null;
+  /**
+   * Set when the assigned inspector handed the order back (DEN-268). Null on
+   * every other order, including one the CUSTOMER cancelled — the two look the
+   * same in `status` and read very differently to the person who paid.
+   */
+  declined?: {
+    /**
+     * `declined` — the inspector handed it back. `no_show` — they went quiet.
+     * `owner_unreachable` — the inspector could not reach the car owner (DEN-291).
+     */
+    kind: 'declined' | 'no_show' | 'owner_unreachable';
+    reason: string;
+    refundCents: number | null;
+    at: string;
+  } | null;
   /** The completeness gate. Present in EVERY status — see `getDetail`. */
   reportRequirement?: {
     minQualityScore: number;

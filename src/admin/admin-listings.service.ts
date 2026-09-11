@@ -48,7 +48,6 @@ export class AdminListingsService {
         model: l.model,
         year: l.year,
         publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
-        expiresAt: l.expiresAt ? l.expiresAt.toISOString() : null,
         createdAt: l.createdAt.toISOString(),
       })),
       total,

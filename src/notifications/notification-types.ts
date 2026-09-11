@@ -16,6 +16,11 @@ export type NotificationType =
   | 'order.approved'
   | 'order.completed'
   | 'order.cancelled'
+  | 'order.declined_by_inspector'
+  | 'order.inspector_no_show'
+  | 'order.inspector_no_show_self'
+  | 'order.owner_contacted'
+  | 'order.owner_unreachable'
   | 'order.search_expired'
   | 'order.disputed'
   | 'payout.sent'
@@ -27,8 +32,7 @@ export type NotificationType =
   | 'kyc.rejected'
   | 'ppv.purchased'
   | 'vin_history.failed'
-  | 'listing.published'
-  | 'listing.expiring';
+  | 'listing.published';
 
 /** The delivery channels a notification can travel on. */
 export type NotificationChannel = 'inapp' | 'email' | 'sms' | 'push';
@@ -58,6 +62,42 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   'order.completed': ['inapp'],
   'order.cancelled': ['inapp', 'email'],
   /**
+   * The inspector gave the job back after accepting it. Distinct from
+   * `order.cancelled`, whose copy says the reader cancelled: here the customer
+   * did nothing, their money is already captured and is being refunded in full,
+   * and they must be told the reason the inspector gave. Same channels as
+   * `order.cancelled` — email as well as in-app, because the reader has to act
+   * (order again) rather than only note a status.
+   */
+  'order.declined_by_inspector': ['inapp', 'email'],
+  /**
+   * The inspector accepted and then never started, and the sweep gave the money
+   * back (DEN-269). Separate from `order.declined_by_inspector` because that
+   * letter quotes a reason, and the defining fact here is that there is none.
+   */
+  'order.inspector_no_show': ['inapp', 'email'],
+  /**
+   * The same sweep, told to the inspector who did not start. It is not an
+   * information copy of the customer's letter: he loses the fee, the customer
+   * is refunded from money he was to be paid, and a cancellation is counted
+   * against him. Email as well as in-app for that reason - a mark on a record
+   * that the person carrying it never read is the kind of fact that surfaces
+   * first in a dispute.
+   */
+  'order.inspector_no_show_self': ['inapp', 'email'],
+  /**
+   * DEN-291. The inspector reached the car owner and can start the trip. In-app
+   * only, like `order.in_progress`: good news that asks for no action.
+   */
+  'order.owner_contacted': ['inapp'],
+  /**
+   * DEN-291. The inspector could not reach the car owner, so the order is
+   * cancelled with a full refund. Email as well as in-app, like
+   * `order.inspector_no_show`: the customer must act (check the contact and
+   * order again).
+   */
+  'order.owner_unreachable': ['inapp', 'email'],
+  /**
    * Nobody accepted inside the search window: the hold is released, nothing was
    * charged. Distinct from `order.cancelled` because the customer did nothing
    * wrong and needs to be told about their money, not about a status change —
@@ -84,7 +124,6 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   /** Operator-facing: a paid VIN lookup could not be delivered and was refunded. */
   'vin_history.failed': ['inapp', 'email'],
   'listing.published': ['inapp'],
-  'listing.expiring': ['inapp', 'email'],
 };
 
 /**

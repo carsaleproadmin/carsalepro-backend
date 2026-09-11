@@ -638,17 +638,16 @@ export class PaymentsService {
 
   /**
    * Idempotently mark a Gold payment succeeded and activate its listing
-   * (ACTIVE, package 'gold', publishedAt now, expiresAt now + duration). Safe to
-   * call from both the mock path and the Stripe webhook.
+   * (ACTIVE, package 'gold', publishedAt now). A listing has no end date, so
+   * nothing is scheduled here. Safe to call from both the mock path and the
+   * Stripe webhook.
    */
   async activateGoldListing(paymentId: string, listingId: string): Promise<void> {
     await this.prisma.payment
       .update({ where: { id: paymentId }, data: { status: 'succeeded' } })
       .catch(() => undefined);
 
-    const durationDays = await this.settings.getNumber('listingDurationDays');
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + durationDays * 86_400_000);
 
     const listing = await this.prisma.listing
       .update({
@@ -657,7 +656,6 @@ export class PaymentsService {
           status: 'ACTIVE',
           package: 'gold',
           publishedAt: now,
-          expiresAt,
         },
       })
       .catch(() => null);

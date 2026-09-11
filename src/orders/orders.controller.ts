@@ -7,9 +7,11 @@ import { LegalContractService } from '../legal/legal-contract.service';
 import {
   AttachOrderReportDto,
   CreateOrderDto,
+  DeclineOrderDto,
   DisputeOrderDto,
   ListOrdersQueryDto,
   OrderRole,
+  OwnerContactDto,
   QuoteOrderDto,
   UpdateOrderStatusDto,
 } from './dto/order.dto';
@@ -127,6 +129,39 @@ export class OrdersController {
     @Body() dto: DisputeOrderDto,
   ) {
     return this.orders.dispute(id, userId, dto.reason);
+  }
+
+  @Post(':id/decline')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Assigned inspector hands the order back ' +
+      '(ASSIGNED|EN_ROUTE|IN_PROGRESS → CANCELLED). ' +
+      'A non-empty reason is required, and the customer is refunded 100% — the ' +
+      'money was captured on acceptance and the customer is not at fault.',
+  })
+  async decline(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: DeclineOrderDto,
+  ) {
+    return this.orders.declineByInspector(id, userId, dto.reason);
+  }
+
+  @Post(':id/owner-contact')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Assigned inspector reports the call to the car owner (DEN-291)',
+    description:
+      '`reached: true` unlocks the trip. `reached: false` cancels the order and ' +
+      'refunds the customer in full; it is not counted against the inspector.',
+  })
+  async ownerContact(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: OwnerContactDto,
+  ) {
+    return this.orders.recordOwnerContact(id, userId, dto.reached);
   }
 
   @Post(':id/status')
