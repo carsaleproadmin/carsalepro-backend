@@ -2,7 +2,6 @@ import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Prisma, Report } from '@prisma/client';
 import { PaymentsService } from '../payments/payments.service';
 import { R2Service } from '../r2/r2.service';
-import { SettingsService } from '../settings/settings.service';
 import {
   FullReportDto,
   FullReportPhotoDto,
@@ -23,7 +22,6 @@ export class ReportAccessService {
   constructor(
     private readonly payments: PaymentsService,
     private readonly r2: R2Service,
-    private readonly settings: SettingsService,
   ) {}
 
   async getFull(userId: string, reportId: string): Promise<FullReportDto> {
@@ -77,8 +75,11 @@ export class ReportAccessService {
         HttpStatus.CONFLICT,
       );
     }
-    const { url } = await this.r2.createPresignedDownloadUrl(report.s3Key);
-    return { signedUrl: url, expiresAt: await this.expiresAt() };
+    // The expiry comes from the same call that signed the URL. It used to come
+    // from a platform setting that R2 never read, so it disagreed with the real
+    // lifetime of the link (DEN-293).
+    const { url, expiresAt } = await this.r2.createPresignedDownloadUrl(report.s3Key);
+    return { signedUrl: url, expiresAt: expiresAt.toISOString() };
   }
 
   /** Sign the report PDF; null when R2 unconfigured or the PDF wasn't uploaded. */
@@ -88,8 +89,8 @@ export class ReportAccessService {
       return { downloadUrl: null, expiresAt: null };
     }
     try {
-      const { url } = await this.r2.createPresignedDownloadUrl(report.s3Key);
-      return { downloadUrl: url, expiresAt: await this.expiresAt() };
+      const { url, expiresAt } = await this.r2.createPresignedDownloadUrl(report.s3Key);
+      return { downloadUrl: url, expiresAt: expiresAt.toISOString() };
     } catch (err) {
       this.logger.warn(`Failed to sign PDF for ${report.id}: ${(err as Error).message}`);
       return { downloadUrl: null, expiresAt: null };
@@ -109,11 +110,5 @@ export class ReportAccessService {
       }
     }
     return out;
-  }
-
-  /** Expiry timestamp derived from the configurable signedUrlTtlMinutes setting. */
-  private async expiresAt(): Promise<string> {
-    const minutes = await this.settings.getNumber('signedUrlTtlMinutes');
-    return new Date(Date.now() + minutes * 60_000).toISOString();
   }
 }
