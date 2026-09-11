@@ -68,9 +68,6 @@ export class MyListingItemDto {
   @ApiProperty({ example: '2026-06-13T10:00:00.000Z', nullable: true })
   publishedAt!: string | null;
 
-  @ApiProperty({ example: '2026-07-13T10:00:00.000Z', nullable: true })
-  expiresAt!: string | null;
-
   @ApiProperty({ example: 0 })
   viewsCount!: number;
 }
@@ -89,9 +86,6 @@ export class ListingPackageDto {
 
   @ApiProperty({ example: 'EUR' })
   currency!: string;
-
-  @ApiProperty({ example: 30 })
-  durationDays!: number;
 }
 
 /**
@@ -112,9 +106,6 @@ export class PublishResultDto {
 
   @ApiPropertyOptional({ example: 'EUR' })
   currency?: string;
-
-  @ApiPropertyOptional({ example: '2026-07-13T10:00:00.000Z' })
-  expiresAt?: string;
 
   @ApiPropertyOptional({
     example: 'https://checkout.stripe.com/c/pay/cs_test_...',

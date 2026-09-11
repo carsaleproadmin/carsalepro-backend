@@ -43,6 +43,7 @@ export class NotificationsController {
     return this.notifications.list(userId, {
       page: query.page,
       pageSize: query.pageSize,
+      locale: query.locale,
     });
   }
 

@@ -29,6 +29,7 @@ const DOCUMENTED_EDGES: Array<[OrderStatus, OrderStatus]> = [
   [OrderStatus.EN_ROUTE, OrderStatus.CANCELLED],
   [OrderStatus.IN_PROGRESS, OrderStatus.SUBMITTED],
   [OrderStatus.IN_PROGRESS, OrderStatus.DISPUTED],
+  [OrderStatus.IN_PROGRESS, OrderStatus.CANCELLED],
   [OrderStatus.SUBMITTED, OrderStatus.APPROVED],
   [OrderStatus.SUBMITTED, OrderStatus.DISPUTED],
   [OrderStatus.APPROVED, OrderStatus.COMPLETED],
@@ -131,17 +132,18 @@ describe('order state machine', () => {
     }
   });
 
-  it('cannot cancel once work has started', () => {
+  it('cannot cancel after the report is in', () => {
     // Cancellation carries an automatic refund, so it must not remain available
-    // after the inspector is on site.
+    // once there is work to argue about. `IN_PROGRESS` is the one exception
+    // (DEN-274): the inspector can hand the job back with a reason.
     for (const from of [
-      OrderStatus.IN_PROGRESS,
       OrderStatus.SUBMITTED,
       OrderStatus.APPROVED,
       OrderStatus.DISPUTED,
     ]) {
       expect(canTransition(from, OrderStatus.CANCELLED)).toBe(false);
     }
+    expect(canTransition(OrderStatus.IN_PROGRESS, OrderStatus.CANCELLED)).toBe(true);
   });
 
   it('allows report attachment only while inspector work is active', () => {

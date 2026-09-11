@@ -10,9 +10,6 @@ const GLOBAL: PricingTariff = {
   minimumFareCents: 4900,
   platformFeePercent: 20,
   surgeMultiplier: 1,
-  peakMultiplier: 1,
-  peakStartHour: 16,
-  peakEndHour: 19,
   returnTripFactor: 1,
   freeRadiusKm: 10,
 };
@@ -107,7 +104,7 @@ describe('resolveTariff', () => {
     const r = resolve({ perKmCents: 30 });
 
     expect(r.tariff.platformFeePercent).toBe(GLOBAL.platformFeePercent);
-    expect(r.tariff.peakStartHour).toBe(GLOBAL.peakStartHour);
+    expect(r.tariff.surgeMultiplier).toBe(GLOBAL.surgeMultiplier);
   });
 
   it('carries the free radius and the cap out as limits', () => {

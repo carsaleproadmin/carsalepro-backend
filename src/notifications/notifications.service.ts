@@ -238,7 +238,7 @@ export class NotificationsService {
 
   async list(
     userId: string,
-    opts: { page?: number; pageSize?: number } = {},
+    opts: { page?: number; pageSize?: number; locale?: string } = {},
   ): Promise<NotificationListDto> {
     const page = Math.max(1, opts.page ?? 1);
     const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 20));
@@ -255,7 +255,11 @@ export class NotificationsService {
       this.prisma.notification.count({ where: { ...where, readAt: null } }),
     ]);
 
-    return { items: rows.map((r) => this.toItem(r)), total, unread };
+    return {
+      items: rows.map((r) => this.toItem(r, opts.locale)),
+      total,
+      unread,
+    };
   }
 
   async unreadCount(userId: string): Promise<number> {
@@ -362,17 +366,52 @@ export class NotificationsService {
     } as Prisma.InputJsonValue;
   }
 
-  private toItem(row: Notification): NotificationItemDto {
+  /**
+   * Render the row again in the reader's current locale (DEN-287), so that a
+   * change of the site language also changes old notifications. Returns null
+   * when the stored text must be used: no locale in the request, no raw
+   * payload fields (a row from before the payload was kept), an unknown type,
+   * or a template that throws.
+   */
+  private rerender(
+    row: Notification,
+    payload: Record<string, unknown>,
+    locale: string | undefined,
+  ): RenderedTemplate | null {
+    if (!locale) return null;
+    const raw = Object.fromEntries(
+      Object.entries(payload).filter(([key]) => !key.startsWith('_')),
+    );
+    if (Object.keys(raw).length === 0) return null;
+    try {
+      const message = renderTemplate(row.type as NotificationType, locale, raw);
+      // `renderTemplate` returns the bare type when it has no template for it.
+      return message.subject === row.type ? null : message;
+    } catch {
+      return null;
+    }
+  }
+
+  private toItem(row: Notification, locale?: string): NotificationItemDto {
     const payload =
       row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
         ? (row.payload as Record<string, unknown>)
         : {};
+    const fresh = this.rerender(row, payload, locale);
     return {
       id: row.id,
       type: row.type,
       channel: row.channel,
-      title: typeof payload._title === 'string' ? payload._title : row.type,
-      body: typeof payload._body === 'string' ? payload._body : '',
+      title: fresh
+        ? fresh.subject
+        : typeof payload._title === 'string'
+          ? payload._title
+          : row.type,
+      body: fresh
+        ? fresh.body
+        : typeof payload._body === 'string'
+          ? payload._body
+          : '',
       status: row.status,
       readAt: row.readAt ? row.readAt.toISOString() : null,
       createdAt: row.createdAt.toISOString(),

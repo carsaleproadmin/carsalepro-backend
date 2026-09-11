@@ -247,6 +247,7 @@ async function main(): Promise<void> {
   const created = await orders.createOrder(customer.id, {
     make: 'BMW',
     model: '320d',
+    listingUrl: '+49 30 1234567',
     address: `${place.label}, Deutschland`,
     lat: place.lat,
     lng: place.lng,

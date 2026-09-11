@@ -408,7 +408,9 @@ model Order {
   listingUrl  String?                               @map("listing_url")
   address     String
   location    Unsupported("geography(Point, 4326)")
-  scheduledAt DateTime                              @map("scheduled_at")
+  /// Null for every order created after DEN-290: the customer no longer
+  /// chooses a time. Older orders keep the time they were created with.
+  scheduledAt DateTime?                             @map("scheduled_at")
   countryCode String                                @default("DE") @map("country_code")
 
   // money (integer cents)
@@ -438,7 +440,8 @@ model Order {
   /// return-trip basis as `distanceKm`.
   durationMin         Int?    @map("duration_min")
   timeFeeCents        Int     @default(0) @map("time_fee_cents")
-  /// surge × peak, frozen at quote time. 1 when neither applied.
+  /// The surge multiplier, frozen at quote time. 1 when it did not apply.
+  /// Rows written before DEN-290 can also include a peak multiplier.
   surgeMultiplier     Decimal @default(1) @map("surge_multiplier") @db.Decimal(4, 2)
   /// True when the minimum fare floor raised the total.
   minimumFareApplied  Boolean @default(false) @map("minimum_fare_applied")
@@ -449,9 +452,9 @@ model Order {
   inspectorShareCents Int     @map("inspector_share_cents")
   currency            String  @default("EUR")
 
-  contractId      String?   @unique @map("contract_id")
-  autoApproveAt   DateTime? @map("auto_approve_at")
-  submittedAt     DateTime? @map("submitted_at")
+  contractId           String?   @unique @map("contract_id")
+  autoApproveAt        DateTime? @map("auto_approve_at")
+  submittedAt          DateTime? @map("submitted_at")
   /// Deadline for finding an inspector, set when the payment is AUTHORIZED.
   /// Past it with nobody assigned, the cron releases the hold and cancels.
   ///
@@ -459,8 +462,22 @@ model Order {
   /// before manual capture shipped already had its money CHARGED, so a release
   /// attempt would target a hold that does not exist. Null means "pre-manual-
   /// capture order — leave it alone".
-  searchExpiresAt DateTime? @map("search_expires_at")
-  createdAt       DateTime  @default(now())
+  searchExpiresAt      DateTime? @map("search_expires_at")
+  /// Deadline for the inspection to START, set on entry to ASSIGNED (DEN-269).
+  /// Past it in ASSIGNED or EN_ROUTE, the hourly sweep cancels the order and
+  /// refunds the customer in full: the money was captured on acceptance, and an
+  /// inspector who goes quiet must not be able to sit on it for ever.
+  ///
+  /// **Null is load-bearing and must never be backfilled**, exactly as for
+  /// `searchExpiresAt`: an order assigned before this shipped has no deadline,
+  /// and sweeping it would cancel live work on a rule it was never given.
+  inspectionDeadlineAt DateTime? @map("inspection_deadline_at")
+  /// DEN-291: when the assigned inspector confirmed contact with the car owner.
+  /// While it is null, `ASSIGNED -> EN_ROUTE` refuses with 409
+  /// `owner_contact_required`. "Could not contact" does not write it: that
+  /// answer cancels the order instead.
+  ownerContactConfirmedAt DateTime? @map("owner_contact_confirmed_at")
+  createdAt            DateTime  @default(now())
 
   customer  User              @relation("CustomerOrders", fields: [customerId], references: [id])
   inspector InspectorProfile? @relation("InspectorOrders", fields: [inspectorId], references: [userId])
@@ -792,6 +809,8 @@ model StripeWebhookEvent {
 enum ListingStatus {
   DRAFT
   ACTIVE
+  /// UNUSED since listings stopped expiring. Kept in the type because removing
+  /// an enum value rewrites it, and no row carries this value any more.
   EXPIRED
   SOLD
   HIDDEN
@@ -881,7 +900,6 @@ model Listing {
   /// signed URLs.
   publicPhotosMirroredAt DateTime?     @map("public_photos_mirrored_at")
   publishedAt            DateTime?     @map("published_at")
-  expiresAt              DateTime?     @map("expires_at")
   createdAt              DateTime      @default(now())
 
   seller User           @relation(fields: [sellerId], references: [id])

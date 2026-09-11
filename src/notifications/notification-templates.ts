@@ -278,6 +278,185 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
     }),
   },
   /**
+   * The inspector handed the job back, so the copy carries three things the
+   * plain cancellation does not: that the customer is not at fault, the reason
+   * the inspector typed, and that the FULL amount is coming back. The money was
+   * captured the moment the inspector accepted, so this is a real refund and
+   * takes a few working days — saying so here is what stops the support ticket.
+   */
+  'order.declined_by_inspector': {
+    de: (p) => ({
+      subject: `Prüfer hat die Bestellung zurückgegeben`,
+      body:
+        `Der Prüfer kann Bestellung ${str(p, 'orderNumber')} nicht durchführen. ` +
+        `Grund: „${str(p, 'reason')}“. ` +
+        `Der volle Betrag von ${formatEur(p.refundCents)} wird erstattet; ` +
+        `die Gutschrift braucht einige Werktage. ` +
+        `Sie können die Bestellung jederzeit erneut aufgeben.`,
+      short: `Prüfer hat ${str(p, 'orderNumber')} zurückgegeben — volle Erstattung.`,
+    }),
+    en: (p) => ({
+      subject: `The inspector gave the order back`,
+      body:
+        `The inspector cannot do order ${str(p, 'orderNumber')}. ` +
+        `Reason: "${str(p, 'reason')}". ` +
+        `The full amount of ${formatEur(p.refundCents)} is refunded; ` +
+        `the money needs a few working days to reach you. ` +
+        `You can make the order again at any time.`,
+      short: `The inspector gave ${str(p, 'orderNumber')} back — full refund.`,
+    }),
+    ru: (p) => ({
+      subject: `Инспектор отказался от заказа`,
+      body:
+        `Инспектор не может выполнить заказ ${str(p, 'orderNumber')}. ` +
+        `Причина: «${str(p, 'reason')}». ` +
+        `Вся сумма ${formatEur(p.refundCents)} возвращается; ` +
+        `деньги придут в течение нескольких рабочих дней. ` +
+        `Вы можете оформить заказ повторно в любой момент.`,
+      short: `Инспектор отказался от ${str(p, 'orderNumber')} — полный возврат.`,
+    }),
+  },
+  /**
+   * Nobody typed a reason here, so the letter does not pretend one exists. It
+   * states the fact (the inspector did not start), the money (all of it, on its
+   * way back) and the way forward (order it again) - the three things a reader
+   * who has waited a week for nothing needs in that order.
+   */
+  'order.inspector_no_show': {
+    de: (p) => ({
+      subject: `Prüfung wurde nicht begonnen`,
+      body:
+        `Der Prüfer hat die Prüfung für Bestellung ${str(p, 'orderNumber')} nicht begonnen. ` +
+        `Wir haben die Bestellung storniert. ` +
+        `Der volle Betrag von ${formatEur(p.refundCents)} wird erstattet; ` +
+        `die Gutschrift braucht einige Werktage. ` +
+        `Sie können die Bestellung jederzeit erneut aufgeben.`,
+      short: `${str(p, 'orderNumber')}: Prüfung nicht begonnen — volle Erstattung.`,
+    }),
+    en: (p) => ({
+      subject: `The inspection did not start`,
+      body:
+        `The inspector did not start the inspection for order ${str(p, 'orderNumber')}. ` +
+        `We have cancelled the order. ` +
+        `The full amount of ${formatEur(p.refundCents)} is refunded; ` +
+        `the money needs a few working days to reach you. ` +
+        `You can make the order again at any time.`,
+      short: `${str(p, 'orderNumber')}: the inspection did not start — full refund.`,
+    }),
+    ru: (p) => ({
+      subject: `Осмотр так и не начался`,
+      body:
+        `Инспектор не приступил к осмотру по заказу ${str(p, 'orderNumber')}. ` +
+        `Мы отменили заказ. ` +
+        `Вся сумма ${formatEur(p.refundCents)} возвращается; ` +
+        `деньги придут в течение нескольких рабочих дней. ` +
+        `Вы можете оформить заказ повторно в любой момент.`,
+      short: `${str(p, 'orderNumber')}: осмотр не начался — полный возврат.`,
+    }),
+  },
+  /**
+   * DEN-291. The inspector reached the car owner, so the trip can start. A
+   * short in-app note: the customer has nothing to do.
+   */
+  'order.owner_contacted': {
+    de: (p) => ({
+      subject: `Prüfer hat den Fahrzeughalter erreicht`,
+      body:
+        `Der Prüfer hat den Fahrzeughalter für Bestellung ${str(p, 'orderNumber')} erreicht. ` +
+        `Als Nächstes fährt der Prüfer zum Fahrzeug.`,
+      short: `${str(p, 'orderNumber')}: Fahrzeughalter erreicht.`,
+    }),
+    en: (p) => ({
+      subject: `The inspector reached the car owner`,
+      body:
+        `The inspector reached the car owner for order ${str(p, 'orderNumber')}. ` +
+        `Next, the inspector travels to the car.`,
+      short: `${str(p, 'orderNumber')}: the car owner was reached.`,
+    }),
+    ru: (p) => ({
+      subject: `Инспектор связался с владельцем автомобиля`,
+      body:
+        `Инспектор связался с владельцем автомобиля по заказу ${str(p, 'orderNumber')}. ` +
+        `Дальше инспектор выезжает к автомобилю.`,
+      short: `${str(p, 'orderNumber')}: связь с владельцем есть.`,
+    }),
+  },
+  /**
+   * DEN-291. The inspector could not reach the car owner, so the order is
+   * cancelled. The letter gives the reason, the full refund and the way
+   * forward, like `order.inspector_no_show`.
+   */
+  'order.owner_unreachable': {
+    de: (p) => ({
+      subject: `Fahrzeughalter nicht erreichbar - Bestellung storniert`,
+      body:
+        `Der Prüfer konnte den Fahrzeughalter für Bestellung ${str(p, 'orderNumber')} nicht erreichen. ` +
+        `Wir haben die Bestellung storniert. ` +
+        `Der volle Betrag von ${formatEur(p.refundCents)} wird erstattet; ` +
+        `die Gutschrift braucht einige Werktage. ` +
+        `Prüfen Sie die Kontaktdaten und geben Sie die Bestellung erneut auf.`,
+      short: `${str(p, 'orderNumber')}: Fahrzeughalter nicht erreichbar — volle Erstattung.`,
+    }),
+    en: (p) => ({
+      subject: `The car owner could not be reached - order cancelled`,
+      body:
+        `The inspector could not reach the car owner for order ${str(p, 'orderNumber')}. ` +
+        `We have cancelled the order. ` +
+        `The full amount of ${formatEur(p.refundCents)} is refunded; ` +
+        `the money needs a few working days to reach you. ` +
+        `Check the contact details and make the order again.`,
+      short: `${str(p, 'orderNumber')}: the car owner could not be reached — full refund.`,
+    }),
+    ru: (p) => ({
+      subject: `Не удалось связаться с владельцем - заказ отменён`,
+      body:
+        `Инспектору не удалось связаться с владельцем автомобиля по заказу ${str(p, 'orderNumber')}. ` +
+        `Мы отменили заказ. ` +
+        `Вся сумма ${formatEur(p.refundCents)} возвращается; ` +
+        `деньги придут в течение нескольких рабочих дней. ` +
+        `Проверьте контактные данные и оформите заказ повторно.`,
+      short: `${str(p, 'orderNumber')}: владелец недоступен — полный возврат.`,
+    }),
+  },
+  /**
+   * The inspector's half of the same event. It says what he lost and what was
+   * recorded, and it does NOT say sorry: the deadline was shown to him in the
+   * accept dialog before he took the job. `days` comes from the setting rather
+   * than the word "week", because the setting is a lever.
+   */
+  'order.inspector_no_show_self': {
+    de: (p) => ({
+      subject: `Auftrag storniert - Prüfung nicht begonnen`,
+      body:
+        `Sie haben die Prüfung für Auftrag ${str(p, 'orderNumber')} nicht innerhalb von ` +
+        `${str(p, 'days')} Tagen begonnen. ` +
+        `Wir haben den Auftrag storniert und dem Kunden den vollen Betrag erstattet. ` +
+        `Die Stornierung wurde in Ihrem Profil vermerkt. ` +
+        `Sie erhalten für diesen Auftrag keine Vergütung.`,
+      short: `${str(p, 'orderNumber')} storniert - Prüfung nicht begonnen.`,
+    }),
+    en: (p) => ({
+      subject: `Order cancelled - the inspection did not start`,
+      body:
+        `You did not start the inspection for order ${str(p, 'orderNumber')} in ` +
+        `${str(p, 'days')} days. ` +
+        `We cancelled the order and refunded the customer in full. ` +
+        `The cancellation is recorded on your profile. ` +
+        `You get no fee for this order.`,
+      short: `${str(p, 'orderNumber')} cancelled - the inspection did not start.`,
+    }),
+    ru: (p) => ({
+      subject: `Заказ отменён - осмотр не начался`,
+      body:
+        `Вы не приступили к осмотру по заказу ${str(p, 'orderNumber')} в течение ` +
+        `${str(p, 'days')} дней. ` +
+        `Мы отменили заказ и вернули клиенту всю сумму. ` +
+        `Отмена учтена в вашем профиле. ` +
+        `Оплата за этот заказ не начисляется.`,
+      short: `${str(p, 'orderNumber')} отменён - осмотр не начался.`,
+    }),
+  },
+  /**
    * The copy has one job beyond informing: stop the support ticket. An
    * authorization that has been released still sits in a card statement for a
    * few working days, and a customer who reads "cancelled" and then sees the
@@ -505,23 +684,6 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       subject: `Объявление опубликовано`,
       body: `Ваше объявление о ${str(p, 'make')} ${str(p, 'model')} опубликовано в шоуруме.`,
       short: `Объявление о ${str(p, 'make')} ${str(p, 'model')} опубликовано.`,
-    }),
-  },
-  'listing.expiring': {
-    de: (p) => ({
-      subject: `Anzeige läuft bald ab`,
-      body: `Ihre Anzeige für ${str(p, 'make')} ${str(p, 'model')} läuft bald ab. Verlängern Sie sie, um sichtbar zu bleiben.`,
-      short: `Anzeige für ${str(p, 'make')} ${str(p, 'model')} läuft bald ab.`,
-    }),
-    en: (p) => ({
-      subject: `Listing expiring soon`,
-      body: `Your listing for ${str(p, 'make')} ${str(p, 'model')} is expiring soon. Renew it to stay visible.`,
-      short: `Listing for ${str(p, 'make')} ${str(p, 'model')} expiring soon.`,
-    }),
-    ru: (p) => ({
-      subject: `Объявление скоро истечёт`,
-      body: `Срок вашего объявления о ${str(p, 'make')} ${str(p, 'model')} скоро истечёт. Продлите его, чтобы остаться видимым.`,
-      short: `Объявление о ${str(p, 'make')} ${str(p, 'model')} скоро истечёт.`,
     }),
   },
 };

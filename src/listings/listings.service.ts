@@ -313,10 +313,9 @@ export class ListingsService {
     await this.assertPublishable(listing);
 
     if (pkg === 'standard') {
-      const { expiresAt } = await this.activateStandard(id);
+      await this.activateStandard(id);
       return {
         status: 'ACTIVE',
-        expiresAt: expiresAt.toISOString(),
         amountCents: await this.settings.getCents('standardListingPriceEur'),
         currency: 'EUR',
       };
@@ -392,19 +391,21 @@ export class ListingsService {
 
   /**
    * The package price list. Exists so the seller-facing picker renders live
-   * tariffs — before this, the prices and the 30-day duration were hardcoded
-   * strings inside the website's translation files, one copy per locale.
+   * tariffs — before this, the prices were hardcoded strings inside the
+   * website's translation files, one copy per locale.
+   *
+   * A published listing has NO end date (DEN-XXX): it stays in the showroom
+   * until the seller hides it or marks it sold, so no duration is quoted here.
    */
   async packages(): Promise<ListingPackagesDto> {
-    const [standardCents, goldCents, durationDays] = await Promise.all([
+    const [standardCents, goldCents] = await Promise.all([
       this.settings.getCents('standardListingPriceEur'),
       this.settings.getCents('goldPackagePriceEur'),
-      this.settings.getNumber('listingDurationDays'),
     ]);
     return {
       items: [
-        { package: 'standard', amountCents: standardCents, currency: 'EUR', durationDays },
-        { package: 'gold', amountCents: goldCents, currency: 'EUR', durationDays },
+        { package: 'standard', amountCents: standardCents, currency: 'EUR' },
+        { package: 'gold', amountCents: goldCents, currency: 'EUR' },
       ],
     };
   }
@@ -421,26 +422,98 @@ export class ListingsService {
     return this.prisma.listing.update({ where: { id }, data: { status: 'SOLD' } });
   }
 
-  /** Renew an EXPIRED/ACTIVE listing: extend expiry and set ACTIVE. */
-  async renew(userId: string, id: string): Promise<Listing> {
+  /**
+   * Delete a listing the seller no longer wants, and give the report code back.
+   *
+   * DRAFT and HIDDEN only. An ACTIVE listing must be unpublished first — one
+   * click cannot both take a car off the showroom and destroy it — and a SOLD
+   * one is the record of a sale: the buyer keeps a link to the report through
+   * it, so it is not the seller's alone to remove.
+   *
+   * SOFT delete. The row stays, marked DELETED, exactly as `eraseMe` marks a
+   * leaving user's listings: an order and a payment point at this id, and a
+   * hard delete would leave both hanging.
+   *
+   * The point of the operation is `reportId: null`. Claiming a report code
+   * writes it into `listing.report_id`, which is UNIQUE, and that index is the
+   * whole single-use rule (see `create`). Clearing it here is what frees the
+   * code — without it the seller deletes the listing and can never use their
+   * own report again. The report row itself is untouched: it belongs to the
+   * inspection, not to the listing.
+   *
+   * Photos go from R2 in the same call. They are the seller's own images of a
+   * car they are no longer selling, nothing references them once the gallery
+   * rows are gone, and leaving them would keep paying for storage of a listing
+   * nobody can open.
+   *
+   * TWO key sets, and the second one is why the order below matters. The
+   * gallery rows name their own objects. The photos that came from the report
+   * have NO row: `mirrorShowroomPhotos` copies them into the public bucket
+   * under `mirroredPhotoKey(id, ref.s3Key)`, and the only way back to those
+   * keys is the report's `photosManifest` — reached through `report_id`, the
+   * column this method is here to clear. Once it is null the objects are
+   * unreachable: `erasePublicPhotoObjects` joins through the same relation and
+   * would enumerate nothing for this listing, so a later erasure request could
+   * not remove a permanent, unsigned, CDN-cached photo. They are therefore
+   * collected BEFORE the write, with `includeNeverPublic` for the same reason
+   * the erasure pass uses it — `NEVER_PUBLIC_KINDS` is empty today, and the
+   * registration document pages mirror like any other slot.
+   *
+   * The bucket work runs AFTER the transaction commits, not before. Delete
+   * first and a transaction that then throws leaves the listing alive with a
+   * gallery of 404s — the state the old ordering was written to avoid but in
+   * fact produced. Committing first inverts the failure: a stranded object is
+   * a storage cost that the erasure pass sweeps later, which is the cheaper
+   * half of the trade.
+   */
+  async remove(userId: string, id: string): Promise<{ id: string; deleted: true }> {
     const listing = await this.requireOwnedListing(userId, id);
-    if (listing.status !== 'EXPIRED' && listing.status !== 'ACTIVE') {
+    if (listing.status !== 'DRAFT' && listing.status !== 'HIDDEN') {
       throw new BadRequestException({
-        error: { code: 'not_renewable', message: 'Only active or expired listings can be renewed' },
+        error: {
+          code: 'listing_not_deletable',
+          message:
+            'Only a draft or a hidden listing can be deleted. Unpublish an active listing first.',
+          status: listing.status,
+        },
       });
     }
-    const durationDays = await this.settings.getNumber('listingDurationDays');
-    // Measured from whichever is later, now or the current expiry — DEN-177.
-    // The cabinet now offers renewal in the advert's last week, and measuring
-    // from `now` would charge the seller the days they have not used yet:
-    // renewing with 6 days left would have LOST 6 days. An expired listing has
-    // no unused time, so for it this is unchanged.
-    const from = Math.max(Date.now(), listing.expiresAt?.getTime() ?? 0);
-    const expiresAt = new Date(from + durationDays * 86_400_000);
-    return this.prisma.listing.update({
-      where: { id },
-      data: { status: 'ACTIVE', expiresAt, publishedAt: listing.publishedAt ?? new Date() },
+
+    const photos = await this.prisma.listingPhoto.findMany({ where: { listingId: id } });
+    const mirrored = await this.mirroredPublicKeys(listing);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.listingPhoto.deleteMany({ where: { listingId: id } });
+      await tx.listing.update({
+        where: { id },
+        // `publicPhotosMirroredAt` goes with the objects it stands for. Left
+        // set, it says a copy is in the public bucket after the copy is gone.
+        data: { status: 'DELETED', reportId: null, publicPhotosMirroredAt: null },
+      });
     });
+
+    if (this.r2.isConfigured()) {
+      for (const photo of photos) {
+        // Same rule as `deletePhoto`: delete from the bucket the ROW names.
+        // Failures are swallowed — the rows are already gone, and a stranded
+        // object must not turn a completed delete into a 500.
+        const location = photoLocation(photo.bucket, this.r2.isPublicBucketConfigured());
+        const remove =
+          location === 'public'
+            ? this.r2.publicDeleteObject(photo.r2Key)
+            : this.r2.deleteObject(photo.r2Key);
+        await remove.catch(() => undefined);
+      }
+      for (const key of mirrored) {
+        await this.r2.publicDeleteObject(key).catch((err: Error) => {
+          // Logged rather than swallowed. This is the last pass that can name
+          // these keys: the manifest they came from is unreachable now.
+          this.logger.error(`Deleted listing ${id} left public object ${key}: ${err.message}`);
+        });
+      }
+    }
+
+    return { id, deleted: true };
   }
 
   // ============================================================
@@ -657,26 +730,14 @@ export class ListingsService {
   }
 
   /**
-   * Admin: restore a hidden/expired listing. Returns it to ACTIVE if its
-   * expiry is still in the future, otherwise EXPIRED.
+   * Admin: restore a hidden listing to the showroom. A listing has no end
+   * date, so this is unconditional.
    */
   async adminUnhide(id: string): Promise<Listing> {
     const listing = await this.requireListing(id);
-    const stillValid = listing.expiresAt ? listing.expiresAt.getTime() > Date.now() : false;
     return this.prisma.listing.update({
       where: { id },
-      data: { status: stillValid ? 'ACTIVE' : 'EXPIRED' },
-    });
-  }
-
-  /** Admin: extend a listing's expiry by listingDurationDays and set it ACTIVE. */
-  async adminRenew(id: string): Promise<Listing> {
-    const listing = await this.requireListing(id);
-    const durationDays = await this.settings.getNumber('listingDurationDays');
-    const expiresAt = new Date(Date.now() + durationDays * 86_400_000);
-    return this.prisma.listing.update({
-      where: { id },
-      data: { status: 'ACTIVE', expiresAt, publishedAt: listing.publishedAt ?? new Date() },
+      data: { status: 'ACTIVE', publishedAt: listing.publishedAt ?? new Date() },
     });
   }
 
@@ -736,39 +797,12 @@ export class ListingsService {
           ? manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).length
           : l._count.photos,
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
-      expiresAt: l.expiresAt ? l.expiresAt.toISOString() : null,
       viewsCount: l.viewsCount,
     }));
 
     return { items };
   }
 
-  /**
-   * Flip ACTIVE listings whose expiry has passed to EXPIRED. Exposed for the
-   * cron/worker. Returns the number of listings swept. Emits a
-   * `listing.expiring` notification to each affected seller (non-throwing).
-   */
-  async expireOverdue(): Promise<number> {
-    const overdue = await this.prisma.listing.findMany({
-      where: { status: 'ACTIVE', expiresAt: { lt: new Date() } },
-    });
-    if (overdue.length === 0) return 0;
-
-    const { count } = await this.prisma.listing.updateMany({
-      where: { id: { in: overdue.map((l) => l.id) } },
-      data: { status: 'EXPIRED' },
-    });
-
-    for (const l of overdue) {
-      await this.notifications.notify(l.sellerId, 'listing.expiring', {
-        listingId: l.id,
-        make: l.make,
-        model: l.model,
-      });
-    }
-    if (count > 0) this.logger.log(`Expired ${count} overdue listing(s)`);
-    return count;
-  }
 
   /**
    * The publication hook: notify the seller, then make sure the listing's
@@ -1052,16 +1086,38 @@ export class ListingsService {
     return totals;
   }
 
-  private async activateStandard(id: string): Promise<{ expiresAt: Date }> {
-    const durationDays = await this.settings.getNumber('listingDurationDays');
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + durationDays * 86_400_000);
+  private async activateStandard(id: string): Promise<void> {
     await this.prisma.listing.update({
       where: { id },
-      data: { status: 'ACTIVE', package: 'standard', publishedAt: now, expiresAt },
+      data: { status: 'ACTIVE', package: 'standard', publishedAt: new Date() },
     });
     await this.notifyListingPublished(id);
-    return { expiresAt };
+  }
+
+  /**
+   * The public-bucket keys of the report photos mirrored for one listing.
+   *
+   * These objects have no `ListingPhoto` row — `mirrorShowroomPhotos` writes
+   * them straight from the report manifest — so this reconstruction is the
+   * only handle on them. `includeNeverPublic` is on for the reason
+   * `erasePublicPhotoObjects` gives: a kind that must not be public is exactly
+   * the one that must be swept if an older build mirrored it.
+   *
+   * The whole manifest is walked, not the mirrored top-N. The cap and the
+   * ordering have both changed, so an object written under the old rule can
+   * sit outside today's subset. A key that was never written 404s, and every
+   * caller treats that as success.
+   */
+  private async mirroredPublicKeys(listing: Listing): Promise<string[]> {
+    if (!this.r2.isPublicBucketConfigured()) return [];
+    if (!listing.reportId || !listing.publicPhotosMirroredAt) return [];
+    const report = await this.prisma.report.findUnique({
+      where: { id: listing.reportId },
+      select: { photosManifest: true },
+    });
+    return manifestPhotoRefs(report?.photosManifest, Number.MAX_SAFE_INTEGER, {
+      includeNeverPublic: true,
+    }).map((ref) => mirroredPhotoKey(listing.id, ref.s3Key));
   }
 
   /** Load a listing the user owns, or throw 404/403. */
