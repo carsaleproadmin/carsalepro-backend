@@ -196,6 +196,7 @@ describe('Admin panel (E9) (e2e)', () => {
         vin: '1HGBH41JXMN109186',
         make: 'BMW',
         model: '320d',
+        listingUrl: '+4930123456',
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,

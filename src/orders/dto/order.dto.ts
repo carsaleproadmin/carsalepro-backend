@@ -1,9 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsBoolean,
   IsEnum,
   IsISO8601,
   IsLatitude,
   IsLongitude,
+  IsNotEmpty,
   IsOptional,
   IsString,
   Length,
@@ -50,11 +52,18 @@ export class CreateOrderDto {
   @MaxLength(64)
   model!: string;
 
-  @ApiPropertyOptional({ example: 'https://mobile.de/listing/123' })
-  @IsOptional()
+  /**
+   * The seller's phone number OR a link to the listing, as free text (DEN-116).
+   * Required since DEN-291: the assigned inspector must contact the car owner
+   * before the trip, and this is the only channel the order carries. The name
+   * stayed `listingUrl` so the wire contract did not change.
+   */
+  @ApiProperty({ example: '+4930123456 or https://mobile.de/listing/123' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
+  @IsNotEmpty()
   @MaxLength(2048)
-  listingUrl?: string;
+  listingUrl!: string;
 
   @ApiProperty({ example: 'Musterstraße 1, 10115 Berlin' })
   @IsString()
@@ -90,6 +99,16 @@ export class UpdateOrderStatusDto {
   @ApiProperty({ enum: InspectorStatusUpdate })
   @IsEnum(InspectorStatusUpdate)
   status!: InspectorStatusUpdate;
+}
+
+/**
+ * DEN-291. The result of the assigned inspector's call to the car owner.
+ * `true` unlocks the trip. `false` cancels the order with a full refund.
+ */
+export class OwnerContactDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  reached!: boolean;
 }
 
 const REPORT_CODE_PATTERN =

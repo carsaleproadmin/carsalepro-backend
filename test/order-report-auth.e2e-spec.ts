@@ -152,6 +152,7 @@ describe('Order report submitter authorisation (e2e)', () => {
         vin: '1HGBH41JXMN109186',
         make: 'BMW',
         model: '320d',
+        listingUrl: '+4930123456',
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,
@@ -168,6 +169,11 @@ describe('Order report submitter authorisation (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/offers/${offer!.id}/accept`)
       .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ reached: true })
       .expect(200);
     for (const status of ['EN_ROUTE', 'IN_PROGRESS']) {
       await request(app.getHttpServer())
@@ -230,6 +236,7 @@ describe('Order report submitter authorisation (e2e)', () => {
       .send({
         make: 'BMW',
         model: '320d',
+        listingUrl: '+4930123456',
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,

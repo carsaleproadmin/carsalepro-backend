@@ -11,6 +11,7 @@ import {
   DisputeOrderDto,
   ListOrdersQueryDto,
   OrderRole,
+  OwnerContactDto,
   QuoteOrderDto,
   UpdateOrderStatusDto,
 } from './dto/order.dto';
@@ -145,6 +146,22 @@ export class OrdersController {
     @Body() dto: DeclineOrderDto,
   ) {
     return this.orders.declineByInspector(id, userId, dto.reason);
+  }
+
+  @Post(':id/owner-contact')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Assigned inspector reports the call to the car owner (DEN-291)',
+    description:
+      '`reached: true` unlocks the trip. `reached: false` cancels the order and ' +
+      'refunds the customer in full; it is not counted against the inspector.',
+  })
+  async ownerContact(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: OwnerContactDto,
+  ) {
+    return this.orders.recordOwnerContact(id, userId, dto.reached);
   }
 
   @Post(':id/status')

@@ -19,6 +19,8 @@ export type NotificationType =
   | 'order.declined_by_inspector'
   | 'order.inspector_no_show'
   | 'order.inspector_no_show_self'
+  | 'order.owner_contacted'
+  | 'order.owner_unreachable'
   | 'order.search_expired'
   | 'order.disputed'
   | 'payout.sent'
@@ -83,6 +85,18 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
    * first in a dispute.
    */
   'order.inspector_no_show_self': ['inapp', 'email'],
+  /**
+   * DEN-291. The inspector reached the car owner and can start the trip. In-app
+   * only, like `order.in_progress`: good news that asks for no action.
+   */
+  'order.owner_contacted': ['inapp'],
+  /**
+   * DEN-291. The inspector could not reach the car owner, so the order is
+   * cancelled with a full refund. Email as well as in-app, like
+   * `order.inspector_no_show`: the customer must act (check the contact and
+   * order again).
+   */
+  'order.owner_unreachable': ['inapp', 'email'],
   /**
    * Nobody accepted inside the search window: the hold is released, nothing was
    * charged. Distinct from `order.cancelled` because the customer did nothing

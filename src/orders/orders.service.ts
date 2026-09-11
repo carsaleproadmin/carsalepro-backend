@@ -1313,6 +1313,19 @@ export class OrdersService {
       });
     }
     const target = status === InspectorStatusUpdate.EN_ROUTE ? OrderStatus.EN_ROUTE : OrderStatus.IN_PROGRESS;
+    // DEN-291: no trip before the inspector has reached the car owner.
+    if (
+      target === OrderStatus.EN_ROUTE &&
+      order.status === OrderStatus.ASSIGNED &&
+      !order.ownerContactConfirmedAt
+    ) {
+      throw new ConflictException({
+        error: {
+          code: 'owner_contact_required',
+          message: 'Confirm contact with the car owner before the trip',
+        },
+      });
+    }
     await this.transition(orderId, target, userId);
     return { orderId, status: target };
   }
@@ -1438,6 +1451,117 @@ export class OrdersService {
     return {
       orderId,
       status: OrderStatus.CANCELLED,
+      refundCents: outcome.amountCents,
+      refundMode: refundModeOf(outcome.status),
+    };
+  }
+
+  /**
+   * DEN-291. The assigned inspector reports the call to the car owner.
+   *
+   * Only in `ASSIGNED`, and only once: both answers claim the row with a
+   * conditional `updateMany` on `ownerContactConfirmedAt: null`, so a double
+   * click, or the sweep in the same second, makes the loser a 409 instead of a
+   * second refund.
+   *
+   * - `reached: true` stamps `ownerContactConfirmedAt`, which unlocks
+   *   `ASSIGNED -> EN_ROUTE`, and tells the customer.
+   * - `reached: false` cancels the order with a FULL refund under its own
+   *   reason, `owner_unreachable`. It is deliberately NOT counted against the
+   *   inspector (owner's decision): an owner who does not answer is not the
+   *   inspector's fault. The event in the timeline keeps any abuse visible.
+   */
+  async recordOwnerContact(
+    orderId: string,
+    userId: string,
+    reached: boolean,
+  ): Promise<{
+    orderId: string;
+    status: OrderStatus;
+    ownerContactConfirmedAt: string | null;
+    refundCents: number;
+    refundMode: RefundMode;
+  }> {
+    const order = await this.requireOrder(orderId);
+    if (order.inspectorId !== userId) {
+      throw new ForbiddenException({
+        error: { code: 'forbidden', message: 'You are not the assigned inspector' },
+      });
+    }
+    const notPending = () =>
+      new ConflictException({
+        error: {
+          code: 'owner_contact_not_pending',
+          message: 'The owner contact can be reported only once, while the order is ASSIGNED',
+        },
+      });
+    const pendingWhere = {
+      id: orderId,
+      inspectorId: userId,
+      status: OrderStatus.ASSIGNED,
+      ownerContactConfirmedAt: null,
+    };
+    const payload = {
+      orderId: order.id,
+      orderNumber: order.number,
+      make: order.make,
+      model: order.model,
+    };
+
+    if (reached) {
+      const now = new Date();
+      const claimed = await this.prisma.order.updateMany({
+        where: pendingWhere,
+        data: { ownerContactConfirmedAt: now },
+      });
+      if (claimed.count === 0) throw notPending();
+      await this.writeEvent(orderId, userId, 'owner_contacted', null, null, null);
+      try {
+        await this.notifications.notify(order.customerId, 'order.owner_contacted', payload);
+      } catch (err) {
+        this.logger.warn(
+          `Owner-contact notification failed for order ${orderId}: ${(err as Error).message}`,
+        );
+      }
+      return {
+        orderId,
+        status: OrderStatus.ASSIGNED,
+        ownerContactConfirmedAt: now.toISOString(),
+        refundCents: 0,
+        refundMode: 'none',
+      };
+    }
+
+    // The same claim-before-money rule as `declineByInspector`: the status is
+    // taken first, so the hourly sweep and this call cannot both refund.
+    const claimed = await this.prisma.order.updateMany({
+      where: pendingWhere,
+      data: { status: OrderStatus.CANCELLED },
+    });
+    if (claimed.count === 0) throw notPending();
+
+    const outcome = await this.settleRefund(order, order.totalCents, 'owner_unreachable');
+    await this.writeEvent(orderId, userId, 'owner_unreachable', order.status, OrderStatus.CANCELLED, {
+      refundCents: outcome.amountCents,
+    });
+    // The claim wrote the status, so `transition` is not called and its
+    // `status_change` event is written here, as the hand-back does it.
+    await this.writeEvent(orderId, userId, 'status_change', order.status, OrderStatus.CANCELLED, null);
+    try {
+      await this.notifications.notify(order.customerId, 'order.owner_unreachable', {
+        ...payload,
+        refundCents: outcome.amountCents,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Owner-unreachable notification failed for order ${orderId}: ${(err as Error).message}`,
+      );
+    }
+
+    return {
+      orderId,
+      status: OrderStatus.CANCELLED,
+      ownerContactConfirmedAt: null,
       refundCents: outcome.amountCents,
       refundMode: refundModeOf(outcome.status),
     };
@@ -1988,6 +2112,18 @@ export class OrdersService {
       status: order.status,
       vehicle: { vin: order.vin, make: order.make, model: order.model },
       address: order.address,
+      /*
+       * The seller's contact (a phone number or a listing link), typed by the
+       * customer at checkout. DEN-291: the inspector must reach the car owner
+       * before the trip. `isInspector` is true only AFTER acceptance, so an
+       * inspector who holds a pending offer does not see it. It is the SELLER's
+       * channel, not the customer's, so the rule above (the customer's channels
+       * go to an admin only) is unchanged.
+       */
+      listingUrl: isCustomer || isInspector || isAdmin ? order.listingUrl : null,
+      // DEN-291: null until the inspector reports "contacted"; the trip is
+      // locked while it is null and the order is ASSIGNED.
+      ownerContactConfirmedAt: order.ownerContactConfirmedAt?.toISOString() ?? null,
       scheduledAt: order.scheduledAt?.toISOString() ?? null,
       money: {
         baseFeeCents: order.baseFeeCents,
@@ -2047,7 +2183,10 @@ export class OrdersService {
        */
       declined: (() => {
         const event = events.find(
-          (e) => e.type === 'inspector_declined' || e.type === 'inspector_no_show',
+          (e) =>
+            e.type === 'inspector_declined' ||
+            e.type === 'inspector_no_show' ||
+            e.type === 'owner_unreachable',
         );
         if (!event) return null;
         const payload = (event.payload ?? {}) as { reason?: unknown; refundCents?: unknown };
@@ -2057,7 +2196,12 @@ export class OrdersService {
           // sentence about the inspector differs. A no-show carries no reason —
           // nobody typed one — and the website must say so rather than print an
           // empty quotation.
-          kind: event.type === 'inspector_no_show' ? ('no_show' as const) : ('declined' as const),
+          kind:
+            event.type === 'inspector_no_show'
+              ? ('no_show' as const)
+              : event.type === 'owner_unreachable'
+                ? ('owner_unreachable' as const)
+                : ('declined' as const),
           reason: typeof payload.reason === 'string' ? payload.reason : '',
           refundCents: typeof payload.refundCents === 'number' ? payload.refundCents : null,
           at: event.createdAt.toISOString(),
@@ -3970,6 +4114,13 @@ export interface OrderDetail {
   vehicle: { vin: string | null; make: string; model: string };
   address: string;
   /**
+   * The seller's phone number or listing link. Null for an inspector with only
+   * a pending offer, and for orders created before DEN-291 made it required.
+   */
+  listingUrl: string | null;
+  /** DEN-291: when the inspector confirmed contact with the car owner. */
+  ownerContactConfirmedAt: string | null;
+  /**
    * Null for every order created after DEN-290: the customer no longer
    * chooses a time. Kept on the wire so a website that still reads it sees
    * null rather than a missing key.
@@ -4051,8 +4202,11 @@ export interface OrderDetail {
    * same in `status` and read very differently to the person who paid.
    */
   declined?: {
-    /** `declined` — the inspector handed it back. `no_show` — they went quiet. */
-    kind: 'declined' | 'no_show';
+    /**
+     * `declined` — the inspector handed it back. `no_show` — they went quiet.
+     * `owner_unreachable` — the inspector could not reach the car owner (DEN-291).
+     */
+    kind: 'declined' | 'no_show' | 'owner_unreachable';
     reason: string;
     refundCents: number | null;
     at: string;

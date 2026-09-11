@@ -191,6 +191,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .send({
         make: 'BMW',
         model: '320d',
+        listingUrl: '+4930123456',
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,
@@ -467,6 +468,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         vin: '1HGBH41JXMN109186',
         make: 'BMW',
         model: '320d',
+        listingUrl: '+4930123456',
         address: 'Musterstraße 1, Berlin',
         lat: ORDER_LAT,
         lng: ORDER_LNG,
@@ -535,6 +537,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'ul. Testowa 1, Poznań',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -566,6 +569,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'Musterstraße 1, Berlin',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -641,6 +645,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'Musterstraße 1, Berlin',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -806,6 +811,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'Musterstraße 1, Berlin',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -1160,6 +1166,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         .send({
           make: 'BMW',
           model: '320d',
+          listingUrl: '+4930123456',
           address: 'ul. Testowa 1, Poznań',
           lat: ORDER_LAT,
           lng: ORDER_LNG,
@@ -1287,6 +1294,14 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
      * assignment, which is exactly what this used to do.
      */
     for (const stage of ['ASSIGNED', 'EN_ROUTE', 'IN_PROGRESS'] as const) {
+      if (stage === 'EN_ROUTE') {
+        // DEN-291: the trip is locked until the owner was reached.
+        await request(app.getHttpServer())
+          .post(`/api/v1/orders/${orderId}/owner-contact`)
+          .set('Authorization', `Bearer ${inspector.token}`)
+          .send({ reached: true })
+          .expect(200);
+      }
       if (stage !== 'ASSIGNED') {
         await request(app.getHttpServer())
           .post(`/api/v1/orders/${orderId}/status`)
@@ -1535,6 +1550,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
 
     const { orderId } = await createPaidOrder(customer);
     await acceptPendingOffer(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspector.token}`)
+      .send({ reached: true })
+      .expect(200);
     for (const status of ['EN_ROUTE', 'IN_PROGRESS'] as const) {
       await request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/status`)
@@ -1781,6 +1801,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const inspToken = inspectorTokens.get(assignedId)!;
 
     await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
       .send({ status: 'EN_ROUTE' })
@@ -1801,6 +1826,111 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .send({ status: 'EN_ROUTE' })
       .expect(409);
     expect(bad.body.error.code).toBe('illegal_transition');
+  });
+
+  // ============================================================
+  // 6b-6c. DEN-291: the owner-contact step between acceptance and the trip
+  // ============================================================
+  it('6b. the trip is locked until the inspector reports "owner contacted"', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+
+    const locked = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(409);
+    expect(locked.body.error.code).toBe('owner_contact_required');
+
+    // Only the assigned inspector answers.
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ reached: true })
+      .expect(403);
+
+    const ok = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    expect(ok.body.status).toBe('ASSIGNED');
+    expect(ok.body.ownerContactConfirmedAt).toEqual(expect.any(String));
+
+    // The step is reported once. A late "not reached" must not cancel an order
+    // whose trip is already unlocked.
+    const again = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: false })
+      .expect(409);
+    expect(again.body.error.code).toBe('owner_contact_not_pending');
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(detail.body.ownerContactConfirmedAt).toEqual(expect.any(String));
+    expect(detail.body.status).toBe('ASSIGNED');
+
+    const note = await prisma.notification.findFirst({
+      where: { userId: customer.userId, type: 'order.owner_contacted' },
+    });
+    expect(note).not.toBeNull();
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/status`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ status: 'EN_ROUTE' })
+      .expect(200);
+  });
+
+  it('6c. "owner not reached" cancels with a FULL refund and is not counted against the inspector', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const assignedId = await acceptPendingOffer(orderId);
+    const inspToken = inspectorTokens.get(assignedId)!;
+    const before = await prisma.inspectorProfile.findUnique({
+      where: { userId: assignedId },
+      select: { cancelCount: true },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: false })
+      .expect(200);
+    expect(res.body.status).toBe('CANCELLED');
+    expect(res.body.refundCents).toBe(FARE.totalCents);
+    expect(res.body.refundMode).toBe('refunded');
+
+    const refund = await prisma.refund.findFirst({ where: { orderId } });
+    expect(refund!.amountCents).toBe(FARE.totalCents);
+    expect(refund!.reason).toBe('owner_unreachable');
+
+    // Owner's decision: an owner who does not answer is not the inspector's fault.
+    const after = await prisma.inspectorProfile.findUnique({
+      where: { userId: assignedId },
+      select: { cancelCount: true },
+    });
+    expect(after!.cancelCount).toBe(before!.cancelCount);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(detail.body.status).toBe('CANCELLED');
+    expect(detail.body.declined.kind).toBe('owner_unreachable');
+    expect(detail.body.declined.refundCents).toBe(FARE.totalCents);
+
+    const note = await prisma.notification.findFirst({
+      where: { userId: customer.userId, type: 'order.owner_unreachable' },
+    });
+    expect(note).not.toBeNull();
   });
 
   // ============================================================
@@ -1879,6 +2009,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
     await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
       .send({ status: 'EN_ROUTE' })
@@ -1947,6 +2082,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
     await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
       .send({ status: 'EN_ROUTE' })
@@ -1995,6 +2135,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(stranger.body.error.code).toBe('forbidden');
 
     await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
       .send({ status: 'EN_ROUTE' })
@@ -2026,6 +2171,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
 
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
     for (const status of ['EN_ROUTE', 'IN_PROGRESS']) {
       await request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/status`)
@@ -2163,6 +2313,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
     await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
       .send({ status: 'EN_ROUTE' })
@@ -2236,6 +2391,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const { orderId } = await createPaidOrder(customer);
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
     await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
@@ -2313,6 +2473,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
     await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
+    await request(app.getHttpServer())
       .post(`/api/v1/orders/${orderId}/status`)
       .set('Authorization', `Bearer ${inspToken}`)
       .send({ status: 'EN_ROUTE' })
@@ -2369,6 +2534,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const { orderId } = await createPaidOrder(customer);
     const assignedId = await acceptPendingOffer(orderId);
     const inspToken = inspectorTokens.get(assignedId)!;
+    await request(app.getHttpServer())
+      .post(`/api/v1/orders/${orderId}/owner-contact`)
+      .set('Authorization', `Bearer ${inspToken}`)
+      .send({ reached: true })
+      .expect(200);
     for (const status of ['EN_ROUTE', 'IN_PROGRESS']) {
       await request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/status`)

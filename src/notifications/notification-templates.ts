@@ -355,6 +355,70 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
     }),
   },
   /**
+   * DEN-291. The inspector reached the car owner, so the trip can start. A
+   * short in-app note: the customer has nothing to do.
+   */
+  'order.owner_contacted': {
+    de: (p) => ({
+      subject: `Prüfer hat den Fahrzeughalter erreicht`,
+      body:
+        `Der Prüfer hat den Fahrzeughalter für Bestellung ${str(p, 'orderNumber')} erreicht. ` +
+        `Als Nächstes fährt der Prüfer zum Fahrzeug.`,
+      short: `${str(p, 'orderNumber')}: Fahrzeughalter erreicht.`,
+    }),
+    en: (p) => ({
+      subject: `The inspector reached the car owner`,
+      body:
+        `The inspector reached the car owner for order ${str(p, 'orderNumber')}. ` +
+        `Next, the inspector travels to the car.`,
+      short: `${str(p, 'orderNumber')}: the car owner was reached.`,
+    }),
+    ru: (p) => ({
+      subject: `Инспектор связался с владельцем автомобиля`,
+      body:
+        `Инспектор связался с владельцем автомобиля по заказу ${str(p, 'orderNumber')}. ` +
+        `Дальше инспектор выезжает к автомобилю.`,
+      short: `${str(p, 'orderNumber')}: связь с владельцем есть.`,
+    }),
+  },
+  /**
+   * DEN-291. The inspector could not reach the car owner, so the order is
+   * cancelled. The letter gives the reason, the full refund and the way
+   * forward, like `order.inspector_no_show`.
+   */
+  'order.owner_unreachable': {
+    de: (p) => ({
+      subject: `Fahrzeughalter nicht erreichbar - Bestellung storniert`,
+      body:
+        `Der Prüfer konnte den Fahrzeughalter für Bestellung ${str(p, 'orderNumber')} nicht erreichen. ` +
+        `Wir haben die Bestellung storniert. ` +
+        `Der volle Betrag von ${formatEur(p.refundCents)} wird erstattet; ` +
+        `die Gutschrift braucht einige Werktage. ` +
+        `Prüfen Sie die Kontaktdaten und geben Sie die Bestellung erneut auf.`,
+      short: `${str(p, 'orderNumber')}: Fahrzeughalter nicht erreichbar — volle Erstattung.`,
+    }),
+    en: (p) => ({
+      subject: `The car owner could not be reached - order cancelled`,
+      body:
+        `The inspector could not reach the car owner for order ${str(p, 'orderNumber')}. ` +
+        `We have cancelled the order. ` +
+        `The full amount of ${formatEur(p.refundCents)} is refunded; ` +
+        `the money needs a few working days to reach you. ` +
+        `Check the contact details and make the order again.`,
+      short: `${str(p, 'orderNumber')}: the car owner could not be reached — full refund.`,
+    }),
+    ru: (p) => ({
+      subject: `Не удалось связаться с владельцем - заказ отменён`,
+      body:
+        `Инспектору не удалось связаться с владельцем автомобиля по заказу ${str(p, 'orderNumber')}. ` +
+        `Мы отменили заказ. ` +
+        `Вся сумма ${formatEur(p.refundCents)} возвращается; ` +
+        `деньги придут в течение нескольких рабочих дней. ` +
+        `Проверьте контактные данные и оформите заказ повторно.`,
+      short: `${str(p, 'orderNumber')}: владелец недоступен — полный возврат.`,
+    }),
+  },
+  /**
    * The inspector's half of the same event. It says what he lost and what was
    * recorded, and it does NOT say sorry: the deadline was shown to him in the
    * accept dialog before he took the job. `days` comes from the setting rather
