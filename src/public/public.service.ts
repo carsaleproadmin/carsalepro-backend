@@ -479,8 +479,9 @@ export class PublicService {
       selfDeclaration: this.selfDeclarationOf(listing),
       photos,
       views: listing.viewsCount + 1,
-      // What unlocking the full report costs, so the page never hardcodes it.
-      reportUnlockPriceCents: await this.settings.getCents('payPerViewPriceEur'),
+      // `reportUnlockPriceCents` was removed (DEN-292): the full report is free
+      // (DEN-224), and the field quoted the withdrawn pay-per-view price. The
+      // website and the mobile app never read it.
       currency: 'EUR',
     };
   }
@@ -530,7 +531,8 @@ export class PublicService {
       paintThicknessAvgUm: averagePaintThicknessUm(data),
       photos: await this.signPhotos(report.photosManifest, 2),
       vinMasked: report.vin ? this.maskVin(report.vin) : null,
-      unlockPriceCents: await this.settings.getCents('payPerViewPriceEur'),
+      // `unlockPriceCents` was removed (DEN-292), for the same reason as
+      // `reportUnlockPriceCents` on the listing detail.
       currency: 'EUR',
       // PII (signatures, addresses, phones) is intentionally never included here.
     };
