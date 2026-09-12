@@ -1003,6 +1003,55 @@ describe('Admin panel (E9) (e2e)', () => {
       ).toBe(1);
     });
 
+    it('20e. hide works only on a live listing, unhide only on an admin hide', async () => {
+      const admin = await makeAdmin();
+      const seller = await makeUser('seller');
+      const post = (id: string, action: 'hide' | 'unhide') =>
+        bearer(
+          request(app.getHttpServer())
+            .post(`/api/v1/admin/listings/${id}/${action}`)
+            .send({ reason: REASON }),
+          admin.token,
+        );
+
+      for (const status of ['DRAFT', 'HIDDEN', 'SOLD', 'DELETED']) {
+        const id = await seedListing(seller, status);
+        const res = await post(id, 'hide').expect(409);
+        expect(res.body.error.code).toBe('listing_not_active');
+        const row = await prisma.listing.findUniqueOrThrow({ where: { id } });
+        expect(row.status).toBe(status);
+        expect(row.adminHiddenAt).toBeNull();
+      }
+
+      // HIDDEN here is a seller hide: the seed sets no adminHiddenAt.
+      for (const status of ['ACTIVE', 'HIDDEN', 'DELETED']) {
+        const id = await seedListing(seller, status);
+        const res = await post(id, 'unhide').expect(409);
+        expect(res.body.error.code).toBe('listing_not_hidden_by_admin');
+        expect((await prisma.listing.findUniqueOrThrow({ where: { id } })).status).toBe(status);
+      }
+
+      // A refused action tells the seller nothing.
+      expect(
+        await prisma.notification.count({
+          where: { userId: seller.userId, type: { in: ['listing.hidden', 'listing.unhidden'] } },
+        }),
+      ).toBe(0);
+
+      // The admin list tells an admin hide from a seller hide.
+      const adminHidden = await seedListing(seller, 'ACTIVE');
+      await post(adminHidden, 'hide').expect(200);
+      const list = await bearer(
+        request(app.getHttpServer()).get(`/api/v1/admin/listings?sellerId=${seller.userId}`),
+        admin.token,
+      ).expect(200);
+      const items = list.body.items as { id: string; status: string; adminHiddenAt: string | null }[];
+      expect(items.find((i) => i.id === adminHidden)!.adminHiddenAt).toEqual(expect.any(String));
+      const sellerHidden = items.filter((i) => i.status === 'HIDDEN' && i.id !== adminHidden);
+      expect(sellerHidden.length).toBeGreaterThan(0);
+      expect(sellerHidden.every((i) => i.adminHiddenAt === null)).toBe(true);
+    });
+
     it('20c. a seller who unpublished the listing may still publish it again (DEN-295)', async () => {
       const seller = await makeUser('seller');
       const listingId = await seedListing(seller, 'ACTIVE');

@@ -770,9 +770,17 @@ export class ListingsService {
    * (DEN-295). The seller is told at once, and `adminHiddenAt` stops the
    * seller from publishing the listing again until an admin restores it.
    * `notify` never throws, so a failed notice cannot undo the hide.
+   *
+   * Only a live listing: hiding a draft, a sold or a deleted listing marked
+   * it HIDDEN, and an unhide could then publish it (409 `listing_not_active`).
    */
   async adminHide(id: string, reason: string): Promise<Listing> {
-    await this.requireListing(id);
+    const before = await this.requireListing(id);
+    if (before.status !== 'ACTIVE') {
+      throw new ConflictException({
+        error: { code: 'listing_not_active', message: 'Only a live listing can be hidden' },
+      });
+    }
     const listing = await this.prisma.listing.update({
       where: { id },
       data: { status: 'HIDDEN', adminHiddenAt: new Date(), adminHiddenReason: reason },
@@ -787,12 +795,24 @@ export class ListingsService {
   }
 
   /**
-   * Admin: restore a hidden listing to the showroom. A listing has no end
-   * date, so this is unconditional. It clears the admin hide, and tells the
-   * seller when the listing was hidden before.
+   * Admin: restore a listing that an admin hid. It clears the admin hide and
+   * tells the seller.
+   *
+   * Only an admin hide (HIDDEN with `adminHiddenAt`). A listing the seller
+   * took off the showroom stays off: publishing it is the seller's decision.
+   * A deleted listing has no photos and no report, so it never comes back
+   * (409 `listing_not_hidden_by_admin`).
    */
   async adminUnhide(id: string): Promise<Listing> {
     const before = await this.requireListing(id);
+    if (before.status !== 'HIDDEN' || !before.adminHiddenAt) {
+      throw new ConflictException({
+        error: {
+          code: 'listing_not_hidden_by_admin',
+          message: 'Only a listing that an admin hid can be unhidden',
+        },
+      });
+    }
     const listing = await this.prisma.listing.update({
       where: { id },
       data: {
@@ -802,13 +822,11 @@ export class ListingsService {
         adminHiddenReason: null,
       },
     });
-    if (before.status === 'HIDDEN') {
-      await this.notifications.notify(listing.sellerId, 'listing.unhidden', {
-        listingId: listing.id,
-        make: listing.make,
-        model: listing.model,
-      });
-    }
+    await this.notifications.notify(listing.sellerId, 'listing.unhidden', {
+      listingId: listing.id,
+      make: listing.make,
+      model: listing.model,
+    });
     return listing;
   }
 
