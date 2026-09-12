@@ -48,6 +48,9 @@ export class AdminListingsService {
         model: l.model,
         year: l.year,
         publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
+        // Set only by an admin hide, so the admin panel offers Unhide on it
+        // and not on a listing the seller took off the showroom.
+        adminHiddenAt: l.adminHiddenAt ? l.adminHiddenAt.toISOString() : null,
         createdAt: l.createdAt.toISOString(),
       })),
       total,
