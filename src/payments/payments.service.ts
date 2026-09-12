@@ -642,6 +642,13 @@ export class PaymentsService {
    * (ACTIVE, package 'gold', publishedAt now). A listing has no end date, so
    * nothing is scheduled here. Safe to call from both the mock path and the
    * Stripe webhook.
+   *
+   * Only a listing that is still the seller's to publish: not DELETED and not
+   * hidden by an admin. The checkout stays open for up to 24 hours, and an
+   * admin can hide or delete the listing in that time. Before this check the
+   * payment put such a listing back on the showroom. The payment is still
+   * marked succeeded: the money was taken, and what to do with it (a refund
+   * or not) is an open decision (DEN-295).
    */
   async activateGoldListing(paymentId: string, listingId: string): Promise<void> {
     await this.prisma.payment
@@ -650,16 +657,23 @@ export class PaymentsService {
 
     const now = new Date();
 
-    const listing = await this.prisma.listing
-      .update({
-        where: { id: listingId },
-        data: {
-          status: 'ACTIVE',
-          package: 'gold',
-          publishedAt: now,
-        },
-      })
-      .catch(() => null);
+    const { count } = await this.prisma.listing.updateMany({
+      where: { id: listingId, status: { not: 'DELETED' }, adminHiddenAt: null },
+      data: {
+        status: 'ACTIVE',
+        package: 'gold',
+        publishedAt: now,
+      },
+    });
+    if (count === 0) {
+      this.logger.warn(
+        `Gold payment ${paymentId.slice(0, 6)}… succeeded, but listing ${listingId.slice(0, 6)}… ` +
+          'was not activated: it is deleted, hidden by an admin or absent. ' +
+          'The money needs a manual decision.',
+      );
+      return;
+    }
+    const listing = await this.prisma.listing.findUnique({ where: { id: listingId } });
 
     // E11: notify the seller their Gold listing is live (non-throwing).
     // Reads the listing's own denormalised columns — `report` is null for a
