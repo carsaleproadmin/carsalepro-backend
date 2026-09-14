@@ -6,9 +6,9 @@ import {
   ADMIN_REASON_MAX_LENGTH,
   ADMIN_REASON_MIN_LENGTH,
 } from '../../orders/admin-decision';
-import { PaginationQueryDto } from './pagination.dto';
+import { AdminCarFilterQueryDto } from './admin-car-filter.dto';
 
-export class AdminListingListQueryDto extends PaginationQueryDto {
+export class AdminListingListQueryDto extends AdminCarFilterQueryDto {
   @ApiPropertyOptional({ enum: ListingStatus })
   @IsOptional()
   @IsEnum(ListingStatus)

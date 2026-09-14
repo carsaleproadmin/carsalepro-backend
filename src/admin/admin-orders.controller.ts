@@ -36,6 +36,13 @@ export class AdminOrdersController {
     return this.adminOrders.listDisputes(query.page, query.pageSize);
   }
 
+  // Must stay above `:id`, or `inspectors` is read as an order id.
+  @Get('inspectors')
+  @ApiOperation({ summary: 'List inspectors for the order list filter (admin)' })
+  listInspectors() {
+    return this.adminOrders.listInspectors();
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Full order detail (admin)' })
   @ApiParam({ name: 'id' })
