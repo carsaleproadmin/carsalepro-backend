@@ -310,6 +310,16 @@ export class ListingsService {
     pkg: 'standard' | 'gold',
   ): Promise<PublishResultDto> {
     const listing = await this.requireOwnedListing(userId, id);
+    // An admin hide is not the seller's to undo (DEN-295). Before this check
+    // the "Publish" button on a HIDDEN row undid moderation in one click.
+    if (listing.adminHiddenAt) {
+      throw new ConflictException({
+        error: {
+          code: 'listing_hidden_by_admin',
+          message: 'The platform hid this listing. Only the platform can publish it again.',
+        },
+      });
+    }
     await this.assertPublishable(listing);
 
     if (pkg === 'standard') {
@@ -479,6 +489,40 @@ export class ListingsService {
       });
     }
 
+    await this.deleteWithPhotos(listing);
+    return { id, deleted: true };
+  }
+
+  /**
+   * Admin: delete any listing that is not deleted yet, with a reason the seller
+   * reads. The effect is the seller's own delete (`deleteWithPhotos`): status
+   * DELETED, the gallery rows and objects go, the report code is free again.
+   *
+   * Unlike the seller, an admin can delete an ACTIVE or a SOLD listing: the
+   * usual reason is that it must leave the showroom at once. The delete stays
+   * soft - the row is kept for disputes and the audit log. `notify` never
+   * throws, so a failed notice cannot undo the delete.
+   */
+  async adminDelete(id: string, reason: string): Promise<Listing> {
+    const listing = await this.requireListing(id);
+    if (listing.status === 'DELETED') {
+      throw new ConflictException({
+        error: { code: 'listing_already_deleted', message: 'The listing is already deleted' },
+      });
+    }
+    await this.deleteWithPhotos(listing);
+    await this.notifications.notify(listing.sellerId, 'listing.deleted', {
+      listingId: listing.id,
+      make: listing.make,
+      model: listing.model,
+      reason,
+    });
+    return this.prisma.listing.findUniqueOrThrow({ where: { id } });
+  }
+
+  /** The delete itself, shared by the seller and the admin. See `remove`. */
+  private async deleteWithPhotos(listing: Listing): Promise<void> {
+    const id = listing.id;
     const photos = await this.prisma.listingPhoto.findMany({ where: { listingId: id } });
     const mirrored = await this.mirroredPublicKeys(listing);
 
@@ -512,8 +556,6 @@ export class ListingsService {
         });
       }
     }
-
-    return { id, deleted: true };
   }
 
   // ============================================================
@@ -723,22 +765,69 @@ export class ListingsService {
   // Admin overrides (E9) — skip seller-ownership checks
   // ============================================================
 
-  /** Admin: hide any listing from the showroom. */
-  async adminHide(id: string): Promise<Listing> {
-    await this.requireListing(id);
-    return this.prisma.listing.update({ where: { id }, data: { status: 'HIDDEN' } });
+  /**
+   * Admin: hide any listing from the showroom, with a reason the seller reads
+   * (DEN-295). The seller is told at once, and `adminHiddenAt` stops the
+   * seller from publishing the listing again until an admin restores it.
+   * `notify` never throws, so a failed notice cannot undo the hide.
+   *
+   * Only a live listing: hiding a draft, a sold or a deleted listing marked
+   * it HIDDEN, and an unhide could then publish it (409 `listing_not_active`).
+   */
+  async adminHide(id: string, reason: string): Promise<Listing> {
+    const before = await this.requireListing(id);
+    if (before.status !== 'ACTIVE') {
+      throw new ConflictException({
+        error: { code: 'listing_not_active', message: 'Only a live listing can be hidden' },
+      });
+    }
+    const listing = await this.prisma.listing.update({
+      where: { id },
+      data: { status: 'HIDDEN', adminHiddenAt: new Date(), adminHiddenReason: reason },
+    });
+    await this.notifications.notify(listing.sellerId, 'listing.hidden', {
+      listingId: listing.id,
+      make: listing.make,
+      model: listing.model,
+      reason,
+    });
+    return listing;
   }
 
   /**
-   * Admin: restore a hidden listing to the showroom. A listing has no end
-   * date, so this is unconditional.
+   * Admin: restore a listing that an admin hid. It clears the admin hide and
+   * tells the seller.
+   *
+   * Only an admin hide (HIDDEN with `adminHiddenAt`). A listing the seller
+   * took off the showroom stays off: publishing it is the seller's decision.
+   * A deleted listing has no photos and no report, so it never comes back
+   * (409 `listing_not_hidden_by_admin`).
    */
   async adminUnhide(id: string): Promise<Listing> {
-    const listing = await this.requireListing(id);
-    return this.prisma.listing.update({
+    const before = await this.requireListing(id);
+    if (before.status !== 'HIDDEN' || !before.adminHiddenAt) {
+      throw new ConflictException({
+        error: {
+          code: 'listing_not_hidden_by_admin',
+          message: 'Only a listing that an admin hid can be unhidden',
+        },
+      });
+    }
+    const listing = await this.prisma.listing.update({
       where: { id },
-      data: { status: 'ACTIVE', publishedAt: listing.publishedAt ?? new Date() },
+      data: {
+        status: 'ACTIVE',
+        publishedAt: before.publishedAt ?? new Date(),
+        adminHiddenAt: null,
+        adminHiddenReason: null,
+      },
     });
+    await this.notifications.notify(listing.sellerId, 'listing.unhidden', {
+      listingId: listing.id,
+      make: listing.make,
+      model: listing.model,
+    });
+    return listing;
   }
 
   /** Load a listing by id (no ownership check), or throw 404. */
@@ -798,6 +887,10 @@ export class ListingsService {
           : l._count.photos,
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
       viewsCount: l.viewsCount,
+      // DEN-295. The seller must see WHY the platform hid the listing, and
+      // that publishing it again is not theirs to do.
+      adminHiddenAt: l.adminHiddenAt ? l.adminHiddenAt.toISOString() : null,
+      adminHiddenReason: l.adminHiddenReason,
     }));
 
     return { items };

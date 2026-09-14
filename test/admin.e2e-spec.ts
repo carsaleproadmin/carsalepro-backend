@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import request from 'supertest';
 import { OrdersService } from '../src/orders/orders.service';
+import { PaymentsService } from '../src/payments/payments.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SettingsService } from '../src/settings/settings.service';
 import { PLATFORM_SETTING_DEFAULTS } from '../src/settings/platform-settings.constants';
@@ -16,6 +17,8 @@ const ORDER_LAT = 52.52;
 const ORDER_LNG = 13.405;
 const SCHEDULED_AT = '2026-07-01T09:00:00.000Z';
 const PASSWORD = 'Sup3rSecret9';
+/** Admin cancel and dispute resolution require a reason (DEN-294). */
+const REASON = 'Decision recorded by the e2e suite';
 
 function uniqueEmail(prefix = 'adm'): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@example.com`;
@@ -352,69 +355,175 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(res.body.error.code).toBe('cannot_target_self');
     });
 
-    it('8. change role USER→ADMIN; cannot demote self; cannot remove the last admin', async () => {
+    // ---- DEN-299: the super admin manages the admins ----
+
+    /** The guard reads the role from the database, so the token stays valid. */
+    async function makeSuperAdmin(): Promise<Registered> {
+      const a = await makeAdmin();
+      await prisma.user.update({ where: { id: a.userId }, data: { role: Role.SUPER_ADMIN } });
+      return a;
+    }
+
+    function setRole(actor: Registered, targetId: string, role: string) {
+      return bearer(
+        request(app.getHttpServer()).post(`/api/v1/admin/users/${targetId}/role`).send({ role }),
+        actor.token,
+      );
+    }
+
+    async function roleOf(id: string) {
+      return (await prisma.user.findUnique({ where: { id } }))!.role;
+    }
+
+    it('8. an ADMIN promotes a user to ADMIN, but cannot demote an admin or themselves', async () => {
       const admin = await makeAdmin();
       const target = await makeUser('promoteme');
 
-      // Promote target to ADMIN.
-      await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/users/${target.userId}/role`).send({ role: 'ADMIN' }),
-        admin.token,
-      ).expect(200);
-      const promoted = await prisma.user.findUnique({ where: { id: target.userId } });
-      expect(promoted!.role).toBe('ADMIN');
+      await setRole(admin, target.userId, 'ADMIN').expect(200);
+      expect(await roleOf(target.userId)).toBe('ADMIN');
 
-      // Self-demotion forbidden.
-      const selfRes = await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/users/${admin.userId}/role`).send({ role: 'USER' }),
-        admin.token,
-      ).expect(400);
-      expect(selfRes.body.error.code).toBe('cannot_demote_self');
+      const demote = await setRole(admin, target.userId, 'USER').expect(403);
+      expect(demote.body.error.code).toBe('super_admin_required');
+      expect(await roleOf(target.userId)).toBe('ADMIN');
 
-      // Demote target back to USER (admin + target were both ADMIN, so allowed).
-      await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/users/${target.userId}/role`).send({ role: 'USER' }),
-        admin.token,
-      ).expect(200);
-
-      // Now `admin` is (likely) the last admin among our seeds; the global count
-      // may include the seed admin, so assert the guard via a controlled set:
-      // demote target again would now fail if it were the only other admin — we
-      // already demoted it. Instead verify the last-admin guard directly by
-      // attempting to demote `admin` while it is the sole admin of this set.
-      // (Other suites' admins are cleaned between tests, so this is reliable.)
-      const remainingAdmins = await prisma.user.count({ where: { role: Role.ADMIN, deletedAt: null } });
-      if (remainingAdmins === 1) {
-        const lastRes = await bearer(
-          request(app.getHttpServer()).post(`/api/v1/admin/users/${admin.userId}/role`).send({ role: 'USER' }),
-          admin.token,
-        ).expect(400);
-        // Self-demote guard fires first for self; assert one of the two guards.
-        expect(['cannot_demote_self', 'last_admin']).toContain(lastRes.body.error.code);
-      }
+      const self = await setRole(admin, admin.userId, 'USER').expect(400);
+      expect(self.body.error.code).toBe('cannot_demote_self');
     });
 
-    it('9. last_admin guard: demoting the only admin (non-self) → 400', async () => {
-      // Two admins: adminA acts; adminB is the only OTHER admin. Demote adminA via
-      // adminB to leave adminB the last admin, then demote adminB via adminA fails.
-      const adminA = await makeAdmin();
-      const adminB = await makeAdmin();
+    it('9. an ADMIN cannot give or remove SUPER_ADMIN, or change a super admin', async () => {
+      const admin = await makeAdmin();
+      const superAdmin = await makeSuperAdmin();
+      const user = await makeUser('suptarget');
 
-      // adminB demotes adminA → ok (adminB remains).
+      const attempts: [string, string][] = [
+        [user.userId, 'SUPER_ADMIN'],
+        [admin.userId, 'SUPER_ADMIN'], // not even for themselves
+        [superAdmin.userId, 'ADMIN'],
+        [superAdmin.userId, 'USER'],
+      ];
+      for (const [targetId, role] of attempts) {
+        const res = await setRole(admin, targetId, role).expect(403);
+        expect(res.body.error.code).toBe('super_admin_required');
+      }
+      expect(await roleOf(user.userId)).toBe('USER');
+      expect(await roleOf(admin.userId)).toBe('ADMIN');
+      expect(await roleOf(superAdmin.userId)).toBe('SUPER_ADMIN');
+    });
+
+    it('9b. an ADMIN cannot ban or unban an admin; a SUPER_ADMIN can', async () => {
+      const admin = await makeAdmin();
+      const other = await makeAdmin();
+      const superAdmin = await makeSuperAdmin();
+
+      for (const targetId of [other.userId, superAdmin.userId]) {
+        const res = await bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/users/${targetId}/ban`).send({}),
+          admin.token,
+        ).expect(403);
+        expect(res.body.error.code).toBe('super_admin_required');
+      }
+      expect((await prisma.user.findUnique({ where: { id: other.userId } }))!.bannedAt).toBeNull();
+
       await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/users/${adminA.userId}/role`).send({ role: 'USER' }),
-        adminB.token,
+        request(app.getHttpServer()).post(`/api/v1/admin/users/${other.userId}/ban`).send({}),
+        superAdmin.token,
       ).expect(200);
 
-      // Now only adminB is ADMIN among non-deleted users (others cleaned per-test).
-      const total = await prisma.user.count({ where: { role: Role.ADMIN, deletedAt: null } });
-      if (total === 1) {
-        const res = await bearer(
-          request(app.getHttpServer()).post(`/api/v1/admin/users/${adminB.userId}/role`).send({ role: 'USER' }),
-          adminB.token,
-        ).expect(400);
-        expect(['cannot_demote_self', 'last_admin']).toContain(res.body.error.code);
-      }
+      const unban = await bearer(
+        request(app.getHttpServer()).post(`/api/v1/admin/users/${other.userId}/unban`),
+        admin.token,
+      ).expect(403);
+      expect(unban.body.error.code).toBe('super_admin_required');
+
+      await bearer(
+        request(app.getHttpServer()).post(`/api/v1/admin/users/${other.userId}/unban`),
+        superAdmin.token,
+      ).expect(200);
+      expect((await prisma.user.findUnique({ where: { id: other.userId } }))!.bannedAt).toBeNull();
+    });
+
+    it('9c. a SUPER_ADMIN opens the admin panel, demotes an admin and manages SUPER_ADMIN', async () => {
+      const superAdmin = await makeSuperAdmin();
+      const admin = await makeAdmin();
+
+      await bearer(request(app.getHttpServer()).get('/api/v1/admin/dashboard'), superAdmin.token).expect(200);
+
+      await setRole(superAdmin, admin.userId, 'USER').expect(200);
+      expect(await roleOf(admin.userId)).toBe('USER');
+      await setRole(superAdmin, admin.userId, 'SUPER_ADMIN').expect(200);
+      expect(await roleOf(admin.userId)).toBe('SUPER_ADMIN');
+      await setRole(superAdmin, admin.userId, 'ADMIN').expect(200);
+      expect(await roleOf(admin.userId)).toBe('ADMIN');
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { action: 'user.role', entityId: admin.userId },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(audit!.adminId).toBe(superAdmin.userId);
+      expect(audit!.after).toMatchObject({ role: 'ADMIN' });
+
+      // Nobody demotes themselves, a super admin included.
+      const self = await setRole(superAdmin, superAdmin.userId, 'ADMIN').expect(400);
+      expect(self.body.error.code).toBe('cannot_demote_self');
+    });
+
+    it('9d. only a SUPER_ADMIN erases an account; the reason is audited and orders stay (DEN-300)', async () => {
+      const admin = await makeAdmin();
+      const superAdmin = await makeSuperAdmin();
+      const target = await makeUser('erasetarget');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(target);
+      const erase = (actor: Registered, id: string, body: object = { reason: REASON }) =>
+        bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/users/${id}/erase`).send(body),
+          actor.token,
+        );
+
+      const denied = await erase(admin, target.userId).expect(403);
+      expect(denied.body.error.code).toBe('super_admin_required');
+      await erase(superAdmin, target.userId, { reason: 'short' }).expect(400);
+      await erase(superAdmin, target.userId, {}).expect(400);
+      const self = await erase(superAdmin, superAdmin.userId).expect(400);
+      expect(self.body.error.code).toBe('cannot_target_self');
+      expect((await prisma.user.findUnique({ where: { id: target.userId } }))!.deletedAt).toBeNull();
+
+      const res = await erase(superAdmin, target.userId).expect(200);
+      expect(res.body.deletedAt).toBeTruthy();
+
+      // The same result as the user's own erasure.
+      const erased = await prisma.user.findUnique({ where: { id: target.userId } });
+      expect(erased!.email).toBe(`deleted+${target.userId}@carsalepro.invalid`);
+      expect(erased!.passwordHash).toBeNull();
+      expect(erased!.name).toBeNull();
+      expect(erased!.deletedAt).toBeTruthy();
+
+      // The old token and the old password stop working.
+      await bearer(request(app.getHttpServer()).get('/api/v1/users/me'), target.token).expect(401);
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email: target.email, password: PASSWORD })
+        .expect(401);
+
+      // Orders and payments stay for accounting.
+      expect(await prisma.order.findUnique({ where: { id: orderId } })).not.toBeNull();
+      expect(await prisma.payment.count({ where: { orderId } })).toBeGreaterThan(0);
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { action: 'user.erase', entityId: target.userId },
+      });
+      expect(audit!.adminId).toBe(superAdmin.userId);
+      expect(audit!.after).toMatchObject({ reason: REASON });
+      expect(JSON.stringify(audit)).not.toContain(target.email);
+
+      const again = await erase(superAdmin, target.userId).expect(409);
+      expect(again.body.error.code).toBe('already_erased');
+
+      // The erased account is still visible to an admin, marked as erased.
+      const detail = await bearer(
+        request(app.getHttpServer()).get(`/api/v1/admin/users/${target.userId}`),
+        admin.token,
+      ).expect(200);
+      expect(detail.body.deletedAt).toBeTruthy();
     });
 
     it('10. device-links: list, create (audited), unlink', async () => {
@@ -542,7 +651,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/cancel`)
-          .send({ refundPercent: 50 }),
+          .send({ refundPercent: 50, reason: REASON }),
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('CANCELLED');
@@ -565,7 +674,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/cancel`)
-          .send({ refundPercent: 50 }),
+          .send({ refundPercent: 50, reason: REASON }),
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('CANCELLED');
@@ -588,9 +697,81 @@ describe('Admin panel (E9) (e2e)', () => {
       await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/cancel`)
-          .send({ refundPercent: 150 }),
+          .send({ refundPercent: 150, reason: REASON }),
         admin.token,
       ).expect(400);
+    });
+
+    it('15b. cancel and resolve-dispute refuse a missing, short or blank reason → 400 (DEN-294)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+
+      // No reason; 9 characters after trimming; only spaces.
+      for (const body of [
+        { refundPercent: 0 },
+        { refundPercent: 0, reason: '   too short ' },
+        { refundPercent: 0, reason: ' '.repeat(20) },
+      ]) {
+        await bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/orders/${orderId}/cancel`).send(body),
+          admin.token,
+        ).expect(400);
+      }
+      await bearer(
+        request(app.getHttpServer())
+          .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
+          .send({ resolution: 'customer', refundPercent: 0 }),
+        admin.token,
+      ).expect(400);
+
+      const order = await prisma.order.findUnique({ where: { id: orderId } });
+      expect(order!.status).not.toBe('CANCELLED');
+    });
+
+    it('15c. the reason reaches the audit row and the admin detail, and never the customer (DEN-294)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+      const reason = 'The customer asked by phone to cancel the inspection';
+
+      await bearer(
+        request(app.getHttpServer())
+          .post(`/api/v1/admin/orders/${orderId}/cancel`)
+          .send({ refundPercent: 0, reason: `  ${reason}  ` }),
+        admin.token,
+      ).expect(200);
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { adminId: admin.userId, action: 'order.cancel', entityId: orderId },
+      });
+      expect((audit!.after as { reason: string }).reason).toBe(reason);
+
+      const detail = await bearer(
+        request(app.getHttpServer()).get(`/api/v1/admin/orders/${orderId}`),
+        admin.token,
+      ).expect(200);
+      expect(detail.body.decisions).toEqual([
+        expect.objectContaining({
+          action: 'cancel',
+          reason,
+          refundPercent: 0,
+          resolution: null,
+          actor: `admin:${admin.userId}`,
+        }),
+      ]);
+      // The shared timeline does not carry the decision, for any role.
+      expect(detail.body.events.map((e: { type: string }) => e.type)).not.toContain(
+        'admin_decision',
+      );
+
+      const own = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      expect(JSON.stringify(own.body)).not.toContain(reason);
     });
 
     it('16. resolve-dispute (customer win) → Refund + REFUNDED + RESOLVED_CUSTOMER', async () => {
@@ -602,7 +783,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
-          .send({ resolution: 'customer', refundPercent: 100 }),
+          .send({ resolution: 'customer', refundPercent: 100, reason: REASON }),
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('REFUNDED');
@@ -616,6 +797,15 @@ describe('Admin panel (E9) (e2e)', () => {
       const dispute = await prisma.dispute.findUnique({ where: { orderId } });
       expect(dispute!.status).toBe('RESOLVED_CUSTOMER');
       expect(dispute!.resolvedBy).toBe(admin.userId);
+      const decision = await prisma.orderEvent.findFirst({
+        where: { orderId, type: 'admin_decision' },
+      });
+      expect(decision!.payload).toEqual({
+        action: 'resolve_dispute',
+        reason: REASON,
+        refundPercent: 100,
+        resolution: 'customer',
+      });
     });
 
     it('17. resolve-dispute (inspector win) → Payout + COMPLETED + RESOLVED_INSPECTOR', async () => {
@@ -627,7 +817,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
-          .send({ resolution: 'inspector' }),
+          .send({ resolution: 'inspector', reason: REASON }),
         admin.token,
       ).expect(200);
       expect(res.body.status).toBe('COMPLETED');
@@ -651,7 +841,7 @@ describe('Admin panel (E9) (e2e)', () => {
       const res = await bearer(
         request(app.getHttpServer())
           .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
-          .send({ resolution: 'customer' }),
+          .send({ resolution: 'customer', reason: REASON }),
         admin.token,
       ).expect(409);
       expect(res.body.error.code).toBe('not_disputed');
@@ -717,7 +907,9 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(list.body.items[0].priceCents).toBeDefined();
 
       await bearer(
-        request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/hide`),
+        request(app.getHttpServer())
+          .post(`/api/v1/admin/listings/${listingId}/hide`)
+          .send({ reason: REASON }),
         admin.token,
       ).expect(200);
       let l = await prisma.listing.findUnique({ where: { id: listingId } });
@@ -736,9 +928,249 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(audit).toBeTruthy();
 
       await bearer(
-        request(app.getHttpServer()).post('/api/v1/admin/listings/nope/hide'),
+        request(app.getHttpServer())
+          .post('/api/v1/admin/listings/nope/hide')
+          .send({ reason: REASON }),
         admin.token,
       ).expect(404);
+    });
+
+    it('20b. hide needs a reason; the seller is told, sees it, and cannot publish again (DEN-295)', async () => {
+      const admin = await makeAdmin();
+      const seller = await makeUser('seller');
+      const listingId = await seedListing(seller, 'ACTIVE');
+      const reason = 'The price in the advert does not match the description';
+      const hide = (body: object) =>
+        bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/hide`).send(body),
+          admin.token,
+        );
+
+      // No reason; 9 characters after trimming; only spaces.
+      await hide({}).expect(400);
+      await hide({ reason: '   too short ' }).expect(400);
+      await hide({ reason: ' '.repeat(20) }).expect(400);
+      expect((await prisma.listing.findUnique({ where: { id: listingId } }))!.status).toBe(
+        'ACTIVE',
+      );
+
+      await hide({ reason: `  ${reason}  ` }).expect(200);
+      const hidden = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
+      expect(hidden.status).toBe('HIDDEN');
+      expect(hidden.adminHiddenReason).toBe(reason);
+      expect(hidden.adminHiddenAt).not.toBeNull();
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { entity: 'listing', entityId: listingId, action: 'listing.hide' },
+      });
+      expect((audit!.after as { reason: string }).reason).toBe(reason);
+
+      // The seller is told, with the reason (in-app row; dispatch is inline in tests).
+      const notice = await prisma.notification.findFirst({
+        where: { userId: seller.userId, type: 'listing.hidden', channel: 'inapp' },
+      });
+      expect((notice!.payload as { reason: string }).reason).toBe(reason);
+
+      // The seller sees the reason in the cabinet.
+      const mine = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(200);
+      const row = mine.body.items.find((i: { id: string }) => i.id === listingId);
+      expect(row.adminHiddenReason).toBe(reason);
+      expect(row.adminHiddenAt).toEqual(expect.any(String));
+
+      // An admin hide is not the seller's to undo.
+      const publish = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/publish`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ package: 'standard' })
+        .expect(409);
+      expect(publish.body.error.code).toBe('listing_hidden_by_admin');
+
+      // An admin unhide clears the hide and tells the seller.
+      await bearer(
+        request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/unhide`),
+        admin.token,
+      ).expect(200);
+      const restored = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
+      expect(restored.status).toBe('ACTIVE');
+      expect(restored.adminHiddenAt).toBeNull();
+      expect(restored.adminHiddenReason).toBeNull();
+      expect(
+        await prisma.notification.count({
+          where: { userId: seller.userId, type: 'listing.unhidden', channel: 'inapp' },
+        }),
+      ).toBe(1);
+    });
+
+    it('20e. hide works only on a live listing, unhide only on an admin hide', async () => {
+      const admin = await makeAdmin();
+      const seller = await makeUser('seller');
+      const post = (id: string, action: 'hide' | 'unhide') =>
+        bearer(
+          request(app.getHttpServer())
+            .post(`/api/v1/admin/listings/${id}/${action}`)
+            .send({ reason: REASON }),
+          admin.token,
+        );
+
+      for (const status of ['DRAFT', 'HIDDEN', 'SOLD', 'DELETED']) {
+        const id = await seedListing(seller, status);
+        const res = await post(id, 'hide').expect(409);
+        expect(res.body.error.code).toBe('listing_not_active');
+        const row = await prisma.listing.findUniqueOrThrow({ where: { id } });
+        expect(row.status).toBe(status);
+        expect(row.adminHiddenAt).toBeNull();
+      }
+
+      // HIDDEN here is a seller hide: the seed sets no adminHiddenAt.
+      for (const status of ['ACTIVE', 'HIDDEN', 'DELETED']) {
+        const id = await seedListing(seller, status);
+        const res = await post(id, 'unhide').expect(409);
+        expect(res.body.error.code).toBe('listing_not_hidden_by_admin');
+        expect((await prisma.listing.findUniqueOrThrow({ where: { id } })).status).toBe(status);
+      }
+
+      // A refused action tells the seller nothing.
+      expect(
+        await prisma.notification.count({
+          where: { userId: seller.userId, type: { in: ['listing.hidden', 'listing.unhidden'] } },
+        }),
+      ).toBe(0);
+
+      // The admin list tells an admin hide from a seller hide.
+      const adminHidden = await seedListing(seller, 'ACTIVE');
+      await post(adminHidden, 'hide').expect(200);
+      const list = await bearer(
+        request(app.getHttpServer()).get(`/api/v1/admin/listings?sellerId=${seller.userId}`),
+        admin.token,
+      ).expect(200);
+      const items = list.body.items as { id: string; status: string; adminHiddenAt: string | null }[];
+      expect(items.find((i) => i.id === adminHidden)!.adminHiddenAt).toEqual(expect.any(String));
+      const sellerHidden = items.filter((i) => i.status === 'HIDDEN' && i.id !== adminHidden);
+      expect(sellerHidden.length).toBeGreaterThan(0);
+      expect(sellerHidden.every((i) => i.adminHiddenAt === null)).toBe(true);
+    });
+
+    it('20f. a Gold payment does not publish a listing an admin hid or deleted during the checkout', async () => {
+      const admin = await makeAdmin();
+      const seller = await makeUser('seller');
+      // The Stripe webhook calls this method; here the test calls it directly.
+      const payments = app.get(PaymentsService);
+      const goldPayment = () =>
+        prisma.payment.create({
+          data: { purpose: 'gold', userId: seller.userId, amountCents: 999, status: 'pending' },
+        });
+      const adminPost = (id: string, action: 'hide' | 'delete') =>
+        bearer(
+          request(app.getHttpServer())
+            .post(`/api/v1/admin/listings/${id}/${action}`)
+            .send({ reason: REASON }),
+          admin.token,
+        ).expect(200);
+
+      const hiddenId = await seedListing(seller, 'ACTIVE');
+      await adminPost(hiddenId, 'hide');
+      const deletedId = await seedListing(seller, 'ACTIVE');
+      await adminPost(deletedId, 'delete');
+
+      for (const [id, status] of [
+        [hiddenId, 'HIDDEN'],
+        [deletedId, 'DELETED'],
+      ] as const) {
+        const payment = await goldPayment();
+        await payments.activateGoldListing(payment.id, id);
+        const row = await prisma.listing.findUniqueOrThrow({ where: { id } });
+        expect(row.status).toBe(status);
+        expect(row.package).toBe('standard');
+        // The money was taken; the payment row must say so.
+        expect((await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).status).toBe(
+          'succeeded',
+        );
+      }
+      expect(
+        await prisma.notification.count({
+          where: { userId: seller.userId, type: 'listing.published' },
+        }),
+      ).toBe(0);
+
+      // A listing that is still the seller's to publish goes live as before.
+      const draftId = await seedListing(seller, 'DRAFT');
+      const payment = await goldPayment();
+      await payments.activateGoldListing(payment.id, draftId);
+      const live = await prisma.listing.findUniqueOrThrow({ where: { id: draftId } });
+      expect(live.status).toBe('ACTIVE');
+      expect(live.package).toBe('gold');
+    });
+
+    it('20c. a seller who unpublished the listing may still publish it again (DEN-295)', async () => {
+      const seller = await makeUser('seller');
+      const listingId = await seedListing(seller, 'ACTIVE');
+      // Both routes carry no @HttpCode, so Nest answers a POST with 201.
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/unpublish`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/publish`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .send({ package: 'standard' })
+        .expect(201);
+      expect((await prisma.listing.findUnique({ where: { id: listingId } }))!.status).toBe(
+        'ACTIVE',
+      );
+    });
+
+    it('20d. an admin deletes a live listing with a reason; the seller is told', async () => {
+      const admin = await makeAdmin();
+      const user = await makeUser('nonadmin');
+      const seller = await makeUser('seller');
+      const listingId = await seedListing(seller, 'ACTIVE');
+      const reason = 'The photos show a different car';
+      const del = (token: string, body: object) =>
+        bearer(
+          request(app.getHttpServer()).post(`/api/v1/admin/listings/${listingId}/delete`).send(body),
+          token,
+        );
+
+      await del(user.token, { reason }).expect(403);
+      await del(admin.token, {}).expect(400);
+      await del(admin.token, { reason: '   too short ' }).expect(400);
+      expect((await prisma.listing.findUniqueOrThrow({ where: { id: listingId } })).status).toBe(
+        'ACTIVE',
+      );
+
+      const res = await del(admin.token, { reason: `  ${reason}  ` }).expect(200);
+      expect(res.body.status).toBe('DELETED');
+
+      // Soft delete: the row stays, the gallery and the report link go.
+      const deleted = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
+      expect(deleted.status).toBe('DELETED');
+      expect(deleted.reportId).toBeNull();
+      expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(0);
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { entity: 'listing', entityId: listingId, action: 'listing.delete' },
+      });
+      expect(audit!.adminId).toBe(admin.userId);
+      expect(audit!.before).toMatchObject({ status: 'ACTIVE' });
+      expect(audit!.after).toMatchObject({ status: 'DELETED', reason });
+
+      const notice = await prisma.notification.findFirst({
+        where: { userId: seller.userId, type: 'listing.deleted', channel: 'inapp' },
+      });
+      expect((notice!.payload as { reason: string }).reason).toBe(reason);
+
+      // The listing leaves the seller's cabinet, like the seller's own delete.
+      const mine = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(200);
+      expect(mine.body.items.some((i: { id: string }) => i.id === listingId)).toBe(false);
+
+      const again = await del(admin.token, { reason }).expect(409);
+      expect(again.body.error.code).toBe('listing_already_deleted');
     });
 
   });
@@ -815,6 +1247,61 @@ describe('Admin panel (E9) (e2e)', () => {
       });
       expect(audit).toBeTruthy();
       expect((audit!.after as { value: number }).value).toBe(75);
+    });
+
+    it('24b. a value outside the key range → 400 with the range, and nothing is stored (DEN-297)', async () => {
+      const admin = await makeAdmin();
+      const list = await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/settings'),
+        admin.token,
+      ).expect(200);
+      expect(list.body.limits.orderBaseFeeEur).toEqual({ min: 5, max: 200 });
+
+      const before = await settings.getNumber('orderBaseFeeEur');
+      // The ticket's own example: an extra two digits on the base fee.
+      const res = await bearer(
+        request(app.getHttpServer())
+          .patch('/api/v1/admin/settings/orderBaseFeeEur')
+          .send({ value: 3900 }),
+        admin.token,
+      ).expect(400);
+      expect(res.body.error.code).toBe('invalid_value');
+      expect(res.body.error.message).toContain('from 5 to 200');
+      settings.invalidate();
+      expect(await settings.getNumber('orderBaseFeeEur')).toBe(before);
+
+      // A zero timeout would expire every offer the moment it was sent.
+      await bearer(
+        request(app.getHttpServer())
+          .patch('/api/v1/admin/settings/offerTimeoutMinutes')
+          .send({ value: 0 }),
+        admin.token,
+      ).expect(400);
+      // 0 stays allowed where it is a documented lever.
+      await bearer(
+        request(app.getHttpServer())
+          .patch('/api/v1/admin/settings/orderCapKm')
+          .send({ value: PLATFORM_SETTING_DEFAULTS.orderCapKm }),
+        admin.token,
+      ).expect(200);
+    });
+
+    it('25b. the removed signedUrlTtlMinutes key is not listed and cannot be set (DEN-293)', async () => {
+      const admin = await makeAdmin();
+      const list = await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/settings'),
+        admin.token,
+      ).expect(200);
+      expect(list.body.values).not.toHaveProperty('signedUrlTtlMinutes');
+      expect(list.body.defaults).not.toHaveProperty('signedUrlTtlMinutes');
+
+      const res = await bearer(
+        request(app.getHttpServer())
+          .patch('/api/v1/admin/settings/signedUrlTtlMinutes')
+          .send({ value: 5 }),
+        admin.token,
+      ).expect(404);
+      expect(res.body.error.code).toBe('unknown_setting');
     });
   });
 
@@ -948,6 +1435,59 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(captured.body.byPurpose.order.cents).toBe(
         before.body.byPurpose.order.cents + FARE.totalCents,
       );
+    });
+
+    it('27c. the revenue window reads the capture time, not the authorization time (DEN-293)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+      await acceptPendingOffer(orderId);
+
+      const payment = await prisma.payment.findFirstOrThrow({
+        where: { orderId, status: 'succeeded' },
+      });
+      expect(payment.capturedAt).not.toBeNull();
+
+      // Authorized 40 days ago, captured now: outside the default 30-day
+      // summary window by creation time, inside it by capture time.
+      const fortyDaysAgo = new Date(Date.now() - 40 * 86_400_000);
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: { createdAt: fortyDaysAgo },
+      });
+
+      const summary = () =>
+        bearer(
+          request(app.getHttpServer()).get('/api/v1/admin/finance/summary'),
+          admin.token,
+        ).expect(200);
+      const dashboard = () =>
+        bearer(request(app.getHttpServer()).get('/api/v1/admin/dashboard'), admin.token).expect(
+          200,
+        );
+
+      const summaryCapturedNow = await summary();
+      const dashboardCapturedNow = await dashboard();
+
+      // Move the capture out of both windows too. The payment must leave the
+      // 30-day summary AND today's dashboard figure, by exactly its amount.
+      // Differences, not absolute values: other suites share this database.
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: { capturedAt: fortyDaysAgo },
+      });
+      const summaryCapturedEarlier = await summary();
+      const dashboardCapturedEarlier = await dashboard();
+
+      expect(
+        summaryCapturedNow.body.byPurpose.order.cents -
+          summaryCapturedEarlier.body.byPurpose.order.cents,
+      ).toBe(payment.amountCents);
+      expect(
+        dashboardCapturedNow.body.revenueTodayCents -
+          dashboardCapturedEarlier.body.revenueTodayCents,
+      ).toBe(payment.amountCents);
     });
 
     it('28. DAC7 CSV: text/csv, header row, one row per inspector with paid payouts', async () => {

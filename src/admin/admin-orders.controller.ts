@@ -73,15 +73,13 @@ export class AdminOrdersController {
     @Param('id') id: string,
     @Body() dto: AdminCancelOrderDto,
   ) {
-    const result = await this.orders.adminCancel(id, dto.refundPercent, adminId);
-    await this.audit.log(
-      adminId,
-      'order.cancel',
-      'order',
-      id,
-      null,
-      { refundPercent: dto.refundPercent, refundCents: result.refundCents, status: result.status },
-    );
+    const result = await this.orders.adminCancel(id, dto.refundPercent, adminId, dto.reason);
+    await this.audit.log(adminId, 'order.cancel', 'order', id, null, {
+      refundPercent: dto.refundPercent,
+      refundCents: result.refundCents,
+      status: result.status,
+      reason: dto.reason,
+    });
     return result;
   }
 
@@ -94,20 +92,20 @@ export class AdminOrdersController {
     @Param('id') id: string,
     @Body() dto: AdminResolveDisputeDto,
   ) {
-    const result = await this.orders.resolveDispute(id, dto.resolution, adminId, dto.refundPercent);
-    await this.audit.log(
-      adminId,
-      'order.resolve_dispute',
-      'order',
+    const result = await this.orders.resolveDispute(
       id,
-      null,
-      {
-        resolution: dto.resolution,
-        status: result.status,
-        refundCents: result.refundCents,
-        payoutCents: result.payoutCents,
-      },
+      dto.resolution,
+      adminId,
+      dto.reason,
+      dto.refundPercent,
     );
+    await this.audit.log(adminId, 'order.resolve_dispute', 'order', id, null, {
+      resolution: dto.resolution,
+      status: result.status,
+      refundCents: result.refundCents,
+      payoutCents: result.payoutCents,
+      reason: dto.reason,
+    });
     return result;
   }
 }

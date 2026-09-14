@@ -70,6 +70,21 @@ export class MyListingItemDto {
 
   @ApiProperty({ example: 0 })
   viewsCount!: number;
+
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    description:
+      'When the platform hid the listing (DEN-295). While set, the seller cannot publish it.',
+  })
+  adminHiddenAt!: string | null;
+
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    description: 'Why the platform hid the listing. Written by an admin for the seller.',
+  })
+  adminHiddenReason!: string | null;
 }
 
 export class MyListingsListDto {
