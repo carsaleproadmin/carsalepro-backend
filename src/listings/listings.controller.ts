@@ -24,7 +24,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Listing } from '@prisma/client';
-import { CurrentUser, Public } from '../auth/auth.decorators';
+import { CurrentUser } from '../auth/auth.decorators';
 import { ErrorResponseDto } from '../common/dto/error-response.dto';
 import { CreateListingDto } from './dto/create-listing.dto';
 import { CreateManualListingDto } from './dto/create-manual-listing.dto';
@@ -35,7 +35,6 @@ import {
   UploadListingPhotoDto,
 } from './dto/listing-photo.dto';
 import {
-  ListingPackagesDto,
   MyListingsListDto,
   PublishResultDto,
 } from './dto/listing-response.dto';
@@ -51,16 +50,6 @@ const MAX_PHOTO_UPLOAD_BYTES = 15 * 1024 * 1024;
 @Controller('api/v1/listings')
 export class ListingsController {
   constructor(private readonly listings: ListingsService) {}
-
-  // Declared before `@Get(':id')`-style routes would be, and public so the
-  // package picker can render prices before the seller signs in.
-  @Public()
-  @Get('packages')
-  @ApiOperation({ summary: 'Listing package prices (integer cents)' })
-  @ApiOkResponse({ type: ListingPackagesDto })
-  packages(): Promise<ListingPackagesDto> {
-    return this.listings.packages();
-  }
 
   // A Report ID is a bearer capability, so this endpoint is the one place a
   // valid code can be turned into a listing. It answers the same 404 for
@@ -128,7 +117,7 @@ export class ListingsController {
   }
 
   @Post(':id/publish')
-  @ApiOperation({ summary: 'Publish a listing (standard activates; gold checks out)' })
+  @ApiOperation({ summary: 'Publish a listing (free; the only package is standard)' })
   @ApiParam({ name: 'id' })
   @ApiOkResponse({ type: PublishResultDto })
   @ApiResponse({
@@ -139,9 +128,10 @@ export class ListingsController {
   publish(
     @CurrentUser('id') userId: string,
     @Param('id') id: string,
-    @Body() dto: PublishListingDto,
+    // Read only by the validation pipe: a request for "gold" gets 400 (DEN-309).
+    @Body() _dto: PublishListingDto,
   ): Promise<PublishResultDto> {
-    return this.listings.publish(userId, id, dto.package);
+    return this.listings.publish(userId, id);
   }
 
   @Post(':id/unpublish')

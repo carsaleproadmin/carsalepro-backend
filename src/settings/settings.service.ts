@@ -79,8 +79,6 @@ export class SettingsService {
     return {
       currency: 'EUR',
       payPerViewCents: await this.getCents('payPerViewPriceEur'),
-      goldPackageCents: await this.getCents('goldPackagePriceEur'),
-      standardListingCents: await this.getCents('standardListingPriceEur'),
       orderBaseFeeCents: await this.getCents('orderBaseFeeEur'),
       orderRatePerKmCents: await this.getCents('orderRatePerKmEur'),
       orderRatePerMinuteCents: await this.getCents('orderRatePerMinuteEur'),

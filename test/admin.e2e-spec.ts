@@ -2,7 +2,6 @@ import { INestApplication } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import request from 'supertest';
 import { OrdersService } from '../src/orders/orders.service';
-import { PaymentsService } from '../src/payments/payments.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SettingsService } from '../src/settings/settings.service';
 import { PLATFORM_SETTING_DEFAULTS } from '../src/settings/platform-settings.constants';
@@ -1051,57 +1050,6 @@ describe('Admin panel (E9) (e2e)', () => {
       const sellerHidden = items.filter((i) => i.status === 'HIDDEN' && i.id !== adminHidden);
       expect(sellerHidden.length).toBeGreaterThan(0);
       expect(sellerHidden.every((i) => i.adminHiddenAt === null)).toBe(true);
-    });
-
-    it('20f. a Gold payment does not publish a listing an admin hid or deleted during the checkout', async () => {
-      const admin = await makeAdmin();
-      const seller = await makeUser('seller');
-      // The Stripe webhook calls this method; here the test calls it directly.
-      const payments = app.get(PaymentsService);
-      const goldPayment = () =>
-        prisma.payment.create({
-          data: { purpose: 'gold', userId: seller.userId, amountCents: 999, status: 'pending' },
-        });
-      const adminPost = (id: string, action: 'hide' | 'delete') =>
-        bearer(
-          request(app.getHttpServer())
-            .post(`/api/v1/admin/listings/${id}/${action}`)
-            .send({ reason: REASON }),
-          admin.token,
-        ).expect(200);
-
-      const hiddenId = await seedListing(seller, 'ACTIVE');
-      await adminPost(hiddenId, 'hide');
-      const deletedId = await seedListing(seller, 'ACTIVE');
-      await adminPost(deletedId, 'delete');
-
-      for (const [id, status] of [
-        [hiddenId, 'HIDDEN'],
-        [deletedId, 'DELETED'],
-      ] as const) {
-        const payment = await goldPayment();
-        await payments.activateGoldListing(payment.id, id);
-        const row = await prisma.listing.findUniqueOrThrow({ where: { id } });
-        expect(row.status).toBe(status);
-        expect(row.package).toBe('standard');
-        // The money was taken; the payment row must say so.
-        expect((await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).status).toBe(
-          'succeeded',
-        );
-      }
-      expect(
-        await prisma.notification.count({
-          where: { userId: seller.userId, type: 'listing.published' },
-        }),
-      ).toBe(0);
-
-      // A listing that is still the seller's to publish goes live as before.
-      const draftId = await seedListing(seller, 'DRAFT');
-      const payment = await goldPayment();
-      await payments.activateGoldListing(payment.id, draftId);
-      const live = await prisma.listing.findUniqueOrThrow({ where: { id: draftId } });
-      expect(live.status).toBe('ACTIVE');
-      expect(live.package).toBe('gold');
     });
 
     it('20c. a seller who unpublished the listing may still publish it again (DEN-295)', async () => {
