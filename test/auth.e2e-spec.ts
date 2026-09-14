@@ -269,7 +269,6 @@ describe('Auth + users (e2e)', () => {
     expect(prices.currency).toBe('EUR');
     // One source of truth: the cents block must be the EUR keys, converted.
     expect(prices.payPerViewCents).toBe(Math.round(res.body.payPerViewPriceEur * 100));
-    expect(prices.goldPackageCents).toBe(Math.round(res.body.goldPackagePriceEur * 100));
     expect(prices.orderBaseFeeCents).toBe(Math.round(res.body.orderBaseFeeEur * 100));
     expect(prices.orderRatePerKmCents).toBe(Math.round(res.body.orderRatePerKmEur * 100));
     expect(prices.orderRatePerMinuteCents).toBe(
@@ -296,18 +295,19 @@ describe('Auth + users (e2e)', () => {
     expect(res.body.kycRetentionDays).toBeGreaterThan(0);
   });
 
-  it('12d. exposes listing package prices without a token', async () => {
+  it('12d. the Gold and listing prices are gone from the public settings (DEN-309)', async () => {
     const res = await request(app.getHttpServer())
-      .get('/api/v1/listings/packages')
+      .get('/api/v1/settings/public')
       .expect(200);
 
-    const settings = await request(app.getHttpServer()).get('/api/v1/settings/public');
-    const gold = res.body.items.find((i: { package: string }) => i.package === 'gold');
-    const standard = res.body.items.find((i: { package: string }) => i.package === 'standard');
+    expect(res.body.goldPackagePriceEur).toBeUndefined();
+    expect(res.body.standardListingPriceEur).toBeUndefined();
+    expect(res.body.prices.goldPackageCents).toBeUndefined();
+    expect(res.body.prices.standardListingCents).toBeUndefined();
 
-    expect(gold.amountCents).toBe(settings.body.prices.goldPackageCents);
-    expect(gold.currency).toBe('EUR');
-    expect(standard.amountCents).toBe(settings.body.prices.standardListingCents);
+    // The package price route is gone too.
+    const packages = await request(app.getHttpServer()).get('/api/v1/listings/packages');
+    expect(packages.status).not.toBe(200);
   });
 
   it('13. erases the account (GDPR) and blocks subsequent login', async () => {

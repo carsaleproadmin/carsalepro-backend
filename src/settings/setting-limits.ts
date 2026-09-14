@@ -36,8 +36,6 @@ export const SETTING_LIMITS: Record<SettingKey, SettingLimit> = {
   orderRoutingCacheHours: { min: 0, max: 720 },
   platformFeePercent: { min: 0, max: 50 },
   payPerViewPriceEur: { min: 0, max: 100 },
-  goldPackagePriceEur: { min: 0, max: 200 },
-  standardListingPriceEur: { min: 0, max: 200 },
   expertSearchRadiusKm: { min: 10, max: 1000 },
   offerTimeoutMinutes: { min: 5, max: 1440 },
   // The ceiling stays far below Stripe's 7-day authorization expiry: a hold
