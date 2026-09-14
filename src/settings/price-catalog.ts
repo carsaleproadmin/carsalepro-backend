@@ -15,10 +15,6 @@ export interface PriceCatalog {
 
   /** One-off unlock of a full inspection report. */
   payPerViewCents: number;
-  /** Gold listing package. */
-  goldPackageCents: number;
-  /** Standard listing package — 0 today, but read it rather than assume. */
-  standardListingCents: number;
 
   /** Order tariff, itemised so the UI can explain the fare before geocoding. */
   orderBaseFeeCents: number;

@@ -220,10 +220,12 @@ export class PaymentsService {
         if (meta.purpose === 'ppv' && meta.paymentId && meta.reportId && meta.userId) {
           await this.fulfillPurchase(meta.paymentId, meta.reportId, meta.userId);
           this.logger.log(`PPV purchase fulfilled for payment ${meta.paymentId}`);
-        } else if (meta.purpose === 'gold' && meta.paymentId && meta.listingId) {
-          await this.activateGoldListing(meta.paymentId, meta.listingId);
-          this.logger.log(`Gold listing ${meta.listingId} activated for payment ${meta.paymentId}`);
         }
+        /*
+         * There is no `gold` branch any more (DEN-309). The platform does not
+         * sell Gold, so nothing can create such a session; a redelivery of a
+         * historical one falls through and is marked processed.
+         */
         /*
          * There is no `vin_history` branch any more (DEN-245). The paid VIN
          * history was withdrawn and its module is deleted, so nothing can mint
@@ -634,56 +636,6 @@ export class PaymentsService {
       return this.moduleRef.get(OrdersService, { strict: false });
     } catch {
       return null;
-    }
-  }
-
-  /**
-   * Idempotently mark a Gold payment succeeded and activate its listing
-   * (ACTIVE, package 'gold', publishedAt now). A listing has no end date, so
-   * nothing is scheduled here. Safe to call from both the mock path and the
-   * Stripe webhook.
-   *
-   * Only a listing that is still the seller's to publish: not DELETED and not
-   * hidden by an admin. The checkout stays open for up to 24 hours, and an
-   * admin can hide or delete the listing in that time. Before this check the
-   * payment put such a listing back on the showroom. The payment is still
-   * marked succeeded: the money was taken, and what to do with it (a refund
-   * or not) is an open decision (DEN-295).
-   */
-  async activateGoldListing(paymentId: string, listingId: string): Promise<void> {
-    await this.prisma.payment
-      .update({ where: { id: paymentId }, data: { status: 'succeeded' } })
-      .catch(() => undefined);
-
-    const now = new Date();
-
-    const { count } = await this.prisma.listing.updateMany({
-      where: { id: listingId, status: { not: 'DELETED' }, adminHiddenAt: null },
-      data: {
-        status: 'ACTIVE',
-        package: 'gold',
-        publishedAt: now,
-      },
-    });
-    if (count === 0) {
-      this.logger.warn(
-        `Gold payment ${paymentId.slice(0, 6)}… succeeded, but listing ${listingId.slice(0, 6)}… ` +
-          'was not activated: it is deleted, hidden by an admin or absent. ' +
-          'The money needs a manual decision.',
-      );
-      return;
-    }
-    const listing = await this.prisma.listing.findUnique({ where: { id: listingId } });
-
-    // E11: notify the seller their Gold listing is live (non-throwing).
-    // Reads the listing's own denormalised columns — `report` is null for a
-    // manual listing, and Gold is sold to both provenances.
-    if (listing) {
-      await this.notifications.notify(listing.sellerId, 'listing.published', {
-        listingId: listing.id,
-        make: listing.make,
-        model: listing.model,
-      });
     }
   }
 

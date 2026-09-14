@@ -17,7 +17,7 @@ import {
   ADMIN_REASON_MAX_LENGTH,
   ADMIN_REASON_MIN_LENGTH,
 } from '../../orders/admin-decision';
-import { PaginationQueryDto } from './pagination.dto';
+import { AdminCarFilterQueryDto } from './admin-car-filter.dto';
 
 /**
  * Trim before the length check, so that a reason of only spaces is refused
@@ -30,7 +30,12 @@ const REASON_DESCRIPTION =
   `Why the admin makes this decision (${ADMIN_REASON_MIN_LENGTH}-${ADMIN_REASON_MAX_LENGTH} ` +
   'characters after trimming). Only admins see it.';
 
-export class AdminOrderListQueryDto extends PaginationQueryDto {
+/**
+ * The car filters (DEN-316) read the order's own columns where it has them. An
+ * order has no year, mileage or city column: year and mileage come from the
+ * attached report, and the city is matched in the address.
+ */
+export class AdminOrderListQueryDto extends AdminCarFilterQueryDto {
   @ApiPropertyOptional({ enum: OrderStatus })
   @IsOptional()
   @IsEnum(OrderStatus)

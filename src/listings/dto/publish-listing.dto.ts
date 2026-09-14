@@ -4,9 +4,11 @@ import { IsIn } from 'class-validator';
 export class PublishListingDto {
   @ApiProperty({
     example: 'standard',
-    enum: ['standard', 'gold'],
-    description: 'Listing package. "gold" triggers a Stripe Checkout (or auto-activates in mock mode).',
+    enum: ['standard'],
+    description:
+      'Listing package. The only package is "standard", and publishing is free. ' +
+      '"gold" is not sold any more (DEN-309) and gets 400.',
   })
-  @IsIn(['standard', 'gold'])
-  package!: 'standard' | 'gold';
+  @IsIn(['standard'])
+  package!: 'standard';
 }

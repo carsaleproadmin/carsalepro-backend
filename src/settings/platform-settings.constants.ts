@@ -17,8 +17,6 @@ export const SETTING_KEYS = {
   orderRoutingCacheHours: 'orderRoutingCacheHours',
   platformFeePercent: 'platformFeePercent',
   payPerViewPriceEur: 'payPerViewPriceEur',
-  goldPackagePriceEur: 'goldPackagePriceEur',
-  standardListingPriceEur: 'standardListingPriceEur',
   expertSearchRadiusKm: 'expertSearchRadiusKm',
   offerTimeoutMinutes: 'offerTimeoutMinutes',
   orderSearchWindowMinutes: 'orderSearchWindowMinutes',
@@ -32,6 +30,9 @@ export const SETTING_KEYS = {
   // with the TTL from the environment. An admin who set 5 minutes got links
   // that stayed valid for 15. The row can stay in the database: nothing reads
   // it, and `getAll` lists only the keys in this map.
+  // `goldPackagePriceEur` and `standardListingPriceEur` were removed on
+  // 2026-09-14 (DEN-309). The platform does not sell Gold any more, and each
+  // listing is free. Their rows can stay in the database for the same reason.
 } as const;
 
 export type SettingKey = keyof typeof SETTING_KEYS;
@@ -151,8 +152,6 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   orderRoutingCacheHours: 24,
   platformFeePercent: 20,
   payPerViewPriceEur: 14.99,
-  goldPackagePriceEur: 9.99,
-  standardListingPriceEur: 0,
   /**
    * How far dispatch looks for an inspector, as a STRAIGHT LINE.
    *
@@ -234,9 +233,12 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
 /**
  * Subset exposed publicly via GET /api/v1/settings/public.
  *
- * The first seven are a frozen shape — `test/auth.e2e-spec.ts` asserts both that
+ * The keys are a published shape — `test/auth.e2e-spec.ts` asserts both that
  * `payPerViewPriceEur` is present and that `platformFeePercent` is absent, and
- * the website reads them today. Additions are fine; removals are not.
+ * the website reads them. Additions are fine; a removal needs every reader
+ * changed first. `goldPackagePriceEur` and `standardListingPriceEur` left on
+ * 2026-09-14 (DEN-309): only the website read them, and it stopped in the
+ * same change.
  * `orderSurgeMultiplier` stays private: it is an operator lever, not a
  * published tariff.
  */
@@ -244,8 +246,6 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   'orderBaseFeeEur',
   'orderRatePerKmEur',
   'payPerViewPriceEur',
-  'goldPackagePriceEur',
-  'standardListingPriceEur',
   'expertSearchRadiusKm',
   'orderRatePerMinuteEur',
   'orderMinimumFareEur',

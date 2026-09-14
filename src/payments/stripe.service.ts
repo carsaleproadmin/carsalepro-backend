@@ -60,15 +60,6 @@ export interface CreatePpvCheckoutParams {
   cancelUrl: string;
 }
 
-export interface CreateGoldCheckoutParams {
-  paymentId: string;
-  listingId: string;
-  userId: string;
-  amountCents: number;
-  successUrl: string;
-  cancelUrl: string;
-}
-
 /**
  * The verdict on a failed Stripe call. `retryable` is the only field callers
  * are allowed to branch a retry on; `code` and `message` are for mapping to an
@@ -269,38 +260,6 @@ export class StripeService implements OnModuleInit {
           reportId: params.reportId,
           userId: params.userId,
           purpose: 'ppv',
-        },
-      },
-      this.idempotently(params.paymentId),
-    );
-    if (!session.url) throw new Error('Stripe did not return a Checkout URL');
-    return { checkoutUrl: session.url, sessionId: session.id };
-  }
-
-  /** Create a one-time payment Checkout Session for a Gold listing upgrade. */
-  async createGoldCheckout(
-    params: CreateGoldCheckoutParams,
-  ): Promise<{ checkoutUrl: string; sessionId: string }> {
-    const session = await this.requireClient().checkout.sessions.create(
-      {
-        mode: 'payment',
-        success_url: params.successUrl,
-        cancel_url: params.cancelUrl,
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'eur',
-              unit_amount: params.amountCents,
-              product_data: { name: 'CarSalePro Gold listing' },
-            },
-          },
-        ],
-        metadata: {
-          paymentId: params.paymentId,
-          listingId: params.listingId,
-          userId: params.userId,
-          purpose: 'gold',
         },
       },
       this.idempotently(params.paymentId),
