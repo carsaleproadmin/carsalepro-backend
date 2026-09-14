@@ -1124,6 +1124,74 @@ describe('Admin panel (E9) (e2e)', () => {
   });
 
   // ============================================================
+  // Reports area (DEN-312)
+  // ============================================================
+  describe('reports', () => {
+    it('DEN-312. an admin reads any report; a user cannot use the admin route', async () => {
+      const admin = await makeAdmin();
+      const owner = await makeUser('owner');
+      const stranger = await makeUser('stranger');
+      const report = await prisma.report.create({
+        data: {
+          deviceId: uniqueDeviceId('rep'),
+          code: `CSP-${Math.random().toString(36).slice(2, 8)}`,
+          tier: 'pro',
+          s3Key: 'pro/x/y.pdf',
+          userId: owner.userId,
+          make: 'BMW',
+          model: '320d',
+          year: 2020,
+        },
+      });
+      const server = () => request(app.getHttpServer());
+
+      try {
+        const full = await bearer(
+          server().get(`/api/v1/admin/reports/${report.id}/full`),
+          admin.token,
+        ).expect(200);
+        expect(full.body.id).toBe(report.id);
+        expect(full.body.code).toBe(report.code);
+        expect(Array.isArray(full.body.photos)).toBe(true);
+        // The PDF is not uploaded, so there is no URL.
+        expect(full.body.pdf.downloadUrl).toBeNull();
+
+        // The customer route keeps its access rule: the admin is not the owner.
+        await bearer(
+          server().get(`/api/v1/reports/${report.id}/full`),
+          admin.token,
+        ).expect(403);
+
+        // The owner and a stranger cannot use the admin routes.
+        for (const user of [owner, stranger]) {
+          await bearer(
+            server().get(`/api/v1/admin/reports/${report.id}/full`),
+            user.token,
+          ).expect(403);
+          await bearer(
+            server().get(`/api/v1/admin/reports/${report.id}/download`),
+            user.token,
+          ).expect(403);
+        }
+
+        await bearer(
+          server().get('/api/v1/admin/reports/00000000-0000-4000-8000-000000000000/full'),
+          admin.token,
+        ).expect(404);
+
+        // 409 report_not_uploaded; 503 when the environment has no R2.
+        const download = await bearer(
+          server().get(`/api/v1/admin/reports/${report.id}/download`),
+          admin.token,
+        );
+        expect([409, 503]).toContain(download.status);
+      } finally {
+        await prisma.report.delete({ where: { id: report.id } });
+      }
+    });
+  });
+
+  // ============================================================
   // Settings area (acceptance: quote reflects new fee immediately)
   // ============================================================
   describe('settings', () => {
