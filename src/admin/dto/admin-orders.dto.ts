@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { OrderStatus } from '@prisma/client';
+import { Transform } from 'class-transformer';
 import {
   IsEnum,
   IsIn,
@@ -10,8 +11,24 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
+import {
+  ADMIN_REASON_MAX_LENGTH,
+  ADMIN_REASON_MIN_LENGTH,
+} from '../../orders/admin-decision';
 import { PaginationQueryDto } from './pagination.dto';
+
+/**
+ * Trim before the length check, so that a reason of only spaces is refused
+ * and the stored text has no padding.
+ */
+const trim = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim() : value;
+
+const REASON_DESCRIPTION =
+  `Why the admin makes this decision (${ADMIN_REASON_MIN_LENGTH}-${ADMIN_REASON_MAX_LENGTH} ` +
+  'characters after trimming). Only admins see it.';
 
 export class AdminOrderListQueryDto extends PaginationQueryDto {
   @ApiPropertyOptional({ enum: OrderStatus })
@@ -61,12 +78,26 @@ export class AdminCancelOrderDto {
   @Min(0)
   @Max(100)
   refundPercent!: number;
+
+  @ApiProperty({ description: REASON_DESCRIPTION, example: 'The customer asked by phone to cancel.' })
+  @Transform(trim)
+  @IsString()
+  @MinLength(ADMIN_REASON_MIN_LENGTH)
+  @MaxLength(ADMIN_REASON_MAX_LENGTH)
+  reason!: string;
 }
 
 export class AdminResolveDisputeDto {
   @ApiProperty({ enum: ['customer', 'inspector'] })
   @IsIn(['customer', 'inspector'])
   resolution!: 'customer' | 'inspector';
+
+  @ApiProperty({ description: REASON_DESCRIPTION, example: 'The report has no photo of the rear.' })
+  @Transform(trim)
+  @IsString()
+  @MinLength(ADMIN_REASON_MIN_LENGTH)
+  @MaxLength(ADMIN_REASON_MAX_LENGTH)
+  reason!: string;
 
   @ApiPropertyOptional({ example: 100, minimum: 0, maximum: 100 })
   @IsOptional()

@@ -1,5 +1,5 @@
-import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { ListingStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { clampPage, clampPageSize } from './admin-audit.service';
 import { AdminListingListQueryDto } from './dto/admin-listings.dto';
@@ -48,11 +48,26 @@ export class AdminListingsService {
         model: l.model,
         year: l.year,
         publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
+        // Set only by an admin hide, so the admin panel offers Unhide on it
+        // and not on a listing the seller took off the showroom.
+        adminHiddenAt: l.adminHiddenAt ? l.adminHiddenAt.toISOString() : null,
         createdAt: l.createdAt.toISOString(),
       })),
       total,
       page,
       pageSize,
     };
+  }
+
+  /** The listing's status now, for the "before" half of an audit row. 404 when absent. */
+  async status(id: string): Promise<ListingStatus> {
+    const listing = await this.prisma.listing.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!listing) {
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
+    }
+    return listing.status;
   }
 }

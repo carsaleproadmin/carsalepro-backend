@@ -7,7 +7,12 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  MinLength,
 } from 'class-validator';
+import {
+  ADMIN_REASON_MAX_LENGTH,
+  ADMIN_REASON_MIN_LENGTH,
+} from '../../orders/admin-decision';
 import { PaginationQueryDto } from './pagination.dto';
 
 export class AdminUserListQueryDto extends PaginationQueryDto {
@@ -41,6 +46,21 @@ export class BanUserDto {
   @IsString()
   @MaxLength(500)
   reason?: string;
+}
+
+export class EraseUserDto {
+  @ApiProperty({
+    description:
+      `Why the account is erased (${ADMIN_REASON_MIN_LENGTH}-${ADMIN_REASON_MAX_LENGTH} ` +
+      'characters after trimming), for example the date and channel of the request. ' +
+      'Only admins see it. Do not put personal data in it.',
+    example: 'Erasure request by e-mail on 2026-09-10.',
+  })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MinLength(ADMIN_REASON_MIN_LENGTH)
+  @MaxLength(ADMIN_REASON_MAX_LENGTH)
+  reason!: string;
 }
 
 export class ChangeRoleDto {
