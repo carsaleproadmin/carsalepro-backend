@@ -4,6 +4,8 @@ import { ADMIN_DECISION_EVENT, readAdminDecision } from '../orders/admin-decisio
 import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { clampPage, clampPageSize } from './admin-audit.service';
+import { citySearchKeys } from '../common/search-text';
+import { intRange } from './dto/admin-car-filter.dto';
 import { AdminOrderListQueryDto } from './dto/admin-orders.dto';
 
 @Injectable()
@@ -17,15 +19,20 @@ export class AdminOrdersService {
     const page = clampPage(query.page);
     const pageSize = clampPageSize(query.pageSize);
 
+    // Each filter that needs its own OR goes into this AND. Two `OR` keys in
+    // one object do not combine: the second replaces the first.
+    const and: Prisma.OrderWhereInput[] = [];
     const where: Prisma.OrderWhereInput = {};
     if (query.status) where.status = query.status;
     if (query.customerId) where.customerId = query.customerId;
     if (query.inspectorId) where.inspectorId = query.inspectorId;
     if (query.q) {
-      where.OR = [
-        { number: { contains: query.q, mode: 'insensitive' } },
-        { vin: { contains: query.q, mode: 'insensitive' } },
-      ];
+      and.push({
+        OR: [
+          { number: { contains: query.q, mode: 'insensitive' } },
+          { vin: { contains: query.q, mode: 'insensitive' } },
+        ],
+      });
     }
     if (query.from || query.to) {
       where.createdAt = {
@@ -33,6 +40,37 @@ export class AdminOrdersService {
         ...(query.to ? { lte: new Date(query.to) } : {}),
       };
     }
+
+    // DEN-316: the showroom filters. An order has no normalized search columns,
+    // so make, model and city are a case-insensitive `contains` on the raw text.
+    const make = query.make?.trim();
+    const model = query.model?.trim();
+    if (make) where.make = { contains: make, mode: 'insensitive' };
+    if (model) where.model = { contains: model, mode: 'insensitive' };
+    if (query.country) where.countryCode = query.country;
+    const city = query.city?.trim();
+    if (city) {
+      // The order has no city column; the city is part of the address. Try the
+      // typed text and each spelling or alias of the city.
+      const keys = [...new Set([city, ...citySearchKeys(city)])];
+      and.push({
+        OR: keys.map((key) => ({ address: { contains: key, mode: 'insensitive' as const } })),
+      });
+    }
+    const price = intRange(query.priceFrom, query.priceTo);
+    if (price) where.totalCents = price;
+    // Year and mileage are facts of the inspected car, so they come from the
+    // attached report. An order without a report does not match these filters.
+    const year = intRange(query.yearFrom, query.yearTo);
+    if (year || query.mileageTo != null) {
+      where.report = {
+        is: {
+          ...(year ? { year } : {}),
+          ...(query.mileageTo != null ? { mileageKm: { lte: query.mileageTo } } : {}),
+        },
+      };
+    }
+    if (and.length) where.AND = and;
 
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.order.findMany({
@@ -62,6 +100,32 @@ export class AdminOrdersService {
       total,
       page,
       pageSize,
+    };
+  }
+
+  /**
+   * Every inspector, for the inspector filter on the admin order list (DEN-316).
+   * An inspector is a user with an InspectorProfile, not a role. Erased users
+   * are left out. The cap keeps the answer small; the platform has far fewer.
+   */
+  async listInspectors() {
+    const rows = await this.prisma.inspectorProfile.findMany({
+      where: { user: { deletedAt: null } },
+      select: {
+        userId: true,
+        companyName: true,
+        user: { select: { name: true, email: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 1000,
+    });
+    return {
+      items: rows.map((r) => ({
+        id: r.userId,
+        name: r.user.name,
+        companyName: r.companyName,
+        email: r.user.email,
+      })),
     };
   }
 

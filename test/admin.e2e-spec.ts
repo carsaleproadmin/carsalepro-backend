@@ -586,6 +586,97 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(Array.isArray(detail.body.events)).toBe(true);
     });
 
+    it('11b. list takes the showroom car filters (DEN-316)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const ids = async (filter: string): Promise<string[]> => {
+        const res = await bearer(
+          request(app.getHttpServer()).get(
+            `/api/v1/admin/orders?customerId=${customer.userId}&${filter}`,
+          ),
+          admin.token,
+        ).expect(200);
+        return res.body.items.map((o: { id: string }) => o.id);
+      };
+
+      // The order's own columns. The city is matched in the address, also by alias.
+      expect(await ids('make=bmw&model=320')).toEqual([orderId]);
+      expect(await ids('make=Audi')).toEqual([]);
+      expect(await ids(`country=${order.countryCode.toLowerCase()}`)).toEqual([orderId]);
+      expect(await ids('country=AT')).toEqual([]);
+      expect(await ids(`city=${encodeURIComponent('Берлин')}`)).toEqual([orderId]);
+      expect(await ids('city=Hamburg')).toEqual([]);
+      expect(await ids(`priceFrom=${order.totalCents}&priceTo=${order.totalCents}`)).toEqual([
+        orderId,
+      ]);
+      expect(await ids(`priceFrom=${order.totalCents + 1}`)).toEqual([]);
+      expect(await ids('status=PAID&make=BMW')).toEqual([orderId]);
+
+      // Year and mileage come from the report. No report, no match.
+      expect(await ids('yearFrom=2000')).toEqual([]);
+      await prisma.report.create({
+        data: {
+          deviceId: uniqueDeviceId('rep'),
+          code: `CSP-${Math.random().toString(36).slice(2, 8)}`,
+          tier: 'pro',
+          s3Key: 'pro/x/y.pdf',
+          userId: customer.userId,
+          orderId,
+          year: 2020,
+          mileageKm: 90000,
+        },
+      });
+      expect(await ids('yearFrom=2020&yearTo=2020')).toEqual([orderId]);
+      expect(await ids('yearFrom=2021')).toEqual([]);
+      expect(await ids('mileageTo=90000')).toEqual([orderId]);
+      expect(await ids('mileageTo=89999')).toEqual([]);
+
+      await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/orders?yearFrom=1800'),
+        admin.token,
+      ).expect(400);
+    });
+
+    it('11c. inspectors list feeds the inspector filter (DEN-316)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      const inspector = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Filter Inspector' });
+      const other = await makeInspector(ORDER_LAT + 0.05, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+      await prisma.order.update({ where: { id: orderId }, data: { inspectorId: inspector.userId } });
+
+      const list = await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/orders/inspectors'),
+        admin.token,
+      ).expect(200);
+      const row = list.body.items.find((i: { id: string }) => i.id === inspector.userId);
+      expect(row).toEqual(
+        expect.objectContaining({ id: inspector.userId, email: expect.any(String) }),
+      );
+      expect(list.body.items.some((i: { id: string }) => i.id === other.userId)).toBe(true);
+      expect(list.body.items.some((i: { id: string }) => i.id === customer.userId)).toBe(false);
+
+      const ids = async (inspectorId: string): Promise<string[]> => {
+        const res = await bearer(
+          request(app.getHttpServer()).get(
+            `/api/v1/admin/orders?customerId=${customer.userId}&inspectorId=${inspectorId}`,
+          ),
+          admin.token,
+        ).expect(200);
+        return res.body.items.map((o: { id: string }) => o.id);
+      };
+      expect(await ids(inspector.userId)).toEqual([orderId]);
+      expect(await ids(other.userId)).toEqual([]);
+
+      await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/orders/inspectors'),
+        customer.token,
+      ).expect(403);
+    });
+
     it('12. adminAssign moves UNASSIGNED → ASSIGNED with inspector set', async () => {
       const admin = await makeAdmin();
       const customer = await makeUser('cust');
@@ -932,6 +1023,72 @@ describe('Admin panel (E9) (e2e)', () => {
           .send({ reason: REASON }),
         admin.token,
       ).expect(404);
+    });
+
+    it('20f. list takes the showroom car filters (DEN-316)', async () => {
+      const admin = await makeAdmin();
+      const seller = await makeUser('seller');
+      const base = {
+        sellerId: seller.userId,
+        status: 'ACTIVE' as const,
+        source: 'manual',
+        package: 'standard',
+        publishedAt: new Date(),
+      };
+      const bmw = await prisma.listing.create({
+        data: {
+          ...base,
+          priceCents: 1850000,
+          city: 'Berlin',
+          citySearch: 'berlin',
+          countryCode: 'DE',
+          make: 'BMW',
+          makeSearch: 'bmw',
+          model: '320d',
+          modelSearch: '320d',
+          year: 2020,
+          mileageKm: 90000,
+        },
+      });
+      const merc = await prisma.listing.create({
+        data: {
+          ...base,
+          status: 'HIDDEN',
+          priceCents: 3200000,
+          city: 'Wien',
+          citySearch: 'wien',
+          countryCode: 'AT',
+          make: 'Mercedes-Benz',
+          makeSearch: 'mercedesbenz',
+          model: 'C 220',
+          modelSearch: 'c220',
+          year: 2017,
+          mileageKm: 150000,
+        },
+      });
+      const ids = async (filter: string): Promise<string[]> => {
+        const res = await bearer(
+          request(app.getHttpServer()).get(
+            `/api/v1/admin/listings?sellerId=${seller.userId}&${filter}`,
+          ),
+          admin.token,
+        ).expect(200);
+        return res.body.items.map((l: { id: string }) => l.id).sort();
+      };
+
+      expect(await ids('make=mercedes%20benz&model=c-220')).toEqual([merc.id]);
+      expect(await ids('country=de')).toEqual([bmw.id]);
+      expect(await ids('city=Vienna')).toEqual([merc.id]);
+      expect(await ids(`city=${encodeURIComponent('Берлин')}`)).toEqual([bmw.id]);
+      expect(await ids('priceFrom=2000000')).toEqual([merc.id]);
+      expect(await ids('priceTo=1850000')).toEqual([bmw.id]);
+      expect(await ids('yearFrom=2018&yearTo=2021')).toEqual([bmw.id]);
+      expect(await ids('mileageTo=100000')).toEqual([bmw.id]);
+      expect(await ids('mileageTo=0')).toEqual([]);
+      // Status stays a filter beside the car filters.
+      expect(await ids('status=HIDDEN&priceFrom=0')).toEqual([merc.id]);
+      expect(await ids('status=ACTIVE&make=Mercedes')).toEqual([]);
+      expect(await ids('')).toEqual([bmw.id, merc.id].sort());
     });
 
     it('20b. hide needs a reason; the seller is told, sees it, and cannot publish again (DEN-295)', async () => {

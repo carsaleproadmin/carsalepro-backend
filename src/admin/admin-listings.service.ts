@@ -2,6 +2,8 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ListingStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { clampPage, clampPageSize } from './admin-audit.service';
+import { citySearchKeys, normalizeCompact } from '../common/search-text';
+import { intRange } from './dto/admin-car-filter.dto';
 import { AdminListingListQueryDto } from './dto/admin-listings.dto';
 
 @Injectable()
@@ -12,18 +14,46 @@ export class AdminListingsService {
     const page = clampPage(query.page);
     const pageSize = clampPageSize(query.pageSize);
 
-    const where: Prisma.ListingWhereInput = {};
-    if (query.status) where.status = query.status;
-    if (query.sellerId) where.sellerId = query.sellerId;
+    // Each filter that needs its own OR goes into this AND. Two `OR` keys in
+    // one object do not combine: the second replaces the first.
+    const and: Prisma.ListingWhereInput[] = [];
     if (query.q) {
       // Search the listing's own denormalised columns: a manual listing has no
       // report to join through, and these columns are indexed.
-      where.OR = [
-        { city: { contains: query.q, mode: 'insensitive' } },
-        { make: { contains: query.q, mode: 'insensitive' } },
-        { model: { contains: query.q, mode: 'insensitive' } },
-      ];
+      and.push({
+        OR: [
+          { city: { contains: query.q, mode: 'insensitive' } },
+          { make: { contains: query.q, mode: 'insensitive' } },
+          { model: { contains: query.q, mode: 'insensitive' } },
+        ],
+      });
     }
+
+    // DEN-316: the showroom filters, with the same matching rules as
+    // `PublicService.searchListings`, so a car the showroom finds, the admin
+    // finds too.
+    const cityKeys = citySearchKeys(query.city);
+    if (cityKeys.length) {
+      and.push({ OR: cityKeys.map((key) => ({ citySearch: { contains: key } })) });
+    }
+    const makeKey = normalizeCompact(query.make);
+    const modelKey = normalizeCompact(query.model);
+
+    const where: Prisma.ListingWhereInput = {
+      ...(and.length ? { AND: and } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.sellerId ? { sellerId: query.sellerId } : {}),
+      ...(query.country ? { countryCode: query.country } : {}),
+      ...(makeKey ? { makeSearch: { contains: makeKey } } : {}),
+      ...(modelKey ? { modelSearch: { contains: modelKey } } : {}),
+      ...(intRange(query.priceFrom, query.priceTo)
+        ? { priceCents: intRange(query.priceFrom, query.priceTo) }
+        : {}),
+      ...(intRange(query.yearFrom, query.yearTo)
+        ? { year: intRange(query.yearFrom, query.yearTo) }
+        : {}),
+      ...(query.mileageTo != null ? { mileageKm: { lte: query.mileageTo } } : {}),
+    };
 
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.listing.findMany({
