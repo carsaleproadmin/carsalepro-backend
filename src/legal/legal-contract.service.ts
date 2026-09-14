@@ -5,7 +5,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { OrderContract, Role } from '@prisma/client';
-import { isAdminRole } from '../auth/roles';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import { renderContractPdf } from './contract-pdf.renderer';
@@ -316,7 +315,7 @@ export class LegalContractService {
 
     const isCustomer = order.customerId === userId;
     const isInspector = order.inspectorId === userId;
-    const isAdmin = isAdminRole(role);
+    const isAdmin = role === Role.ADMIN;
     if (!isCustomer && !isInspector && !isAdmin) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
     }

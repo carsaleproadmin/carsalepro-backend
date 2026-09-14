@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { KycStatus, OrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { revenueInWindow } from './revenue-window';
 
 @Injectable()
 export class AdminDashboardService {
@@ -31,7 +30,7 @@ export class AdminDashboardService {
       this.prisma.user.count({ where: { deletedAt: null, bannedAt: { not: null } } }),
       this.prisma.payout.count({ where: { status: 'pending' } }),
       this.prisma.payment.aggregate({
-        where: revenueInWindow({ gte: midnightUtc }),
+        where: { status: 'succeeded', createdAt: { gte: midnightUtc } },
         _sum: { amountCents: true },
       }),
     ]);

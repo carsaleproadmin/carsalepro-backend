@@ -8,7 +8,6 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
-import { ADMIN_ROLES, isAdminRole } from '../auth/roles';
 import { randomUUID } from 'node:crypto';
 import { GeoService, NearestInspector } from '../geo/geo.service';
 import { RouteEstimate, RoutingService } from '../geo/routing.service';
@@ -40,7 +39,6 @@ import {
 } from './order-pricing';
 import { effectiveBaseFeeCents } from './inspector-base-fee';
 import { RegionalOverrides, exceedsCap, resolveTariff } from './tariff-resolution';
-import { ADMIN_DECISION_EVENT, AdminDecision } from './admin-decision';
 import { MONEY_RETRY_MAX_ATTEMPTS, planRetry } from './retry-schedule';
 import {
   countMissing,
@@ -1809,13 +1807,12 @@ export class OrdersService {
    * Admin cancels an order with an explicit refund percent (0–100). If a
    * succeeded order Payment exists and the percent is > 0, a Refund of
    * round(totalCents * percent/100) is issued via the shared refund path with
-   * reason 'admin'. The admin's `reason` is recorded as an admin decision.
+   * reason 'admin'.
    */
   async adminCancel(
     orderId: string,
     refundPercent: number,
     adminId: string,
-    reason: string,
   ): Promise<{
     orderId: string;
     status: OrderStatus;
@@ -1841,12 +1838,6 @@ export class OrdersService {
       intendedCents > 0 ? await this.settleRefund(order, intendedCents, 'admin') : null;
 
     await this.transition(orderId, OrderStatus.CANCELLED, `admin:${adminId}`);
-    await this.recordAdminDecision(orderId, adminId, {
-      action: 'cancel',
-      reason,
-      refundPercent: pct,
-      resolution: null,
-    });
     return {
       orderId,
       status: OrderStatus.CANCELLED,
@@ -1866,7 +1857,6 @@ export class OrdersService {
     orderId: string,
     resolution: 'customer' | 'inspector',
     adminId: string,
-    reason: string,
     refundPercent?: number,
   ): Promise<{ orderId: string; status: OrderStatus; refundCents: number; payoutCents: number }> {
     const order = await this.requireOrder(orderId);
@@ -1900,14 +1890,6 @@ export class OrdersService {
         adminId,
         now,
       );
-      // Recorded whatever the transition did, like the dispute row: the
-      // decision was made, and the admin who retries must see why.
-      await this.recordAdminDecision(orderId, adminId, {
-        action: 'resolve_dispute',
-        reason,
-        refundPercent: pct,
-        resolution: 'customer',
-      });
       if (transitionError) throw transitionError;
 
       const resolved = await this.requireOrder(orderId);
@@ -1934,12 +1916,6 @@ export class OrdersService {
       adminId,
       now,
     );
-    await this.recordAdminDecision(orderId, adminId, {
-      action: 'resolve_dispute',
-      reason,
-      refundPercent: null,
-      resolution: 'inspector',
-    });
     if (transitionError) throw transitionError;
     const after = await this.requireOrder(orderId);
     const payout = await this.prisma.payout.findUnique({ where: { orderId } });
@@ -1949,31 +1925,6 @@ export class OrdersService {
       refundCents: 0,
       payoutCents: payout?.amountCents ?? order.inspectorShareCents,
     };
-  }
-
-  /**
-   * Record why an admin cancelled an order or resolved a dispute (DEN-294).
-   *
-   * Never throws. When this runs, the money has already moved; a failed note
-   * must not turn a completed decision into an error that the admin retries.
-   */
-  private async recordAdminDecision(
-    orderId: string,
-    adminId: string,
-    decision: AdminDecision,
-  ): Promise<void> {
-    try {
-      await this.writeEvent(orderId, `admin:${adminId}`, ADMIN_DECISION_EVENT, null, null, {
-        action: decision.action,
-        reason: decision.reason,
-        refundPercent: decision.refundPercent,
-        resolution: decision.resolution,
-      });
-    } catch (err) {
-      this.logger.error(
-        `Failed to record the admin decision on order ${orderId}: ${(err as Error).message}`,
-      );
-    }
   }
 
   // ============================================================
@@ -2037,7 +1988,7 @@ export class OrdersService {
     const isCustomer = order.customerId === userId;
     const isInspector = order.inspectorId === userId;
     const hasInspectorOffer = !!offer;
-    const isAdmin = isAdminRole(role);
+    const isAdmin = role === Role.ADMIN;
     if (!isCustomer && !isInspector && !hasInspectorOffer && !isAdmin) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
     }
@@ -2280,11 +2231,7 @@ export class OrdersService {
       createdAt: order.createdAt.toISOString(),
       offer: offer ? { id: offer.id, status: offer.status } : null,
       offerId: offer?.id ?? null,
-      // An admin decision carries the admin's own reason, which only admins may
-      // read (DEN-294). The admin detail gets it as a separate `decisions` list.
-      events: events
-        .filter((e) => e.type !== ADMIN_DECISION_EVENT)
-        .map((e) => ({
+      events: events.map((e) => ({
         type: e.type,
         fromStatus: e.fromStatus,
         toStatus: e.toStatus,
@@ -2936,7 +2883,7 @@ export class OrdersService {
     exhausted: boolean,
   ): Promise<void> {
     const admins = await this.prisma.user.findMany({
-      where: { role: { in: [...ADMIN_ROLES] }, deletedAt: null, bannedAt: null },
+      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
       select: { id: true },
     });
     for (const admin of admins) {
@@ -3428,7 +3375,7 @@ export class OrdersService {
     terminal: boolean,
   ): Promise<void> {
     const admins = await this.prisma.user.findMany({
-      where: { role: { in: [...ADMIN_ROLES] }, deletedAt: null, bannedAt: null },
+      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
       select: { id: true },
     });
     for (const admin of admins) {
@@ -3455,7 +3402,7 @@ export class OrdersService {
     error: string,
   ): Promise<void> {
     const admins = await this.prisma.user.findMany({
-      where: { role: { in: [...ADMIN_ROLES] }, deletedAt: null, bannedAt: null },
+      where: { role: Role.ADMIN, deletedAt: null, bannedAt: null },
       select: { id: true },
     });
     for (const admin of admins) {

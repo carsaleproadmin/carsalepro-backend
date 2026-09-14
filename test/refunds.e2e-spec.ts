@@ -615,11 +615,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       const res = await request(app.getHttpServer())
         .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
         .set('Authorization', `Bearer ${admin.token}`)
-        .send({
-          resolution: 'customer',
-          refundPercent: 100,
-          reason: 'Decision recorded by the e2e suite',
-        })
+        .send({ resolution: 'customer', refundPercent: 100 })
         .expect(200);
 
       expect(res.body.status).toBe('REFUNDED');
@@ -639,11 +635,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       const res = await request(app.getHttpServer())
         .post(`/api/v1/admin/orders/${orderId}/resolve-dispute`)
         .set('Authorization', `Bearer ${admin.token}`)
-        .send({
-          resolution: 'customer',
-          refundPercent: 100,
-          reason: 'Decision recorded by the e2e suite',
-        })
+        .send({ resolution: 'customer', refundPercent: 100 })
         .expect(200);
 
       // The order moves and the dispute closes. Before this, the refund threw

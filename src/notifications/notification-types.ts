@@ -32,10 +32,7 @@ export type NotificationType =
   | 'kyc.rejected'
   | 'ppv.purchased'
   | 'vin_history.failed'
-  | 'listing.published'
-  | 'listing.hidden'
-  | 'listing.unhidden'
-  | 'listing.deleted';
+  | 'listing.published';
 
 /** The delivery channels a notification can travel on. */
 export type NotificationChannel = 'inapp' | 'email' | 'sms' | 'push';
@@ -127,20 +124,6 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   /** Operator-facing: a paid VIN lookup could not be delivered and was refunded. */
   'vin_history.failed': ['inapp', 'email'],
   'listing.published': ['inapp'],
-  /**
-   * DEN-295. An admin took the listing off the showroom, with a reason. Email
-   * as well as in-app: the seller's car is no longer on sale, and the seller
-   * has to act (correct the listing or contact support).
-   */
-  'listing.hidden': ['inapp', 'email'],
-  /** DEN-295. An admin restored the listing. Good news that asks for no action. */
-  'listing.unhidden': ['inapp'],
-  /**
-   * An admin deleted the listing, with a reason. Email as well as in-app, like
-   * `listing.hidden`: the car is off sale and the listing is gone from the
-   * seller's cabinet, so this notice is the only place the seller learns why.
-   */
-  'listing.deleted': ['inapp', 'email'],
 };
 
 /**

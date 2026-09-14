@@ -15,7 +15,6 @@ import {
   SETTING_KEYS,
   SettingKey,
 } from '../settings/platform-settings.constants';
-import { SETTING_LIMITS, settingValueError } from '../settings/setting-limits';
 import { SettingsService } from '../settings/settings.service';
 import { AdminAuditService } from './admin-audit.service';
 import { UpdateSettingDto } from './dto/admin-settings.dto';
@@ -31,14 +30,10 @@ export class AdminSettingsController {
   ) {}
 
   @Get()
-  @ApiOperation({
-    summary: 'All platform settings with current values, defaults and allowed ranges (admin)',
-  })
+  @ApiOperation({ summary: 'All platform settings with current values + defaults (admin)' })
   async getAll() {
     const values = await this.settings.getAll();
-    // `limits` lets the form show the range and refuse a typing error before
-    // the request (DEN-297). The backend check below stays authoritative.
-    return { values, defaults: PLATFORM_SETTING_DEFAULTS, limits: SETTING_LIMITS };
+    return { values, defaults: PLATFORM_SETTING_DEFAULTS };
   }
 
   @Patch(':key')
@@ -56,16 +51,27 @@ export class AdminSettingsController {
     }
     const settingKey = key as SettingKey;
 
-    // One range per key (DEN-297, `setting-limits.ts`). It replaces the old
-    // "finite and >= 0" and "percent <= 100" checks, which let an extra digit
-    // move a price by a factor of ten. `minReportQualityScore` keeps its 0-100
-    // range: above 100 the completeness gate would refuse EVERY report, and 0
-    // is the deliberate emergency lever that switches it off.
-    const error = settingValueError(settingKey, dto.value);
-    if (error) {
-      const { min, max } = SETTING_LIMITS[settingKey];
+    if (!Number.isFinite(dto.value) || dto.value < 0) {
       throw new BadRequestException({
-        error: { code: 'invalid_value', message: error, min, max },
+        error: { code: 'invalid_value', message: 'Value must be a finite number ≥ 0' },
+      });
+    }
+    if (settingKey.endsWith('Percent') && dto.value > 100) {
+      throw new BadRequestException({
+        error: { code: 'invalid_value', message: 'Percent settings must be between 0 and 100' },
+      });
+    }
+    // The completeness gate is a score out of 100, so anything above it refuses
+    // EVERY report — the platform would quietly stop being able to close an
+    // order at all, and the only symptom would be inspectors reporting that
+    // their perfectly good reports bounce. `0` is a legitimate value here and
+    // means the gate is off; that is the deliberate emergency lever.
+    if (settingKey === 'minReportQualityScore' && dto.value > 100) {
+      throw new BadRequestException({
+        error: {
+          code: 'invalid_value',
+          message: 'minReportQualityScore must be between 0 (gate off) and 100',
+        },
       });
     }
 

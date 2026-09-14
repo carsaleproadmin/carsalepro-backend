@@ -100,16 +100,14 @@ async function main(): Promise<void> {
     create: {
       email: adminEmail,
       name: 'Platform Admin',
-      // DEN-299: the seed admin is the super admin, so a fresh database has
-      // somebody who can manage the other admins.
-      role: 'SUPER_ADMIN',
+      role: 'ADMIN',
       emailVerified: new Date(),
       locale: 'de',
       countryCode: 'DE',
     },
-    update: { role: 'SUPER_ADMIN' },
+    update: { role: 'ADMIN' },
   });
-  console.log(`Ensured super admin user: ${adminEmail}`);
+  console.log(`Ensured admin user: ${adminEmail}`);
 
   console.log('Seeding contract templates (self-healing)...');
   await seedContractTemplates();

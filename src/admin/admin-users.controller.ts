@@ -11,7 +11,6 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { CurrentUser, Roles } from '../auth/auth.decorators';
-import type { AuthUser } from '../auth/jwt.types';
 import { UsersService } from '../users/users.service';
 import { AdminAuditService } from './admin-audit.service';
 import { AdminUsersService } from './admin-users.service';
@@ -20,7 +19,6 @@ import {
   AdminUserListQueryDto,
   BanUserDto,
   ChangeRoleDto,
-  EraseUserDto,
 } from './dto/admin-users.dto';
 
 @ApiTags('admin')
@@ -49,17 +47,17 @@ export class AdminUsersController {
 
   @Post(':id/ban')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Ban a user (admin; a super admin to ban an admin)' })
+  @ApiOperation({ summary: 'Ban a user (admin)' })
   @ApiParam({ name: 'id' })
   async ban(
-    @CurrentUser() actor: AuthUser,
+    @CurrentUser('id') adminId: string,
     @Param('id') id: string,
     @Body() dto: BanUserDto,
   ) {
     const before = await this.adminUsers.require(id);
-    const after = await this.adminUsers.ban(id, actor);
+    const after = await this.adminUsers.ban(id, adminId);
     await this.audit.log(
-      actor.id,
+      adminId,
       'user.ban',
       'user',
       id,
@@ -71,13 +69,13 @@ export class AdminUsersController {
 
   @Post(':id/unban')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Unban a user (admin; a super admin to unban an admin)' })
+  @ApiOperation({ summary: 'Unban a user (admin)' })
   @ApiParam({ name: 'id' })
-  async unban(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+  async unban(@CurrentUser('id') adminId: string, @Param('id') id: string) {
     const before = await this.adminUsers.require(id);
-    const after = await this.adminUsers.unban(id, actor);
+    const after = await this.adminUsers.unban(id);
     await this.audit.log(
-      actor.id,
+      adminId,
       'user.unban',
       'user',
       id,
@@ -89,19 +87,17 @@ export class AdminUsersController {
 
   @Post(':id/role')
   @HttpCode(200)
-  @ApiOperation({
-    summary: 'Change a user role (admin: user to admin only; super admin: any change)',
-  })
+  @ApiOperation({ summary: 'Change a user role (admin)' })
   @ApiParam({ name: 'id' })
   async changeRole(
-    @CurrentUser() actor: AuthUser,
+    @CurrentUser('id') adminId: string,
     @Param('id') id: string,
     @Body() dto: ChangeRoleDto,
   ) {
     const before = await this.adminUsers.require(id);
-    const after = await this.adminUsers.changeRole(id, dto.role, actor);
+    const after = await this.adminUsers.changeRole(id, dto.role, adminId);
     await this.audit.log(
-      actor.id,
+      adminId,
       'user.role',
       'user',
       id,
@@ -109,33 +105,6 @@ export class AdminUsersController {
       { role: after.role },
     );
     return { id: after.id, role: after.role };
-  }
-
-  /**
-   * GDPR erasure on request (DEN-300). POST with a body, as the listing
-   * delete: the reason travels in the body. The audit row keeps the reason
-   * and the time, and no personal data.
-   */
-  @Post(':id/erase')
-  @HttpCode(200)
-  @ApiOperation({ summary: 'Anonymize a user account on request (super admin only)' })
-  @ApiParam({ name: 'id' })
-  async erase(
-    @CurrentUser() actor: AuthUser,
-    @Param('id') id: string,
-    @Body() dto: EraseUserDto,
-  ) {
-    const after = await this.adminUsers.erase(id, actor);
-    const deletedAt = after.deletedAt?.toISOString() ?? null;
-    await this.audit.log(
-      actor.id,
-      'user.erase',
-      'user',
-      id,
-      { deletedAt: null },
-      { deletedAt, reason: dto.reason },
-    );
-    return { id: after.id, deletedAt };
   }
 
   @Get(':id/device-links')
