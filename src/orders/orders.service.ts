@@ -944,9 +944,32 @@ export class OrdersService {
     const { lat, lng } = await this.readOrderLatLng(orderId);
     const radiusKm = await this.settings.getNumber('expertSearchRadiusKm');
 
-    // Exclude inspectors already offered (any status) for this order.
+    /*
+     * Who is out, and for how long (DEN-326).
+     *
+     * It used to be "everybody ever offered this order", which is what made
+     * UNASSIGNED a dead end: once the pool was exhausted there was nobody left
+     * to ask, for ever. The exclusion is now read per status.
+     *
+     *  - DECLINED — out for ever, in every round. The inspector said no with
+     *    their hands. Sending the same job again makes the platform a nuisance,
+     *    and the end of that is a person who turns push messages off.
+     *  - PENDING / ACCEPTED — out, as before. Somebody is holding it.
+     *  - EXPIRED — out for THIS round only. Silence is not a refusal: the
+     *    inspector was driving, or asleep, or the offer arrived at 03:00.
+     *
+     * Reading the round rather than deleting the rows keeps the history: every
+     * offer ever made is still on the order, and `round` says which pass it
+     * belonged to.
+     */
     const prior = await this.prisma.orderOffer.findMany({
-      where: { orderId },
+      where: {
+        orderId,
+        OR: [
+          { status: { in: ['DECLINED', 'PENDING', 'ACCEPTED'] } },
+          { status: 'EXPIRED', round: order.dispatchRound },
+        ],
+      },
       select: { inspectorId: true },
     });
     const excluded = prior.map((o) => o.inspectorId);
@@ -989,6 +1012,7 @@ export class OrdersService {
         inspectorId: nearest.userId,
         status: 'PENDING',
         expiresAt,
+        round: order.dispatchRound,
         // How far THIS inspector is, which is not what the order was priced on
         // once dispatch has walked past the first candidate.
         straightLineKm: new Prisma.Decimal(nearest.distanceKm.toFixed(2)),
@@ -1006,6 +1030,7 @@ export class OrdersService {
     await this.writeEvent(orderId, 'system', 'offer_sent', null, null, {
       inspectorId: nearest.userId,
       expiresAt: expiresAt.toISOString(),
+      round: order.dispatchRound,
     });
     // E11: notify the inspector an offer was sent to them (non-throwing).
     await this.notifications.notify(nearest.userId, 'offer.received', {
@@ -2336,6 +2361,81 @@ export class OrdersService {
       await this.dispatch(offer.orderId);
     }
     return { expired: stale.length };
+  }
+
+  /**
+   * An order nobody could be found for, offered again (DEN-326).
+   *
+   * `dispatch` walks the candidate pool one inspector at a time and parks the
+   * order in UNASSIGNED when it runs out. That was the end of the order's life:
+   * `dispatch` is called by the payment webhook, by `declineOffer` and by
+   * `expireStaleOffers`, and an UNASSIGNED order holds no PENDING offer, so no
+   * offer can expire and nothing calls `dispatch` again. No inspector can find
+   * it either — `listMine` shows an inspector only what they hold or have a
+   * live offer for. The order simply waited to be cancelled, while the answer
+   * changed underneath it: an inspector registers in the area, lowers their
+   * base fee, or finishes the job that kept them busy.
+   *
+   * So each pass here is one more ROUND. Raising `dispatchRound` is what makes
+   * an inspector who never answered available again, and `dispatch` reads the
+   * number to decide who is still excluded.
+   *
+   * There is deliberately NO pause between rounds and no cap on how many times
+   * one inspector may be asked. The offer timeout IS the pause: an offer stands
+   * for `offerTimeoutMinutes`, so a round over five candidates already takes
+   * hours. The consequence, stated plainly because it was chosen rather than
+   * overlooked: in a region with one inspector, that inspector is asked again
+   * every hour until the window closes.
+   *
+   * The round is raised by a CONDITIONAL write, which is also how this job
+   * stays out of `expireUnfilledSearches`'s way. That job claims an order by
+   * setting CANCELLED; if it got there first, `count === 0` here and this order
+   * is left alone. `dispatch` re-reads the order and refuses anything that is
+   * not PAID or UNASSIGNED, so the narrow window between the two is closed
+   * there as well.
+   *
+   * An order whose region holds nobody at all raises its round on every pass
+   * and offers nothing. That is a counter moving with no work behind it, which
+   * is cheap and honest; the geo query is the only cost, and the search window
+   * bounds how long it repeats.
+   */
+  async redispatchUnfilledOrders(limit = 50): Promise<{ rounds: number }> {
+    const now = new Date();
+    const due = await this.prisma.order.findMany({
+      where: {
+        status: OrderStatus.UNASSIGNED,
+        inspectorId: null,
+        searchExpiresAt: { not: null, gt: now },
+      },
+      orderBy: { searchExpiresAt: 'asc' },
+      take: limit,
+    });
+
+    let rounds = 0;
+    for (const order of due) {
+      try {
+        const claimed = await this.prisma.order.updateMany({
+          where: {
+            id: order.id,
+            status: OrderStatus.UNASSIGNED,
+            inspectorId: null,
+            searchExpiresAt: { not: null, gt: now },
+          },
+          data: { dispatchRound: { increment: 1 } },
+        });
+        if (claimed.count === 0) continue;
+        await this.writeEvent(order.id, 'system', 'dispatch_round', null, null, {
+          round: order.dispatchRound + 1,
+        });
+        await this.dispatch(order.id);
+        rounds += 1;
+      } catch (err) {
+        this.logger.error(
+          `redispatchUnfilledOrders(${order.id}) failed: ${(err as Error).message}`,
+        );
+      }
+    }
+    return { rounds };
   }
 
   /**

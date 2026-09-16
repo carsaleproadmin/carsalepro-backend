@@ -166,15 +166,25 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   offerTimeoutMinutes: 60,
   /**
    * How long we keep looking for an inspector before releasing the customer's
-   * authorization hold and cancelling (six hours).
+   * authorization hold and cancelling (24 hours).
    *
    * The ceiling is Stripe's: an uncaptured authorization expires after 7 days,
    * and letting a hold sit anywhere near that strands real money. The floor is
    * coverage — too short and orders in thin regions fail that could have been
-   * filled. A product number, meant to be tuned from the admin panel once real
-   * fill times exist.
+   * filled.
+   *
+   * **360 -> 1440 on 2026-09-16, and the number now has a job.** It used to be
+   * a product guess. Dispatch offers the order to one inspector at a time for
+   * `offerTimeoutMinutes` (60), so a single pass over five candidates can take
+   * five hours: at six hours the search got ONE pass and died. The re-dispatch
+   * rounds (DEN-326) need room for several passes, or they never run.
+   *
+   * The cost is on the customer's card: the hold stands for the whole window,
+   * and a released authorization stays visible in a bank statement for some
+   * working days. That is the most common "you charged me anyway" support case
+   * in this payment model.
    */
-  orderSearchWindowMinutes: 360,
+  orderSearchWindowMinutes: 1440,
   autoApproveAfterDays: 7,
   /**
    * How long an accepted order may sit without the inspection starting, before
