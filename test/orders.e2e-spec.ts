@@ -2362,6 +2362,88 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(order!.status).toBe('ASSIGNED');
   });
 
+  /*
+   * DEN-326. An order whose candidate pool ran out used to lie in UNASSIGNED
+   * until the window cancelled it: nothing called dispatch again, and no
+   * inspector could find it. Each pass of the job is one more round.
+   */
+  it('9i. a silent inspector is offered the order again on the next round', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    // Round 1: the only inspector in the area says nothing.
+    const first = await pendingOfferFor(orderId);
+    expect(first!.inspectorId).toBe(inspector.userId);
+    expect(first!.round).toBe(0);
+    await prisma.orderOffer.update({
+      where: { id: first!.id },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    await orders.expireStaleOffers();
+
+    // The pool is empty, so the order parks.
+    const parked = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(parked!.status).toBe('UNASSIGNED');
+    expect(await pendingOfferFor(orderId)).toBeNull();
+
+    // Round 2: the same inspector is asked again. Silence is not a refusal.
+    const { rounds } = await orders.redispatchUnfilledOrders();
+    expect(rounds).toBeGreaterThanOrEqual(1);
+    const second = await pendingOfferFor(orderId);
+    expect(second).not.toBeNull();
+    expect(second!.inspectorId).toBe(inspector.userId);
+    expect(second!.round).toBe(1);
+    expect(second!.id).not.toBe(first!.id);
+  });
+
+  it('9j. an inspector who DECLINED is never offered the order again', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    const offer = await pendingOfferFor(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${offer!.id}/decline`)
+      .set('Authorization', `Bearer ${inspectorTokens.get(inspector.userId)}`)
+      .expect(200);
+
+    // Nobody else in range, so declining empties the pool at once.
+    const parked = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(parked!.status).toBe('UNASSIGNED');
+
+    // Three rounds, and the refusal holds in every one of them.
+    for (let i = 0; i < 3; i += 1) await orders.redispatchUnfilledOrders();
+    expect(await pendingOfferFor(orderId)).toBeNull();
+    const after = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(after!.status).toBe('UNASSIGNED');
+    expect(after!.dispatchRound).toBe(3);
+  });
+
+  it('9k. a round is never started for an order whose search window closed', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    const offer = await pendingOfferFor(orderId);
+    await prisma.orderOffer.update({
+      where: { id: offer!.id },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    await orders.expireStaleOffers();
+    // The deadline is what ends the search; past it the order belongs to
+    // expireUnfilledSearches, which releases the hold and cancels.
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { searchExpiresAt: new Date(Date.now() - 60_000) },
+    });
+
+    await orders.redispatchUnfilledOrders();
+    expect(await pendingOfferFor(orderId)).toBeNull();
+    const after = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(after!.dispatchRound).toBe(0);
+  });
+
   it('10. dispute from SUBMITTED → DISPUTED + Dispute row', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);

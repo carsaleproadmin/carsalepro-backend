@@ -108,6 +108,29 @@ export class SchedulerService {
   }
 
   /**
+   * Every five minutes: an order whose candidate pool ran out is offered to the
+   * pool again (DEN-326).
+   *
+   * Five minutes is granularity, not a pace. The pace comes from the offer
+   * itself: a round cannot end faster than its offers expire, so this job finds
+   * nothing to do on most passes and picks an order up soon after it lands in
+   * UNASSIGNED. It rides beside `expire-unfilled-searches` rather than inside
+   * it because the two jobs disagree about an order — one gives it another
+   * chance, the other ends it — and a conditional write decides which of them
+   * owns a given row.
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'redispatch-unfilled-orders' })
+  async redispatchUnfilledOrders(): Promise<void> {
+    if (this.disabled) return;
+    try {
+      const { rounds } = await this.orders.redispatchUnfilledOrders();
+      if (rounds > 0) this.logger.log(`redispatchUnfilledOrders: ${rounds} new round(s)`);
+    } catch (err) {
+      this.logger.error(`redispatchUnfilledOrders failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
    * Every fifteen minutes: a payment whose webhook never arrived.
    *
    * Insurance, NOT the plan — Stripe must be subscribed to

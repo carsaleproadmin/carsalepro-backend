@@ -479,6 +479,17 @@ model Order {
   /// `owner_contact_required`. "Could not contact" does not write it: that
   /// answer cancels the order instead.
   ownerContactConfirmedAt DateTime? @map("owner_contact_confirmed_at")
+  /// Which pass over the candidate pool the order is on (DEN-326).
+  ///
+  /// Dispatch offers the job to one inspector at a time and excludes everybody
+  /// it has already asked. When the pool runs out the order used to stop for
+  /// good. Now the re-dispatch job raises this number and asks again, so an
+  /// inspector who never answered is asked once per round, while one who
+  /// DECLINED is never asked again.
+  ///
+  /// 0 for every order that predates the rounds, which reads as "the first
+  /// round" and needs no backfill.
+  dispatchRound        Int       @default(0) @map("dispatch_round")
   createdAt            DateTime  @default(now())
 
   customer  User              @relation("CustomerOrders", fields: [customerId], references: [id])
@@ -506,6 +517,13 @@ model OrderOffer {
   status         String   @default("PENDING") // PENDING|ACCEPTED|DECLINED|EXPIRED
   expiresAt      DateTime @map("expires_at")
   createdAt      DateTime @default(now())
+  /// The order's `dispatchRound` when this offer was sent (DEN-326). It is what
+  /// makes "asked already" mean "asked already IN THIS ROUND": an offer that
+  /// expired in round 1 stops excluding its inspector in round 2.
+  ///
+  /// 0 for offers that predate the rounds, which is the same round every old
+  /// order carries.
+  round          Int      @default(0)
   /// Great-circle kilometres from THIS inspector to the vehicle, one direction,
   /// recorded when the offer was made.
   ///
