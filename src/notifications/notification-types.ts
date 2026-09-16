@@ -9,6 +9,7 @@ export type NotificationType =
   | 'auth.password_reset'
   | 'order.created'
   | 'offer.received'
+  | 'offer.expired'
   | 'order.assigned'
   | 'order.en_route'
   | 'order.in_progress'
@@ -57,6 +58,13 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   'auth.password_reset': ['email'],
   'order.created': ['inapp', 'email'],
   'offer.received': ['inapp', 'email', 'push'],
+  /**
+   * The offer ran out of time and the order went to the next inspector
+   * (DEN-324). In-app only: an e-mail about work the reader did not get is
+   * noise, and the push already told them the job existed. It is here to
+   * explain a cabinet that emptied on its own.
+   */
+  'offer.expired': ['inapp'],
   'order.assigned': ['inapp', 'email'],
   'order.en_route': ['inapp', 'push'],
   'order.in_progress': ['inapp'],
