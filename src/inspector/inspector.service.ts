@@ -68,6 +68,17 @@ export interface InspectorProfileView {
   stripeBusinessType: StripeBusinessType | null;
   kycVerified: boolean;
   hasLocation: boolean;
+  /**
+   * The base location as stored, or null when none is set.
+   *
+   * `hasLocation` alone cannot draw a map: the website opened the profile with
+   * an empty marker although the address fields were full, and the pin appeared
+   * only after the inspector picked the address again (DEN-323). The website
+   * already reads these two fields and treats them as optional, so the API may
+   * deploy before or after it.
+   */
+  lat: number | null;
+  lng: number | null;
   eligibleForOffers: boolean;
   /**
    * The channels AS STORED — what belongs in the edit form's fields.
@@ -713,7 +724,8 @@ export class InspectorService {
       where: { id: userId },
       select: { id: true, name: true, email: true, phone: true, deletedAt: true, kycVerified: true },
     });
-    const hasLocation = await this.geo.inspectorHasLocation(userId);
+    const baseLocation = await this.geo.inspectorLocation(userId);
+    const hasLocation = baseLocation !== null;
     const baseFeeBounds = await this.baseFeeBounds();
     const kycVerified = user?.kycVerified ?? false;
     return {
@@ -743,6 +755,8 @@ export class InspectorService {
         : null,
       kycVerified,
       hasLocation,
+      lat: baseLocation?.lat ?? null,
+      lng: baseLocation?.lng ?? null,
       eligibleForOffers: kycVerified && profile.stripeOnboarded && profile.available && hasLocation,
       contactPhone: profile.contactPhone,
       contactEmail: profile.contactEmail,
