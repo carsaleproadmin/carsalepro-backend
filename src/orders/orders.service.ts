@@ -2045,6 +2045,57 @@ export class OrdersService {
     return { items: orders.map((o) => this.toListItem(o, offerDeadlines.get(o.id) ?? null)) };
   }
 
+  /**
+   * The jobs this inspector was offered and never answered (DEN-327).
+   *
+   * `listMine` cannot show them: it holds the orders the inspector is assigned
+   * to plus those with a LIVE `PENDING` offer, so the hour runs out and the
+   * order leaves the cabinet with nothing left behind. DEN-324 tells the
+   * inspector once, in the bell; this is the list.
+   *
+   * Three rules, each a decision:
+   *
+   *  - **EXPIRED only.** A `DECLINED` offer was a deliberate answer, and a list
+   *    that reminds somebody of work they refused is noise.
+   *  - **A window, not a purge.** Rows older than `days` fall out of this
+   *    answer and stay in the database. Deleting them would re-admit a declined
+   *    inspector to the same order (DEN-326) and tear events out of the order's
+   *    own history.
+   *  - **One entry per order.** After DEN-326 the same order can expire on this
+   *    inspector once per round, so the rounds collapse into one entry carrying
+   *    the latest expiry and how many times the job was offered.
+   *
+   * The money is the OFFER's own share and never the order's: dispatch walks
+   * down the candidates and prices each on their own base fee, so the order
+   * total belongs to whoever it was quoted for. An offer minted before that
+   * column existed falls back to the order, which is what it was worth then.
+   */
+  async listMissedOffers(
+    userId: string,
+    days = 7,
+  ): Promise<{ items: Array<ReturnType<OrdersService['toMissedItem']>> }> {
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const expired = await this.prisma.orderOffer.findMany({
+      where: { inspectorId: userId, status: 'EXPIRED', expiresAt: { gte: since } },
+      orderBy: { expiresAt: 'desc' },
+      include: { order: true },
+    });
+
+    // Newest first, so the first row seen for an order is the latest one.
+    const latest = new Map<string, (typeof expired)[number]>();
+    const times = new Map<string, number>();
+    for (const offer of expired) {
+      if (!latest.has(offer.orderId)) latest.set(offer.orderId, offer);
+      times.set(offer.orderId, (times.get(offer.orderId) ?? 0) + 1);
+    }
+
+    return {
+      items: [...latest.values()].map((offer) =>
+        this.toMissedItem(offer, offer.order, times.get(offer.orderId) ?? 1),
+      ),
+    };
+  }
+
   async getDetail(orderId: string, userId: string, role: Role): Promise<OrderDetail> {
     const order = await this.requireOrder(orderId);
     const offer = await this.prisma.orderOffer.findFirst({
@@ -4263,6 +4314,48 @@ export class OrdersService {
        */
       offerExpiresAt: offerExpiresAt ? offerExpiresAt.toISOString() : null,
       inspectionDeadlineAt: o.inspectionDeadlineAt ? o.inspectionDeadlineAt.toISOString() : null,
+    };
+  }
+
+  /**
+   * One row of the missed-offers list (DEN-327).
+   *
+   * Deliberately NOT `toListItem`. That row is built for work the reader can
+   * act on — it carries live deadlines and drives accept and decline buttons —
+   * and none of that is true here. This row answers one question instead: what
+   * was the job, what would it have paid, when did it run out, and what became
+   * of it.
+   *
+   * `outcome` is read from the order as it stands now, so the inspector learns
+   * whether somebody else took the work or whether nobody did. `taken` covers
+   * every state past assignment: to this reader they are one fact, that the
+   * order is not theirs and is not coming back.
+   */
+  private toMissedItem(
+    offer: { id: string; expiresAt: Date; inspectorShareCents: number | null },
+    o: Order,
+    timesOffered: number,
+  ) {
+    const outcome =
+      o.status === OrderStatus.CANCELLED
+        ? 'cancelled'
+        : o.status === OrderStatus.PAID || o.status === OrderStatus.UNASSIGNED
+          ? 'searching'
+          : 'taken';
+    return {
+      offerId: offer.id,
+      orderId: o.id,
+      number: o.number,
+      make: o.make,
+      model: o.model,
+      address: o.address,
+      // What THIS offer would have paid. Null only for an offer minted before
+      // the column existed, where the order's own figure is what it was worth.
+      inspectorShareCents: offer.inspectorShareCents ?? o.inspectorShareCents,
+      currency: o.currency,
+      expiredAt: offer.expiresAt.toISOString(),
+      timesOffered,
+      outcome,
     };
   }
 }
