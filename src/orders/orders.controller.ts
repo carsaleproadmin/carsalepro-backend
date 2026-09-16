@@ -65,6 +65,20 @@ export class OrdersController {
     return this.orders.listMine(userId, query.role ?? OrderRole.customer, query.status);
   }
 
+  /**
+   * The jobs this inspector was offered and never answered (DEN-327).
+   *
+   * `GET /orders/me?role=inspector` cannot carry them: it lists orders the
+   * caller holds or has a LIVE offer for, so an expired offer leaves the
+   * cabinet with no trace at all. Two segments, so it cannot be taken for the
+   * `:id` route below.
+   */
+  @Get('me/missed')
+  @ApiOperation({ summary: 'Offers to me that ran out, last 7 days (inspector)' })
+  async listMissed(@CurrentUser('id') userId: string) {
+    return this.orders.listMissedOffers(userId);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Order detail (customer / assigned inspector / admin)' })
   async getOne(

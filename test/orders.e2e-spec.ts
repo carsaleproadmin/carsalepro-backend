@@ -2444,6 +2444,99 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(after!.dispatchRound).toBe(0);
   });
 
+  /*
+   * DEN-327. An offer that ran out leaves the cabinet with no trace, so the
+   * inspector has no record that the job existed.
+   */
+  it('9l. GET /orders/me/missed lists an expired offer once, with its own share', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    const offer = await pendingOfferFor(orderId);
+    await prisma.orderOffer.update({
+      where: { id: offer!.id },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    await orders.expireStaleOffers();
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const row = res.body.items.find((i: { orderId: string }) => i.orderId === orderId);
+    expect(row).toBeDefined();
+    expect(row.number).toBeTruthy();
+    expect(row.timesOffered).toBe(1);
+    // The share the OFFER froze, never the order's own figure.
+    expect(row.inspectorShareCents).toBe(offer!.inspectorShareCents);
+    // Nobody took it: the pool held only this inspector.
+    expect(row.outcome).toBe('searching');
+
+    // A second round on the same order is the same card, counted twice.
+    await orders.redispatchUnfilledOrders();
+    const again = await pendingOfferFor(orderId);
+    await prisma.orderOffer.update({
+      where: { id: again!.id },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    await orders.expireStaleOffers();
+
+    const res2 = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const rows = res2.body.items.filter((i: { orderId: string }) => i.orderId === orderId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].timesOffered).toBe(2);
+  });
+
+  it('9m. a missed offer older than the window is not listed, and the row survives', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    const offer = await pendingOfferFor(orderId);
+    // Eight days ago: outside the seven-day window the list reads.
+    await prisma.orderOffer.update({
+      where: { id: offer!.id },
+      data: { status: 'EXPIRED', expiresAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
+    });
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(res.body.items.find((i: { orderId: string }) => i.orderId === orderId)).toBeUndefined();
+
+    // The window hides it. Nothing deletes it — DEN-326 reads these rows to
+    // decide who may be offered the order again.
+    const still = await prisma.orderOffer.findUnique({ where: { id: offer!.id } });
+    expect(still).not.toBeNull();
+  });
+
+  it('9n. a DECLINED offer is never a missed one', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    const offer = await pendingOfferFor(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${offer!.id}/decline`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(res.body.items.find((i: { orderId: string }) => i.orderId === orderId)).toBeUndefined();
+  });
+
   it('10. dispute from SUBMITTED → DISPUTED + Dispute row', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);
