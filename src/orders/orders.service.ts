@@ -29,6 +29,8 @@ import {
   CreateOrderDto,
   InspectorStatusUpdate,
   OrderRole,
+  OrderSort,
+  OrderTab,
   QuoteOrderDto,
 } from './dto/order.dto';
 import { ATTACHABLE_REPORT_ORDER_STATUSES, canTransition } from './order-state-machine';
@@ -2005,44 +2007,107 @@ export class OrdersService {
   // Queries
   // ============================================================
 
+  /** The statuses each inspector tab stands for (DEN-328). */
+  private static readonly ACTIVE_STATUSES = [
+    OrderStatus.ASSIGNED,
+    OrderStatus.EN_ROUTE,
+    OrderStatus.IN_PROGRESS,
+  ];
+  private static readonly COMPLETED_STATUSES = [
+    OrderStatus.SUBMITTED,
+    OrderStatus.APPROVED,
+    OrderStatus.DISPUTED,
+    OrderStatus.CANCELLED,
+  ];
+
   async listMine(
     userId: string,
     role: OrderRole,
     status?: string,
-  ): Promise<{ items: Array<ReturnType<OrdersService['toListItem']>> }> {
+    opts: { tab?: OrderTab; sort?: OrderSort; page?: number; pageSize?: number } = {},
+  ): Promise<{
+    items: Array<ReturnType<OrdersService['toListItem']>>;
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
     const statusFilter = status ? { status: status as OrderStatus } : {};
-    let orders: Order[];
-    const offerDeadlines = new Map<string, Date>();
-    if (role === OrderRole.inspector) {
-      const now = new Date();
-      // Orders assigned to me OR for which I have an active offer.
-      const offered = await this.prisma.orderOffer.findMany({
-        where: {
-          inspectorId: userId,
-          status: 'PENDING',
-          expiresAt: { gt: now },
-        },
-        select: { orderId: true, expiresAt: true },
-      });
-      const offeredIds = offered.map((o) => o.orderId);
-      // Keep the deadline of the offer made to THIS inspector, so the row can
-      // count down to it. One order holds at most one PENDING offer per
-      // inspector; the last write wins if that ever changes.
-      for (const o of offered) offerDeadlines.set(o.orderId, o.expiresAt);
-      orders = await this.prisma.order.findMany({
-        where: {
-          ...statusFilter,
-          OR: [{ inspectorId: userId }, { id: { in: offeredIds } }],
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-    } else {
-      orders = await this.prisma.order.findMany({
-        where: { customerId: userId, ...statusFilter },
-        orderBy: { createdAt: 'desc' },
-      });
+    const desc = (opts.sort ?? OrderSort.newest) === OrderSort.newest;
+    /*
+     * Paging is OPT-IN (DEN-328). A caller that sends neither field gets its
+     * whole list, exactly as before the tabs — the customer cabinet and the
+     * mobile-era callers among them. `total` is answered either way, so a
+     * client can show a count without asking to be paged.
+     */
+    const paged = opts.page !== undefined || opts.pageSize !== undefined;
+    const page = Math.max(1, opts.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 20));
+    const skip = paged ? (page - 1) * pageSize : undefined;
+    const take = paged ? pageSize : undefined;
+
+    if (role !== OrderRole.inspector) {
+      const where = { customerId: userId, ...statusFilter };
+      const [orders, total] = await this.prisma.$transaction([
+        this.prisma.order.findMany({
+          where,
+          orderBy: { createdAt: desc ? 'desc' : 'asc' },
+          skip,
+          take,
+        }),
+        this.prisma.order.count({ where }),
+      ]);
+      return { items: orders.map((o) => this.toListItem(o)), total, page, pageSize };
     }
-    return { items: orders.map((o) => this.toListItem(o, offerDeadlines.get(o.id) ?? null)) };
+
+    const now = new Date();
+    // Orders assigned to me OR for which I have an active offer.
+    const offered = await this.prisma.orderOffer.findMany({
+      where: { inspectorId: userId, status: 'PENDING', expiresAt: { gt: now } },
+      select: { orderId: true, expiresAt: true },
+    });
+    const offeredIds = offered.map((o) => o.orderId);
+    // Keep the deadline of the offer made to THIS inspector, so the row can
+    // count down to it. One order holds at most one PENDING offer per
+    // inspector; the last write wins if that ever changes.
+    const offerDeadlines = new Map<string, Date>();
+    for (const o of offered) offerDeadlines.set(o.orderId, o.expiresAt);
+
+    /*
+     * Each tab is a different question, so each carries its own filter AND its
+     * own sort field. Sorting all three by `createdAt` would put the wrong row
+     * at the top of the active list: what matters there is which job burns
+     * first, not which was ordered last.
+     *
+     * Ordering happens in the QUERY, never after the slice — a page sorted
+     * after it was cut is not the page the reader asked for.
+     */
+    const mine = { inspectorId: userId };
+    const where =
+      opts.tab === OrderTab.offers
+        ? { ...statusFilter, id: { in: offeredIds } }
+        : opts.tab === OrderTab.active
+          ? { ...statusFilter, ...mine, status: { in: OrdersService.ACTIVE_STATUSES } }
+          : opts.tab === OrderTab.completed
+            ? { ...statusFilter, ...mine, status: { in: OrdersService.COMPLETED_STATUSES } }
+            : { ...statusFilter, OR: [{ inspectorId: userId }, { id: { in: offeredIds } }] };
+
+    const orderBy: Prisma.OrderOrderByWithRelationInput =
+      opts.tab === OrderTab.active
+        ? // The clock that can take the job away. Nulls are orders assigned
+          // before the deadline existed; Postgres sorts them last either way.
+          { inspectionDeadlineAt: desc ? 'desc' : 'asc' }
+        : { createdAt: desc ? 'desc' : 'asc' };
+
+    const [orders, total] = await this.prisma.$transaction([
+      this.prisma.order.findMany({ where, orderBy, skip, take }),
+      this.prisma.order.count({ where }),
+    ]);
+    return {
+      items: orders.map((o) => this.toListItem(o, offerDeadlines.get(o.id) ?? null)),
+      total,
+      page,
+      pageSize,
+    };
   }
 
   /**
@@ -2072,8 +2137,14 @@ export class OrdersService {
    */
   async listMissedOffers(
     userId: string,
-    days = 7,
-  ): Promise<{ items: Array<ReturnType<OrdersService['toMissedItem']>> }> {
+    opts: { days?: number; sort?: OrderSort; page?: number; pageSize?: number } = {},
+  ): Promise<{
+    items: Array<ReturnType<OrdersService['toMissedItem']>>;
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const days = opts.days ?? 7;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     const expired = await this.prisma.orderOffer.findMany({
       where: { inspectorId: userId, status: 'EXPIRED', expiresAt: { gte: since } },
@@ -2089,10 +2160,33 @@ export class OrdersService {
       times.set(offer.orderId, (times.get(offer.orderId) ?? 0) + 1);
     }
 
+    /*
+     * Collapse first, THEN count and cut (DEN-328). This is the one list whose
+     * paging cannot be done by the database: a row here is an ORDER, and the
+     * rounds behind it are several offers, so `LIMIT` over the offers would
+     * hand back a page of the wrong length and a `total` that disagrees with
+     * what the reader sees.
+     *
+     * It is safe to do in memory precisely because of the seven-day window:
+     * the set is one inspector's expired offers of one week, not a history.
+     */
+    const collapsed = [...latest.values()];
+    if ((opts.sort ?? OrderSort.newest) === OrderSort.oldest) collapsed.reverse();
+
+    const paged = opts.page !== undefined || opts.pageSize !== undefined;
+    const page = Math.max(1, opts.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 20));
+    const window = paged
+      ? collapsed.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize)
+      : collapsed;
+
     return {
-      items: [...latest.values()].map((offer) =>
+      items: window.map((offer) =>
         this.toMissedItem(offer, offer.order, times.get(offer.orderId) ?? 1),
       ),
+      total: collapsed.length,
+      page,
+      pageSize,
     };
   }
 

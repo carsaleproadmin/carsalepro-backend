@@ -9,6 +9,7 @@ import {
   CreateOrderDto,
   DeclineOrderDto,
   DisputeOrderDto,
+  ListMissedQueryDto,
   ListOrdersQueryDto,
   OrderRole,
   OwnerContactDto,
@@ -62,7 +63,12 @@ export class OrdersController {
   @Get('me')
   @ApiOperation({ summary: 'List my orders (role=customer|inspector, optional status)' })
   async listMine(@CurrentUser('id') userId: string, @Query() query: ListOrdersQueryDto) {
-    return this.orders.listMine(userId, query.role ?? OrderRole.customer, query.status);
+    return this.orders.listMine(userId, query.role ?? OrderRole.customer, query.status, {
+      tab: query.tab,
+      sort: query.sort,
+      page: query.page,
+      pageSize: query.pageSize,
+    });
   }
 
   /**
@@ -75,8 +81,12 @@ export class OrdersController {
    */
   @Get('me/missed')
   @ApiOperation({ summary: 'Offers to me that ran out, last 7 days (inspector)' })
-  async listMissed(@CurrentUser('id') userId: string) {
-    return this.orders.listMissedOffers(userId);
+  async listMissed(@CurrentUser('id') userId: string, @Query() query: ListMissedQueryDto) {
+    return this.orders.listMissedOffers(userId, {
+      sort: query.sort,
+      page: query.page,
+      pageSize: query.pageSize,
+    });
   }
 
   @Get(':id')
