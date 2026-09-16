@@ -935,12 +935,12 @@ export class OrdersService {
    * declined for it. Creates a PENDING OrderOffer (expiresAt = now +
    * offerTimeoutMinutes). If nobody is left → UNASSIGNED.
    */
-  async dispatch(orderId: string): Promise<void> {
+  async dispatch(orderId: string): Promise<boolean> {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
-    if (!order) return;
+    if (!order) return false;
     if (order.status !== OrderStatus.PAID && order.status !== OrderStatus.UNASSIGNED) {
       // Only dispatch when waiting for assignment.
-      return;
+      return false;
     }
 
     const { lat, lng } = await this.readOrderLatLng(orderId);
@@ -1002,7 +1002,7 @@ export class OrdersService {
       if (order.status !== OrderStatus.UNASSIGNED) {
         await this.transition(orderId, OrderStatus.UNASSIGNED, 'system');
       }
-      return;
+      return false;
     }
 
     const { candidate: nearest, price } = affordable;
@@ -1045,6 +1045,7 @@ export class OrdersService {
       inspectorShareCents: price.inspectorShareCents,
       expiresAt: expiresAt.toISOString(),
     });
+    return true;
   }
 
   /**
@@ -1811,10 +1812,7 @@ export class OrdersService {
 
     // Reconcile offers: accept the chosen inspector's (creating one if absent),
     // expire any other still-pending offer for this order.
-    await this.prisma.orderOffer.updateMany({
-      where: { orderId, inspectorId: { not: inspectorId }, status: 'PENDING' },
-      data: { status: 'EXPIRED' },
-    });
+    await this.expirePendingOffers(orderId, order, inspectorId);
     const chosen = await this.prisma.orderOffer.findFirst({ where: { orderId, inspectorId } });
     if (chosen) {
       await this.prisma.orderOffer.update({ where: { id: chosen.id }, data: { status: 'ACCEPTED' } });
@@ -2018,6 +2016,8 @@ export class OrdersService {
     OrderStatus.APPROVED,
     OrderStatus.DISPUTED,
     OrderStatus.CANCELLED,
+    OrderStatus.COMPLETED,
+    OrderStatus.REFUNDED,
   ];
 
   async listMine(
@@ -2147,7 +2147,23 @@ export class OrdersService {
     const days = opts.days ?? 7;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     const expired = await this.prisma.orderOffer.findMany({
-      where: { inspectorId: userId, status: 'EXPIRED', expiresAt: { gte: since } },
+      where: {
+        inspectorId: userId,
+        status: 'EXPIRED',
+        expiresAt: { gte: since },
+        // An order this inspector holds NOW is not a missed one, whatever an
+        // earlier round says. After DEN-326 the same order can expire in round
+        // 0 and be accepted by the same person in round 1, and it would then
+        // stand in the missed list and in the active list at the same time.
+        //
+        // The null branch is not decoration: `not` compiles to `<> $1`, which
+        // is UNKNOWN for a NULL column, so an order still looking for anybody
+        // would be dropped from the list this endpoint exists for.
+        OR: [
+          { order: { inspectorId: null } },
+          { order: { inspectorId: { not: userId } } },
+        ],
+      },
       orderBy: { expiresAt: 'desc' },
       include: { order: true },
     });
@@ -2468,6 +2484,56 @@ export class OrdersService {
   // Time-based jobs (exposed for the future E11 worker; tested directly)
   // ============================================================
 
+  /**
+   * Every PENDING offer for an order → EXPIRED, and the holder of each one is
+   * told (DEN-324/325).
+   *
+   * The bulk `updateMany` alone leaves the inspector with two invisible
+   * changes: the order leaves `listMine`, because that shows only what they
+   * hold or have a live offer for, and the `offer.received` card in their bell
+   * keeps standing as live work. `expireStaleOffers` explains both for the
+   * one-offer case; this does the same where the order ends around a live
+   * offer — the search window closes, or an admin gives the job to somebody
+   * else.
+   *
+   * `notify` and `markSupersededRead` are non-throwing by contract, so a broken
+   * bell cannot keep an offer alive.
+   *
+   * @param exceptInspectorId the inspector who is KEEPING the order, whose own
+   *   offer is handled by the caller and must not be expired here.
+   */
+  private async expirePendingOffers(
+    orderId: string,
+    order: { number: string; make: string; model: string },
+    exceptInspectorId?: string,
+  ): Promise<void> {
+    const pending = await this.prisma.orderOffer.findMany({
+      where: {
+        orderId,
+        status: 'PENDING',
+        ...(exceptInspectorId ? { inspectorId: { not: exceptInspectorId } } : {}),
+      },
+    });
+    if (pending.length === 0) return;
+    await this.prisma.orderOffer.updateMany({
+      where: { id: { in: pending.map((o) => o.id) } },
+      data: { status: 'EXPIRED' },
+    });
+    for (const offer of pending) {
+      await this.notifications.notify(offer.inspectorId, 'offer.expired', {
+        orderId,
+        orderNumber: order.number,
+        make: order.make,
+        model: order.model,
+      });
+      await this.notifications.markSupersededRead(
+        offer.inspectorId,
+        'offer.received',
+        orderId,
+      );
+    }
+  }
+
   /** PENDING offers past expiresAt → EXPIRED, then cascade dispatch. */
   async expireStaleOffers(): Promise<{ expired: number }> {
     const stale = await this.prisma.orderOffer.findMany({
@@ -2569,10 +2635,18 @@ export class OrdersService {
           data: { dispatchRound: { increment: 1 } },
         });
         if (claimed.count === 0) continue;
-        await this.writeEvent(order.id, 'system', 'dispatch_round', null, null, {
-          round: order.dispatchRound + 1,
-        });
-        await this.dispatch(order.id);
+        // The event is written only when the round reached somebody. A round
+        // that found nobody is the normal state of an order in a thin region,
+        // and this job runs every 5 minutes against a search window of up to 24
+        // hours: writing unconditionally puts ~288 `dispatch_round` rows in a
+        // timeline the CUSTOMER reads, where each one renders as the raw type
+        // name because the message catalogues do not describe it.
+        const offered = await this.dispatch(order.id);
+        if (offered) {
+          await this.writeEvent(order.id, 'system', 'dispatch_round', null, null, {
+            round: order.dispatchRound + 1,
+          });
+        }
         rounds += 1;
       } catch (err) {
         this.logger.error(
@@ -2641,10 +2715,7 @@ export class OrdersService {
         });
         if (claimed.count === 0) continue;
 
-        await this.prisma.orderOffer.updateMany({
-          where: { orderId: order.id, status: 'PENDING' },
-          data: { status: 'EXPIRED' },
-        });
+        await this.expirePendingOffers(order.id, order);
         // Releases the hold and writes NO Refund row — nothing ever left the
         // customer's account. Non-throwing by contract.
         const outcome = await this.settleRefund(order, order.totalCents, 'search_expired');
