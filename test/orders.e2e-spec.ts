@@ -2886,6 +2886,122 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   // ============================================================
   // 16. The inspector's row carries both clocks that can take the job away
   // ============================================================
+  /*
+   * DEN-328. The cabinet is tabs now, and each tab is its own query: the page
+   * must not read the inspector's whole history to render one of them.
+   */
+  it('15b. tabs split the inspector list, and each answers its own total', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    // One order accepted (active) and one still on offer (offers).
+    const { orderId: activeId } = await createPaidOrder(customer);
+    await acceptPendingOffer(activeId);
+    const { orderId: offeredId } = await createPaidOrder(customer);
+
+    const tab = async (name: string) =>
+      (
+        await request(app.getHttpServer())
+          .get(`/api/v1/orders/me?role=inspector&tab=${name}`)
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200)
+      ).body;
+
+    const active = await tab('active');
+    expect(active.items.map((o: { id: string }) => o.id)).toContain(activeId);
+    expect(active.items.map((o: { id: string }) => o.id)).not.toContain(offeredId);
+    expect(active.total).toBe(active.items.length);
+
+    const offers = await tab('offers');
+    expect(offers.items.map((o: { id: string }) => o.id)).toContain(offeredId);
+    expect(offers.items.map((o: { id: string }) => o.id)).not.toContain(activeId);
+    // The live offer still carries its own deadline, as the untabbed list did.
+    expect(offers.items[0].offerExpiresAt).toBeTruthy();
+
+    const completed = await tab('completed');
+    expect(completed.items.map((o: { id: string }) => o.id)).not.toContain(activeId);
+  });
+
+  it('15c. paging is opt-in, and the sort flips', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const { orderId } = await createPaidOrder(customer);
+      await acceptPendingOffer(orderId);
+      ids.push(orderId);
+    }
+
+    // No page and no pageSize: the whole list, exactly as before the tabs.
+    const all = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector&tab=active')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(all.body.items.length).toBe(all.body.total);
+    expect(all.body.total).toBeGreaterThanOrEqual(3);
+
+    const firstPage = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector&tab=active&page=1&pageSize=2&sort=newest')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(firstPage.body.items).toHaveLength(2);
+    expect(firstPage.body.total).toBe(all.body.total);
+    expect(firstPage.body.page).toBe(1);
+
+    const secondPage = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector&tab=active&page=2&pageSize=2&sort=newest')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const firstIds = firstPage.body.items.map((o: { id: string }) => o.id);
+    const secondIds = secondPage.body.items.map((o: { id: string }) => o.id);
+    // A second page is a DIFFERENT page - the slice must not repeat rows.
+    expect(secondIds.some((id: string) => firstIds.includes(id))).toBe(false);
+
+    const oldest = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector&tab=active&sort=oldest')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(oldest.body.items.map((o: { id: string }) => o.id)).toEqual(
+      [...all.body.items.map((o: { id: string }) => o.id)].reverse(),
+    );
+  });
+
+  it('15d. the missed list pages over ORDERS, not over the rounds behind them', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    // Two orders, each expired TWICE on this inspector: four offer rows, two cards.
+    for (let i = 0; i < 2; i += 1) {
+      const { orderId } = await createPaidOrder(customer);
+      const first = await pendingOfferFor(orderId);
+      await prisma.orderOffer.update({
+        where: { id: first!.id },
+        data: { expiresAt: new Date(Date.now() - 60_000) },
+      });
+      await orders.expireStaleOffers();
+      await orders.redispatchUnfilledOrders();
+      const second = await pendingOfferFor(orderId);
+      await prisma.orderOffer.update({
+        where: { id: second!.id },
+        data: { expiresAt: new Date(Date.now() - 60_000) },
+      });
+      await orders.expireStaleOffers();
+    }
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed?page=1&pageSize=1')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(res.body.items).toHaveLength(1);
+    // Two cards, not the four offer rows behind them.
+    expect(res.body.total).toBe(2);
+    expect(res.body.items[0].timesOffered).toBe(2);
+  });
+
   it('16. GET /orders/me?role=inspector carries offerExpiresAt, then inspectionDeadlineAt', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);

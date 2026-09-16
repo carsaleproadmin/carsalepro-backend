@@ -3,6 +3,7 @@ import {
   IsBoolean,
   IsEnum,
   IsISO8601,
+  IsInt,
   IsLatitude,
   IsLongitude,
   IsNotEmpty,
@@ -10,9 +11,11 @@ import {
   IsString,
   Length,
   Matches,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
 export class QuoteOrderDto {
   @ApiProperty({ example: 52.52 })
@@ -171,6 +174,26 @@ export enum OrderRole {
   inspector = 'inspector',
 }
 
+/**
+ * Which list of the inspector cabinet to read (DEN-328).
+ *
+ * `offers` is the live work — a PENDING offer that has not run out. `active` is
+ * what the inspector holds and is driving. `completed` is everything finished
+ * or ended. Absent means the whole list, which is what every caller before the
+ * tabs asked for and what the customer list still asks for.
+ */
+export enum OrderTab {
+  offers = 'offers',
+  active = 'active',
+  completed = 'completed',
+}
+
+/** Newest first, or oldest first, over the date THAT TAB is about. */
+export enum OrderSort {
+  newest = 'newest',
+  oldest = 'oldest',
+}
+
 export class ListOrdersQueryDto {
   @ApiPropertyOptional({ enum: OrderRole, default: OrderRole.customer })
   @IsOptional()
@@ -182,4 +205,58 @@ export class ListOrdersQueryDto {
   @IsString()
   @MaxLength(32)
   status?: string;
+
+  @ApiPropertyOptional({ enum: OrderTab })
+  @IsOptional()
+  @IsEnum(OrderTab)
+  tab?: OrderTab;
+
+  @ApiPropertyOptional({ enum: OrderSort, default: OrderSort.newest })
+  @IsOptional()
+  @IsEnum(OrderSort)
+  sort?: OrderSort;
+
+  /**
+   * Paging is OPT-IN: a caller that sends neither field gets the whole list, as
+   * it did before the tabs existed. The response carries `total`, `page` and
+   * `pageSize` either way, so a client can page without the API having to guess
+   * which callers are ready for it.
+   */
+  @ApiPropertyOptional({ minimum: 1, default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
+}
+
+/** Query for the missed-offer list (DEN-327), paged and sorted like the rest. */
+export class ListMissedQueryDto {
+  @ApiPropertyOptional({ enum: OrderSort, default: OrderSort.newest })
+  @IsOptional()
+  @IsEnum(OrderSort)
+  sort?: OrderSort;
+
+  @ApiPropertyOptional({ minimum: 1, default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
 }
