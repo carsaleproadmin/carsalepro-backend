@@ -164,13 +164,26 @@ export class GeoService {
     }));
   }
 
-  /** True if an inspector profile currently has a location set. */
-  async inspectorHasLocation(userId: string): Promise<boolean> {
-    const rows = await this.prisma.$queryRaw<Array<{ has: boolean }>>(Prisma.sql`
-      SELECT (location IS NOT NULL) AS has
-      FROM inspector_profile
-      WHERE user_id = ${userId}
-    `);
-    return rows.length > 0 && rows[0].has === true;
+  /**
+   * An inspector's base location, or null when none is set.
+   *
+   * This replaces a boolean `inspectorHasLocation`: the profile view needs the
+   * COORDINATES, because the website draws the base on a map and could only
+   * ever be told whether one existed. A caller that wants the boolean reads
+   * `!== null`, which is the same query and one round trip.
+   */
+  async inspectorLocation(userId: string): Promise<{ lat: number; lng: number } | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ lat: number | null; lng: number | null }>>(
+      Prisma.sql`
+        SELECT
+          ST_Y(location::geometry) AS "lat",
+          ST_X(location::geometry) AS "lng"
+        FROM inspector_profile
+        WHERE user_id = ${userId}
+      `,
+    );
+    const row = rows[0];
+    if (!row || row.lat === null || row.lng === null) return null;
+    return { lat: Number(row.lat), lng: Number(row.lng) };
   }
 }
