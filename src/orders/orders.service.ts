@@ -2082,20 +2082,34 @@ export class OrdersService {
      * after it was cut is not the page the reader asked for.
      */
     const mine = { inspectorId: userId };
+    /*
+     * A tab and an explicit `status` INTERSECT, they do not override.
+     *
+     * The tab list used to be spread after `statusFilter`, so the later key won
+     * and `?tab=active&status=ASSIGNED` answered all three active statuses —
+     * a filter the caller can see it applied and the answer does not honour.
+     * A status the tab does not hold asks for nothing, and an empty `in` is the
+     * honest answer rather than a silently widened one.
+     */
+    const tabStatuses = (list: OrderStatus[]) => ({
+      status: { in: status ? list.filter((s) => s === (status as OrderStatus)) : list },
+    });
     const where =
       opts.tab === OrderTab.offers
         ? { ...statusFilter, id: { in: offeredIds } }
         : opts.tab === OrderTab.active
-          ? { ...statusFilter, ...mine, status: { in: OrdersService.ACTIVE_STATUSES } }
+          ? { ...mine, ...tabStatuses(OrdersService.ACTIVE_STATUSES) }
           : opts.tab === OrderTab.completed
-            ? { ...statusFilter, ...mine, status: { in: OrdersService.COMPLETED_STATUSES } }
+            ? { ...mine, ...tabStatuses(OrdersService.COMPLETED_STATUSES) }
             : { ...statusFilter, OR: [{ inspectorId: userId }, { id: { in: offeredIds } }] };
 
     const orderBy: Prisma.OrderOrderByWithRelationInput =
       opts.tab === OrderTab.active
         ? // The clock that can take the job away. Nulls are orders assigned
-          // before the deadline existed; Postgres sorts them last either way.
-          { inspectionDeadlineAt: desc ? 'desc' : 'asc' }
+          // before the deadline existed, and they are asked for LAST in both
+          // directions: Postgres puts them first on a DESC sort, which would
+          // open the newest-first page with the rows that have no clock at all.
+          { inspectionDeadlineAt: { sort: desc ? 'desc' : 'asc', nulls: 'last' } }
         : { createdAt: desc ? 'desc' : 'asc' };
 
     const [orders, total] = await this.prisma.$transaction([
