@@ -2631,6 +2631,22 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(expRes.expired).toBeGreaterThanOrEqual(1);
     const expired = await prisma.orderOffer.findUnique({ where: { id: staleOffer!.id } });
     expect(expired!.status).toBe('EXPIRED');
+
+    // --- DEN-324/DEN-325: the inspector is told, and the dead card stops
+    // counting as unread. Without both, the order leaves their cabinet while a
+    // card that reads as live work stays in their bell.
+    const bell = await prisma.notification.findMany({
+      where: { userId: staleOffer!.inspectorId, channel: 'inapp' },
+    });
+    const expiredCard = bell.find((n) => n.type === 'offer.expired');
+    expect(expiredCard).toBeDefined();
+    expect((expiredCard!.payload as { orderId?: string }).orderId).toBe(order3);
+    const receivedCard = bell.find(
+      (n) =>
+        n.type === 'offer.received' &&
+        (n.payload as { orderId?: string }).orderId === order3,
+    );
+    expect(receivedCard!.readAt).not.toBeNull();
   });
 
   // ============================================================

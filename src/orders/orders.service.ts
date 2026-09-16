@@ -2305,6 +2305,34 @@ export class OrdersService {
     });
     for (const offer of stale) {
       await this.prisma.orderOffer.update({ where: { id: offer.id }, data: { status: 'EXPIRED' } });
+      /*
+       * Tell the inspector BEFORE the cascade (DEN-324). Two things happen to
+       * them at once and neither is visible: the order leaves their cabinet,
+       * because `listMine` shows an inspector only what they hold or what they
+       * have a live offer for, and the `offer.received` card in their bell
+       * keeps standing. So one message explains the empty cabinet, and the old
+       * card stops counting as unread (DEN-325).
+       *
+       * Before the cascade because `dispatch` offers the job onward and
+       * notifies the NEXT inspector; the reader of this message should not be
+       * told second. Neither call throws — `notify` and `markSupersededRead`
+       * are non-throwing by contract — so an offer still expires if the bell
+       * is broken.
+       */
+      const order = await this.prisma.order.findUnique({ where: { id: offer.orderId } });
+      if (order) {
+        await this.notifications.notify(offer.inspectorId, 'offer.expired', {
+          orderId: offer.orderId,
+          orderNumber: order.number,
+          make: order.make,
+          model: order.model,
+        });
+        await this.notifications.markSupersededRead(
+          offer.inspectorId,
+          'offer.received',
+          offer.orderId,
+        );
+      }
       await this.dispatch(offer.orderId);
     }
     return { expired: stale.length };

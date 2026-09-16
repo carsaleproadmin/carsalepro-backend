@@ -158,6 +158,23 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Новый заказ ${str(p, 'orderNumber')} доступен.`,
     }),
   },
+  'offer.expired': {
+    de: (p) => ({
+      subject: `Auftrag ${str(p, 'orderNumber')} ist abgelaufen`,
+      body: `Die Zeit für den Auftrag ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) ist abgelaufen. Der Auftrag ging an einen anderen Prüfer.`,
+      short: `Auftrag ${str(p, 'orderNumber')} ist abgelaufen.`,
+    }),
+    en: (p) => ({
+      subject: `Job ${str(p, 'orderNumber')} has expired`,
+      body: `The time for job ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) is over. The job went to a different inspector.`,
+      short: `Job ${str(p, 'orderNumber')} has expired.`,
+    }),
+    ru: (p) => ({
+      subject: `Заказ ${str(p, 'orderNumber')} истёк`,
+      body: `Время на заказ ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) вышло. Заказ передан другому инспектору.`,
+      short: `Заказ ${str(p, 'orderNumber')} истёк.`,
+    }),
+  },
   'order.assigned': {
     de: (p) => ({
       subject: `Prüfer für ${str(p, 'orderNumber')} zugewiesen`,
