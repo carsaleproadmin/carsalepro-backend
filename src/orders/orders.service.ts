@@ -238,6 +238,18 @@ const PUBLIC_PAYMENT_STATE: Record<string, OrderPaymentState> = {
  */
 const RECONCILE_MIN_AGE_MS = 5 * 60_000;
 
+/**
+ * How many inspectors a quote looks at (DEN-352).
+ *
+ * It was three, which was the size the "who is near you" list needs. The quote
+ * now takes the lowest base fee of the set, and the lowest of three neighbours
+ * is still largely a lottery - a wider set makes the price describe the area
+ * rather than one person. The query is a bounded PostGIS KNN scan on an index,
+ * so the extra rows cost effectively nothing, and the customer-facing list is
+ * sliced back to three where it is built.
+ */
+const QUOTE_CANDIDATE_LIMIT = 10;
+
 /** Order statuses in which we are still looking for an inspector. */
 const PRE_ASSIGNMENT_STATUSES: OrderStatus[] = [
   OrderStatus.CREATED,
@@ -467,7 +479,7 @@ export class OrdersService {
       lat,
       lng,
       radiusKm,
-      limit: 3,
+      limit: QUOTE_CANDIDATE_LIMIT,
       excludeCustomerId: customerId ?? null,
     });
 
@@ -513,19 +525,61 @@ export class OrdersService {
       candidates,
       routingSource: route.source,
       /*
-       * DEN-213. Priced on the NEAREST inspector's own base fee.
+       * DEN-213. Priced on an inspector's own base fee - since DEN-352, on the
+       * LOWEST base fee in the candidate set rather than the nearest one's.
        *
        * The customer is shown ONE price and is never charged more than it. The
        * order that follows authorises exactly this total, and dispatch will not
        * offer the job to anybody who costs more (`dispatch`), so the number on
-       * the screen is a ceiling as well as a quote.
+       * the screen is a ceiling as well as a quote - which is why WHOSE base
+       * fee it is matters so much. Taking the nearest inspector's let one
+       * expensive neighbour set the price of the whole area: the quote was the
+       * highest rate in reach, the customer left at the order form, and the
+       * cheaper inspectors three streets further away were never offered the
+       * work at all.
+       *
+       * The route stays the nearest inspector's. Pricing each candidate would
+       * cost a routing request each to change a figure the base fee dominates,
+       * and the distance of the person who actually takes the job is not known
+       * at quote time anyway.
+       *
+       * The trade is deliberate: a quote can now land below what the inspector
+       * offering that base fee would accept for this drive. Then nobody takes
+       * it at the tariff and the order goes to the counter-offer queue
+       * (DEN-350/DEN-351), where the customer is asked a real price WITH a
+       * reason - which is the right place for that conversation, and a far
+       * better one than an order form nobody fills in.
        */
       price: computePrice({
         distanceKm: route.distanceKm,
         durationMin: route.durationMin,
-        tariff: await this.tariffForInspector(tariff, nearest.userId),
+        tariff: await this.cheapestCandidateTariff(tariff, candidates),
       }),
     };
+  }
+
+  /**
+   * The tariff for a quote: the LOWEST base fee among the candidates (DEN-352).
+   *
+   * One query for the whole set rather than one per candidate, and a candidate
+   * with no stated base fee counts as the platform base - the same fallback
+   * {@link tariffForInspector} applies, so a pool that states nothing prices
+   * exactly as it did before DEN-213.
+   */
+  private async cheapestCandidateTariff(
+    tariff: PricingTariff,
+    candidates: Array<{ userId: string }>,
+  ): Promise<PricingTariff> {
+    const profiles = await this.prisma.inspectorProfile.findMany({
+      where: { userId: { in: candidates.map((c) => c.userId) } },
+      select: { baseFeeCents: true },
+    });
+    // NOT seeded with the platform base: that would floor the answer at it, and
+    // a pool where everybody charges more than the platform base would be
+    // quoted a price none of them accepts.
+    const stated = profiles.map((p) => effectiveBaseFeeCents(p.baseFeeCents, tariff.baseFeeCents));
+    const baseFeeCents = stated.length ? Math.min(...stated) : tariff.baseFeeCents;
+    return baseFeeCents === tariff.baseFeeCents ? tariff : { ...tariff, baseFeeCents };
   }
 
   /**
