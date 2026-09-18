@@ -246,7 +246,7 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
   }
 
   async function paymentFor(orderId: string) {
-    return prisma.payment.findUniqueOrThrow({ where: { orderId } });
+    return prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
   }
 
   /**
@@ -286,8 +286,8 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
 
   /** Backdate a payment past the reconciler's five-minute grace period. */
   async function ageOutPayment(orderId: string): Promise<void> {
-    await prisma.payment.update({
-      where: { orderId },
+    await prisma.payment.updateMany({
+      where: { orderId, supersededAt: null },
       data: { createdAt: new Date(Date.now() - 30 * 60_000) },
     });
   }
@@ -606,8 +606,8 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
     // says so, and it is why the column is never backfilled — a deadline here
     // would have the cron cancel an order the customer has genuinely paid for.
     await prisma.order.update({ where: { id: orderId }, data: { searchExpiresAt: null } });
-    await prisma.payment.update({
-      where: { orderId },
+    await prisma.payment.updateMany({
+      where: { orderId, supersededAt: null },
       data: { status: 'succeeded', capturedAt: new Date(), authorizedAt: null },
     });
 

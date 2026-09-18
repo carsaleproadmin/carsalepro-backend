@@ -774,7 +774,7 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(res.body.refundCents).toBe(0);
       expect(res.body.refundMode).toBe('authorization_released');
       expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
-      const payment = await prisma.payment.findUnique({ where: { orderId } });
+      const payment = await prisma.payment.findFirst({ where: { orderId, supersededAt: null } });
       expect(payment!.status).toBe('cancelled');
     });
 

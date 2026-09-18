@@ -514,8 +514,8 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
     // Attach a synthetic PaymentIntent id to the order's payment so the handler
     // can map the dispute's PI back to the order.
     const piId = `pi_dispute_${Date.now()}`;
-    await prisma.payment.update({
-      where: { orderId },
+    await prisma.payment.updateMany({
+      where: { orderId, supersededAt: null },
       data: { stripePaymentIntentId: piId },
     });
 

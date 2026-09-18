@@ -186,4 +186,66 @@ export class GeoService {
     if (!row || row.lat === null || row.lng === null) return null;
     return { lat: Number(row.lat), lng: Number(row.lng) };
   }
+
+  /**
+   * Great-circle kilometres from an inspector's base to one order's vehicle, or
+   * null when either location is missing (DEN-344).
+   *
+   * One direction, and deliberately NOT a road route: this number prices a
+   * counter-offer ceiling, and routing it would cost a provider request every
+   * time an inspector opens the form. The straight line is also what
+   * `OrderOffer.straightLineKm` already records, so the two figures on an order
+   * are measured the same way and can be compared.
+   */
+  async distanceKmToOrder(inspectorUserId: string, orderId: string): Promise<number | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ distanceM: number | null }>>(Prisma.sql`
+      SELECT ST_Distance(ip.location, o.location) AS "distanceM"
+      FROM inspector_profile ip
+      CROSS JOIN "order" o
+      WHERE ip.user_id = ${inspectorUserId}
+        AND o.id = ${orderId}
+        AND ip.location IS NOT NULL
+    `);
+    const distanceM = rows[0]?.distanceM;
+    if (distanceM === null || distanceM === undefined) return null;
+    return Math.round((Number(distanceM) / 1000) * 10) / 10;
+  }
+
+  /**
+   * Orders an inspector can reach, for the "below your rate" list (DEN-344).
+   *
+   * The same two radii as `findNearestInspectors` and in the same order — the
+   * platform ceiling narrowed by the inspector's own — because an inspector who
+   * refuses a five-hour drive must not be shown one just because the price is
+   * negotiable. `ids` narrows the search to the orders the caller already knows
+   * are eligible (UNASSIGNED, past the first round, trade open), so the status
+   * rules stay in one place and this query answers only the geography.
+   */
+  async ordersNearInspector(params: {
+    inspectorUserId: string;
+    orderIds: string[];
+    radiusKm: number;
+  }): Promise<Array<{ orderId: string; distanceKm: number }>> {
+    if (params.orderIds.length === 0) return [];
+    const radiusM = params.radiusKm * 1000;
+    const rows = await this.prisma.$queryRaw<Array<{ orderId: string; distanceM: number }>>(
+      Prisma.sql`
+        SELECT o.id AS "orderId", ST_Distance(ip.location, o.location) AS "distanceM"
+        FROM inspector_profile ip
+        JOIN "order" o ON o.id IN (${Prisma.join(params.orderIds)})
+        WHERE ip.user_id = ${params.inspectorUserId}
+          AND ip.location IS NOT NULL
+          AND ST_DWithin(
+            ip.location,
+            o.location,
+            LEAST(${radiusM}, COALESCE(ip.search_radius_km * 1000, ${radiusM}))
+          )
+        ORDER BY ip.location <-> o.location
+      `,
+    );
+    return rows.map((r) => ({
+      orderId: r.orderId,
+      distanceKm: Math.round((Number(r.distanceM) / 1000) * 10) / 10,
+    }));
+  }
 }

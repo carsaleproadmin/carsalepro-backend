@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { OrderStatus, Prisma, Role } from '@prisma/client';
+import { OrderStatus, Payment, Prisma, Role } from '@prisma/client';
 import { ADMIN_DECISION_EVENT, readAdminDecision } from '../orders/admin-decision';
 import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -7,6 +7,28 @@ import { clampPage, clampPageSize } from './admin-audit.service';
 import { citySearchKeys } from '../common/search-text';
 import { intRange } from './dto/admin-car-filter.dto';
 import { AdminOrderListQueryDto } from './dto/admin-orders.dto';
+
+/**
+ * The operator's view of one payment row: the raw ledger status, the provider
+ * handle, and WHEN each step happened. The public block carries one word for
+ * where the money is, which answers none of the finance questions.
+ */
+function describePayment(payment: Payment | null) {
+  return payment
+    ? {
+        id: payment.id,
+        purpose: payment.purpose,
+        amountCents: payment.amountCents,
+        currency: payment.currency,
+        status: payment.status,
+        stripePaymentIntentId: payment.stripePaymentIntentId,
+        authorizedAt: payment.authorizedAt?.toISOString() ?? null,
+        capturedAt: payment.capturedAt?.toISOString() ?? null,
+        canceledAt: payment.canceledAt?.toISOString() ?? null,
+        createdAt: payment.createdAt.toISOString(),
+      }
+    : null;
+}
 
 @Injectable()
 export class AdminOrdersService {
@@ -132,8 +154,13 @@ export class AdminOrdersService {
   /** Full admin detail: core order detail + payment/refunds/payout/dispute. */
   async detail(orderId: string, adminId: string) {
     const core = await this.orders.getDetail(orderId, adminId, Role.ADMIN);
-    const [payment, refunds, payout, dispute, decisionEvents] = await this.prisma.$transaction([
-      this.prisma.payment.findUnique({ where: { orderId } }),
+    const [payments, refunds, payout, dispute, decisionEvents] = await this.prisma.$transaction([
+      // Every payment the order ever had, newest first (DEN-344). A counter-offer
+      // accepted above the hold replaces the authorization, so an order can carry
+      // a released row and a live one - and "authorized 39, released, then
+      // authorized 52 and captured" is the answer to the finance question an
+      // operator actually asks. The live row is the one with no `supersededAt`.
+      this.prisma.payment.findMany({ where: { orderId }, orderBy: { createdAt: 'desc' } }),
       this.prisma.refund.findMany({ where: { orderId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.payout.findUnique({ where: { orderId } }),
       this.prisma.dispute.findUnique({ where: { orderId } }),
@@ -158,20 +185,12 @@ export class AdminOrdersService {
       // raw ledger status, the provider handle, and WHEN each step happened —
       // "authorized at 09:02, never captured" is the answer to most finance
       // questions about an order, and the public block cannot carry it.
-      payment: payment
-        ? {
-            id: payment.id,
-            purpose: payment.purpose,
-            amountCents: payment.amountCents,
-            currency: payment.currency,
-            status: payment.status,
-            stripePaymentIntentId: payment.stripePaymentIntentId,
-            authorizedAt: payment.authorizedAt?.toISOString() ?? null,
-            capturedAt: payment.capturedAt?.toISOString() ?? null,
-            canceledAt: payment.canceledAt?.toISOString() ?? null,
-            createdAt: payment.createdAt.toISOString(),
-          }
-        : null,
+      payment: describePayment(payments.find((p) => p.supersededAt === null) ?? null),
+      // The superseded rows, in the order they were replaced. Empty for every
+      // order whose price never changed, which is nearly all of them.
+      paymentHistory: payments
+        .filter((p) => p.supersededAt !== null)
+        .map((p) => ({ ...describePayment(p)!, supersededAt: p.supersededAt!.toISOString() })),
       refunds: refunds.map((r) => ({
         id: r.id,
         amountCents: r.amountCents,

@@ -495,7 +495,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(order!.minimumFareApplied).toBe(FARE.minimumFareApplied);
     expect(order!.routingSource).toBe('haversine');
 
-    const payment = await prisma.payment.findUnique({ where: { orderId: order!.id } });
+    const payment = await prisma.payment.findFirst({ where: { orderId: order!.id, supersededAt: null } });
     // AUTHORIZED, not charged. Under manual capture the funds are only held at
     // this point — nobody has agreed to do the work yet, so nothing is taken.
     expect(payment!.status).toBe('authorized');
@@ -1202,7 +1202,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     // The money is taken HERE, not at creation: acceptance is the first moment
     // anyone has agreed to do the work. An order must never be ASSIGNED with
     // uncaptured money.
-    const payment = await prisma.payment.findUnique({ where: { orderId } });
+    const payment = await prisma.payment.findFirst({ where: { orderId, supersededAt: null } });
     expect(payment!.status).toBe('succeeded');
     expect(payment!.capturedAt).toBeTruthy();
     expect(payment!.authorizedAt!.getTime()).toBeLessThanOrEqual(
@@ -1957,7 +1957,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     // finance ledger.
     expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
 
-    const payment = await prisma.payment.findUnique({ where: { orderId } });
+    const payment = await prisma.payment.findFirst({ where: { orderId, supersededAt: null } });
     expect(payment!.status).toBe('cancelled');
     expect(payment!.canceledAt).toBeTruthy();
     expect(payment!.capturedAt).toBeNull();

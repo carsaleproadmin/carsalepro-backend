@@ -41,6 +41,15 @@ export const SETTING_LIMITS: Record<SettingKey, SettingLimit> = {
   // The ceiling stays far below Stripe's 7-day authorization expiry: a hold
   // that sits near it strands real money (see the default's comment).
   orderSearchWindowMinutes: { min: 30, max: 4320 },
+  // The floor is not 0: a window of zero expires every counter-offer at the
+  // moment it is made, which reads as "the button does nothing".
+  counterOfferWindowMinutes: { min: 5, max: 240 },
+  // The order is locked against dispatch for this long, so the ceiling is an
+  // hour and not a day.
+  counterOfferPaymentMinutes: { min: 5, max: 60 },
+  // Never below 1: under it the ceiling would sit BELOW the inspector's own
+  // fair price, and no honest counter-offer could pass validation.
+  counterOfferMaxMultiplier: { min: 1, max: 3 },
   autoApproveAfterDays: { min: 1, max: 30 },
   inspectionStartDeadlineDays: { min: 1, max: 30 },
   minReportQualityScore: { min: 0, max: 100 },

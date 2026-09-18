@@ -48,6 +48,13 @@ export interface CreateOrderPaymentIntentParams {
   orderId: string;
   paymentId: string;
   userId: string;
+  /**
+   * What the webhook must do when this hold appears (DEN-344). Defaults to
+   * 'order' — the first authorization of an order, which starts the search.
+   * A counter-offer's replacement authorization carries its own purpose,
+   * because the same event then means "release the old hold and assign".
+   */
+  purpose?: string;
 }
 
 export interface CreatePpvCheckoutParams {
@@ -300,7 +307,7 @@ export class StripeService implements OnModuleInit {
         orderId: params.orderId,
         paymentId: params.paymentId,
         userId: params.userId,
-        purpose: 'order',
+        purpose: params.purpose ?? 'order',
       },
     });
   }
