@@ -825,6 +825,38 @@ describe('Counter-offers (e2e)', () => {
       // shared test database, and the claim here is that dispatch ran at all.
       expect(await prisma.orderOffer.count({ where: { orderId, status: 'PENDING' } })).toBe(1);
     });
+
+    it('refuses a second price from the same inspector', async () => {
+      const far = await makeInspector({ baseFeeCents: 40_000, lat: FAR_LAT, lng: FAR_LNG });
+      const customer = await register('cust');
+      const orderId = await orderWaitingForTrade(customer.token);
+      const price = await payoutCeilingFor(orderId, far.userId);
+
+      const created = await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${far.token}`)
+        .send({ payoutCents: price, reason: 'The car is 38 km from me.' })
+        .expect(201);
+      await prisma.orderCounterOffer.update({
+        where: { id: created.body.id },
+        data: { status: 'ACCEPTING', acceptingUntil: new Date(Date.now() + 10 * 60_000) },
+      });
+
+      // The upsert in `create` would rewrite the row back to PENDING, which
+      // drops the payment lock while the customer is entering a card.
+      const again = await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${far.token}`)
+        .send({ payoutCents: price - 100, reason: 'A better price.' })
+        .expect(409);
+      expect(again.body.error.code).toBe('counter_offer_already_answered');
+
+      const counter = await prisma.orderCounterOffer.findUniqueOrThrow({
+        where: { id: created.body.id },
+      });
+      expect(counter.status).toBe('ACCEPTING');
+      expect(counter.acceptingUntil).not.toBeNull();
+    });
   });
 
   describe('the sweep', () => {

@@ -303,7 +303,9 @@ export class PaymentsService {
           // ORIGINAL hold is still in place — it is released only once the
           // replacement holds money — so the order simply goes back to the pool.
           const orders = await this.resolveOrdersService();
-          await orders?.abandonCounterOfferPayment(meta.orderId, 'payment intent canceled');
+          // Stripe cancelled it already, so the last argument stops us asking
+          // for the same cancellation a second time.
+          await orders?.abandonCounterOfferPayment(meta.orderId, 'payment intent canceled', true);
         }
         break;
       }
@@ -665,7 +667,11 @@ export class PaymentsService {
     parkPayoutForFailedTransfer: (orderId: string, reason: string) => Promise<void>;
     authorizeOrderPayment: (paymentId: string, orderId: string) => Promise<void>;
     finalizeCounterOfferPayment: (paymentId: string, orderId: string) => Promise<void>;
-    abandonCounterOfferPayment: (orderId: string, detail: string) => Promise<void>;
+    abandonCounterOfferPayment: (
+      orderId: string,
+      detail: string,
+      alreadyCanceledAtStripe?: boolean,
+    ) => Promise<void>;
   } | null> {
     try {
       const { OrdersService } = await import('../orders/orders.service');
