@@ -98,18 +98,9 @@ export class CounterOffersService {
         customerId: { not: userId },
         offers: { none: { inspectorId: userId, status: 'DECLINED' } },
       },
-      select: {
-        id: true,
-        number: true,
-        make: true,
-        model: true,
-        address: true,
-        totalCents: true,
-        currency: true,
-        dispatchRound: true,
-        searchExpiresAt: true,
-        createdAt: true,
-      },
+      // The whole row, because `fairPriceForInspector` prices from the order it
+      // is given. A narrower `select` here cost one `findUnique` per candidate
+      // in the loop below - up to 100 extra queries to build one tab.
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
@@ -170,9 +161,7 @@ export class CounterOffersService {
       // What the order would pay THIS inspector, and the most they may ask.
       // Computed per order rather than once, because both depend on how far
       // away they are from this particular car.
-      const full = await this.prisma.order.findUnique({ where: { id: orderId } });
-      if (!full) continue;
-      const fair = await this.orders.fairPriceForInspector(full, userId, distanceKm);
+      const fair = await this.orders.fairPriceForInspector(order, userId, distanceKm);
       // The tab answers one question: "which orders pay less than I charge?".
       // An order whose own total already covers this inspector is one dispatch
       // will offer them in the ordinary way, so it does not belong here.
@@ -337,8 +326,11 @@ export class CounterOffersService {
       });
     }
 
+    // Only the WRITE is guarded: a P2002 from anything after it means something
+    // else entirely, and reporting it as "your price is already in" hides it.
+    let created;
     try {
-      const created = await this.prisma.orderCounterOffer.upsert({
+      created = await this.prisma.orderCounterOffer.upsert({
         // The unique key is (order, inspector): a second attempt after a failed
         // payment reuses the row rather than writing a second one.
         where: { orderId_inspectorId: { orderId, inspectorId: userId } },
@@ -375,37 +367,6 @@ export class CounterOffersService {
           presentedAt: null,
         },
       });
-
-      await this.orders.writeEvent(orderId, userId, 'counter_offer_created', null, null, {
-        counterOfferId: created.id,
-        priceCents: created.priceCents,
-        maxPriceCents,
-        distanceKm,
-      });
-
-      // The customer is told by the queue, and only about the price they
-      // are actually being shown. Notifying here would announce every queued
-      // price - the auction the one-question rule exists to prevent.
-      await this.queue.promote(orderId);
-
-      const current = await this.prisma.orderCounterOffer.findUnique({
-        where: { id: created.id },
-      });
-      const queuePosition = await this.queuePositionOf(created.id);
-
-      // All three figures, because the confirmation has to be able to repeat
-      // the breakdown the inspector was shown before they sent it.
-      return {
-        id: created.id,
-        payoutCents: created.inspectorShareCents,
-        priceCents: created.priceCents,
-        platformFeeCents: created.platformFeeCents,
-        // The promoted deadline when this price went straight to the customer,
-        // and the search-end backstop while it waits its turn.
-        expiresAt: (current ?? created).expiresAt.toISOString(),
-        queuePosition,
-        presented: (current ?? created).presentedAt !== null,
-      };
     } catch (e) {
       // P2002 here is the inspector's OWN row being written twice at once - a
       // double submit. Since DEN-350 it is no longer another expert winning a
@@ -420,6 +381,39 @@ export class CounterOffersService {
       }
       throw e;
     }
+
+    await this.orders.writeEvent(orderId, userId, 'counter_offer_created', null, null, {
+      counterOfferId: created.id,
+      priceCents: created.priceCents,
+      maxPriceCents,
+      distanceKm,
+    });
+
+    // The customer is told by the queue, and only about the price they
+    // are actually being shown. Notifying here would announce every queued
+    // price - the auction the one-question rule exists to prevent.
+    await this.queue.promote(orderId);
+
+    // Re-read once: `promote` may have put this very price on the screen, which
+    // rewrites `presentedAt` and `expiresAt` on the row written above.
+    const current = await this.prisma.orderCounterOffer.findUnique({
+      where: { id: created.id },
+    });
+    const queuePosition = await this.queuePositionOf(created.id);
+
+    // All three figures, because the confirmation has to be able to repeat
+    // the breakdown the inspector was shown before they sent it.
+    return {
+      id: created.id,
+      payoutCents: created.inspectorShareCents,
+      priceCents: created.priceCents,
+      platformFeeCents: created.platformFeeCents,
+      // The promoted deadline when this price went straight to the customer,
+      // and the search-end backstop while it waits its turn.
+      expiresAt: (current ?? created).expiresAt.toISOString(),
+      queuePosition,
+      presented: (current ?? created).presentedAt !== null,
+    };
   }
 
   /**
@@ -506,8 +500,16 @@ export class CounterOffersService {
      * WITHDRAWN is not in the list, and deliberately: the inspector pulled that
      * offer themselves, or it was pulled for them when they took other work.
      * Nobody has answered it, so nobody is being asked twice.
+     *
+     * ACCEPTING is in the list, and it is not an "answer" at all - it is the
+     * payment window. Without it the upsert in `create` rewrites the row the
+     * customer is paying for: it goes back to PENDING and loses
+     * `acceptingUntil`, which drops `counterOfferPaymentLock` and leaves the
+     * PaymentIntent with nothing pointing at it. The pool then takes the order
+     * underneath a customer who is entering a card.
      */
     const answered: Record<string, string> = {
+      ACCEPTING: 'The customer is paying for your price. Wait for the answer.',
       DECLINED: 'You named a price for this order and the customer continued the search.',
       EXPIRED: 'Your price for this order expired without an answer.',
       SUPERSEDED: 'This order went to another expert at the tariff price.',
@@ -666,7 +668,12 @@ export class CounterOffersService {
       },
       include: { inspector: { select: { companyName: true, user: { select: { name: true } } } } },
     });
-    if (!counter || counter.expiresAt <= new Date()) return { counterOffer: null };
+    // An ACCEPTING row runs on `acceptingUntil`, not on `expiresAt`: the
+    // customer already answered and is entering a card, and the answer window
+    // stopped applying at that moment. Reading `expiresAt` here made the panel
+    // go empty in the middle of a payment, with the money still in flight.
+    const deadline = counter ? (counter.acceptingUntil ?? counter.expiresAt) : null;
+    if (!counter || !deadline || deadline <= new Date()) return { counterOffer: null };
 
     const waiting = await this.prisma.orderCounterOffer.count({
       where: { orderId: order.id, status: 'PENDING', presentedAt: null },

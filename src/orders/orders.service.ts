@@ -1478,11 +1478,43 @@ export class OrdersService {
    * same path when the webhook was lost.
    */
   async finalizeCounterOfferPayment(paymentId: string, orderId: string): Promise<void> {
+    /*
+     * The payment row decides whether this event still applies, and it is read
+     * FIRST for that reason.
+     *
+     * Stripe redelivers, and a customer may accept twice: a first payment is
+     * abandoned, a second is opened, and the late webhook of the FIRST one
+     * arrives with an ACCEPTING row on the order that belongs to the second.
+     * Keyed on the order alone, this method claimed the order for the wrong
+     * price and then released the live hold as "replaced" - an order with no
+     * money and no offer. `abandonCounterOfferPayment` supersedes a payment it
+     * gives up on, so a superseded row is exactly the signal to stop here.
+     */
+    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+    if (
+      !payment ||
+      payment.orderId !== orderId ||
+      payment.purpose !== COUNTER_OFFER_PAYMENT_PURPOSE ||
+      payment.supersededAt !== null ||
+      payment.status === 'cancelled'
+    ) {
+      this.logger.warn(
+        `finalizeCounterOfferPayment: payment ${paymentId} on order ${orderId} is not the live one`,
+      );
+      return;
+    }
+
     const counter = await this.prisma.orderCounterOffer.findFirst({
       where: { orderId, status: 'ACCEPTING' },
     });
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!counter || !order) return;
+    // The hold must also be for the price this offer names. A stale event whose
+    // row survived the checks above still buys the wrong amount.
+    if (payment.amountCents !== counter.priceCents) {
+      await this.releaseSupersededHold(paymentId, orderId, 'counter_offer_lost');
+      return;
+    }
     if (order.status !== OrderStatus.PAID && order.status !== OrderStatus.UNASSIGNED) {
       // Somebody reached ASSIGNED another way. The payment lock is supposed to
       // make this impossible, so the hold is given back rather than kept.
@@ -1491,6 +1523,33 @@ export class OrdersService {
     }
 
     const now = new Date();
+
+    // The inspector must still be free. `accept` asked the same question, but
+    // minutes have passed since - the customer spent them on a card and a 3DS
+    // round trip - and an inspector is allowed to take other work while their
+    // price waits. Assigning them twice is the defect this repeats the check
+    // for; the hold goes back, and the offer ends where the sweep can see it.
+    const busy = await this.prisma.order.findFirst({
+      where: {
+        inspectorId: counter.inspectorId,
+        status: { in: [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE, OrderStatus.IN_PROGRESS] },
+      },
+      select: { id: true },
+    });
+    if (busy) {
+      await this.releaseSupersededHold(paymentId, orderId, 'counter_offer_inspector_busy');
+      await this.prisma.orderCounterOffer.updateMany({
+        where: { id: counter.id, status: 'ACCEPTING' },
+        data: { status: 'WITHDRAWN', acceptingUntil: null, respondedAt: now },
+      });
+      await this.writeEvent(orderId, counter.inspectorId, 'counter_offer_withdrawn', null, null, {
+        counterOfferId: counter.id,
+        reason: 'inspector took another order',
+      });
+      await this.counterOfferQueue.promoteQuietly(orderId);
+      await this.dispatch(orderId);
+      return;
+    }
 
     // Claim the order for the inspector who named the price, on the same
     // conditional update `acceptOffer` uses. The payment lock already keeps the
@@ -1525,7 +1584,14 @@ export class OrdersService {
         where: { id: paymentId, status: { in: ['pending', 'failed'] } },
         data: { status: 'authorized', authorizedAt: now },
       })
-      .catch(() => undefined);
+      // Not fatal: `captureOrderPayment` accepts a row that is still 'pending',
+      // so the capture below goes ahead. It is logged because a ledger row that
+      // disagrees with Stripe is the start of every money investigation.
+      .catch((e) =>
+        this.logger.error(
+          `finalizeCounterOfferPayment: payment ${paymentId} not marked authorized: ${String(e)}`,
+        ),
+      );
 
     const capture = await this.captureOrderPayment(orderId);
     if (capture.status !== 'captured' && capture.status !== 'already_captured') {
@@ -1534,6 +1600,10 @@ export class OrdersService {
       // if its window still has time. The old hold is already gone, so the
       // order carries no money - `searchExpiresAt` still ends it.
       await this.releaseOrderClaim(orderId, counter.inspectorId);
+      // And the replacement hold goes back. It cannot be captured, the old one
+      // is already released, and a row left 'authorized' holds a customer's
+      // money for the seven days Stripe takes to expire an authorization.
+      await this.releaseSupersededHold(paymentId, orderId, 'counter_offer_capture_failed');
       await this.writeEvent(orderId, counter.inspectorId, 'counter_offer_capture_failed', null, null, {
         counterOfferId: counter.id,
         detail: capture.detail ?? null,
@@ -1593,7 +1663,16 @@ export class OrdersService {
    * customer's screen for whatever is left of its own window, because a
    * mistyped card is not a refusal.
    */
-  async abandonCounterOfferPayment(orderId: string, detail: string): Promise<void> {
+  async abandonCounterOfferPayment(
+    orderId: string,
+    detail: string,
+    /**
+     * True when Stripe has ALREADY cancelled the intent - the caller is the
+     * `payment_intent.canceled` webhook. Cancelling it again answers with an
+     * error and says nothing, so the cancel below is skipped.
+     */
+    alreadyCanceledAtStripe = false,
+  ): Promise<void> {
     const counter = await this.prisma.orderCounterOffer.findFirst({
       where: { orderId, status: 'ACCEPTING' },
     });
@@ -1613,6 +1692,35 @@ export class OrdersService {
         ...(stillOpen ? {} : { respondedAt: now }),
       },
     });
+
+    /*
+     * The replacement intent is GIVEN BACK at Stripe, and only then does the row
+     * stop being the order's live one.
+     *
+     * The timeout path is the one that needs this. A card left half-entered
+     * leaves the intent alive and payable, so a customer who finishes 3DS ten
+     * minutes late places a real hold on an order that has moved on - and
+     * `finalizeCounterOfferPayment` now refuses a superseded row, so nothing
+     * would ever release it. The `canceled` webhook path arrives with the work
+     * already done and says so.
+     */
+    const open = await this.prisma.payment.findMany({
+      where: { orderId, purpose: COUNTER_OFFER_PAYMENT_PURPOSE, supersededAt: null },
+    });
+    for (const payment of open) {
+      if (alreadyCanceledAtStripe || !this.stripe.configured || !payment.stripePaymentIntentId) {
+        continue;
+      }
+      await this.stripe
+        .cancelPaymentIntent(payment.stripePaymentIntentId, payment.id, 'counter_offer_abandoned')
+        .catch((e) =>
+          // Loud, and never fatal: the order must still go back to the pool.
+          // `reconcileAbandonedCounterOfferHolds` tries the cancel again.
+          this.logger.error(
+            `abandonCounterOfferPayment: order ${orderId} payment ${payment.id} not released: ${String(e)}`,
+          ),
+        );
+    }
 
     // The half-made payment row must stop being the order's live one, or every
     // later reader - capture, release, the admin finance page - would find a
@@ -1697,20 +1805,28 @@ export class OrdersService {
   ): Promise<void> {
     const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
     if (!payment) return;
+    // The flag must describe what Stripe actually did. Writing `cancelled` over
+    // a cancel that threw hides real money on a customer's card from the
+    // reconciler, which is the one thing that can still take it back.
+    let released = !this.stripe.configured;
     if (this.stripe.configured && payment.stripePaymentIntentId) {
-      await this.stripe
-        .cancelPaymentIntent(payment.stripePaymentIntentId, payment.id, reason)
-        .catch((e) =>
-          this.logger.error(`releaseSupersededHold: ${payment.id} not released: ${String(e)}`),
-        );
+      try {
+        await this.stripe.cancelPaymentIntent(payment.stripePaymentIntentId, payment.id, reason);
+        released = true;
+      } catch (e) {
+        this.logger.error(`releaseSupersededHold: ${payment.id} not released: ${String(e)}`);
+      }
     }
     await this.prisma.payment.update({
       where: { id: paymentId },
-      data: { status: 'cancelled', canceledAt: new Date(), supersededAt: new Date() },
+      data: {
+        supersededAt: new Date(),
+        ...(released ? { status: 'cancelled', canceledAt: new Date() } : {}),
+      },
     });
     await this.writeEvent(orderId, 'system', 'authorization_released', null, null, {
       reason,
-      released: true,
+      released,
       paymentId,
     });
   }
@@ -3454,6 +3570,8 @@ export class OrdersService {
 
     let advanced = 0;
 
+    advanced += await this.reconcileAbandonedCounterOfferHolds(staleBefore, limit);
+
     for (const payment of stranded) {
       const orderId = payment.orderId as string;
       try {
@@ -3503,6 +3621,63 @@ export class OrdersService {
     }
 
     return { scanned: waiting.length + working.length + stranded.length, advanced };
+  }
+
+  /**
+   * Give back the counter-offer holds nothing else can reach (DEN-344).
+   *
+   * The three selections above all read `purpose: 'order'`, so no counter-offer
+   * payment was ever reconciled. That is right for the two that drive an order
+   * forward - a replacement hold must not start a search or be captured on its
+   * own - and wrong for a hold that was abandoned and NOT released: the cancel
+   * in `abandonCounterOfferPayment` can fail, and after it the row is
+   * superseded, which every other reader takes as "no longer our business".
+   * The customer's money then sits frozen until Stripe expires it.
+   *
+   * Only rows that still name an intent are read, and Stripe is the authority:
+   * an intent it reports as `canceled` is simply recorded.
+   */
+  private async reconcileAbandonedCounterOfferHolds(
+    staleBefore: Date,
+    limit: number,
+  ): Promise<number> {
+    if (!this.stripe.configured) return 0;
+    const abandoned = await this.prisma.payment.findMany({
+      where: {
+        purpose: COUNTER_OFFER_PAYMENT_PURPOSE,
+        status: { in: ['pending', 'failed', 'authorized'] },
+        supersededAt: { not: null },
+        canceledAt: null,
+        stripePaymentIntentId: { not: null },
+        createdAt: { lt: staleBefore },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    });
+
+    let released = 0;
+    for (const payment of abandoned) {
+      const intentId = payment.stripePaymentIntentId as string;
+      try {
+        const intent = await this.stripe.retrievePaymentIntent(intentId);
+        if (intent.status !== 'canceled') {
+          await this.stripe.cancelPaymentIntent(intentId, payment.id, 'counter_offer_abandoned');
+          this.logger.warn(
+            `reconcile: released a stranded counter-offer hold on order ${payment.orderId}`,
+          );
+          released += 1;
+        }
+        await this.prisma.payment.update({
+          where: { id: payment.id },
+          data: { status: 'cancelled', canceledAt: new Date() },
+        });
+      } catch (err) {
+        this.logger.error(
+          `reconcile: counter-offer hold ${payment.id} threw: ${(err as Error).message}`,
+        );
+      }
+    }
+    return released;
   }
 
   /**
