@@ -220,12 +220,16 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    * straight line is shorter than the road, and a difficult address costs more
    * than the kilometres say.
    *
-   * It is proportional, so watch the ABSOLUTE figure: 1.5 over a fair 40 EUR
-   * permits 60, but over a fair 200 EUR it permits 300. If customers refuse
+   * It is proportional, so watch the ABSOLUTE figure: 1.2 over a fair 40 EUR
+   * permits 48, but over a fair 200 EUR it permits 240. If customers refuse
    * mostly the expensive counter-offers, lower this before changing anything
    * else.
+   *
+   * Lowered from 1.5 on 2026-09-18. Half again the fair price of the trip is a
+   * number a customer reads as opportunism, and the room it bought was room to
+   * ask for more than the extra road costs.
    */
-  counterOfferMaxMultiplier: 1.5,
+  counterOfferMaxMultiplier: 1.2,
   autoApproveAfterDays: 7,
   /**
    * How long an accepted order may sit without the inspection starting, before
