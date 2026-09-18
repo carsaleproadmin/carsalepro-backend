@@ -254,7 +254,7 @@ async function main(): Promise<void> {
     scheduledAt,
   });
 
-  const payment = await prisma.payment.findUnique({ where: { orderId: created.orderId } });
+  const payment = await prisma.payment.findFirst({ where: { orderId: created.orderId, supersededAt: null } });
   if (!payment) throw new Error('the order was created without a payment row');
 
   if (stripe.configured && payment.stripePaymentIntentId) {

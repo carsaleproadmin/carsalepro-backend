@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { OrderStatus, Payment, Prisma, Report } from '@prisma/client';
 import { ADMIN_ROLES } from '../auth/roles';
+import { COUNTER_OFFER_PAYMENT_PURPOSE } from '../orders/counter-offer-rules';
 import { AppConfig } from '../config/configuration';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
@@ -254,6 +255,23 @@ export class PaymentsService {
           await orders.authorizeOrderPayment(meta.paymentId, meta.orderId);
           this.logger.log(`Order ${meta.orderId} authorized (hold placed) — searching`);
         }
+        // DEN-344. The SAME event on a counter-offer's replacement hold means
+        // something else entirely: the customer has paid the higher price, so
+        // the old hold is released and the inspector who named it gets the job.
+        // It cannot share the branch above — `authorizeOrderPayment` only acts
+        // on a CREATED order and would silently do nothing here.
+        if (
+          meta.purpose === COUNTER_OFFER_PAYMENT_PURPOSE &&
+          meta.orderId &&
+          meta.paymentId
+        ) {
+          const orders = await this.resolveOrdersService();
+          if (!orders) {
+            throw new Error('OrdersService unavailable — cannot finish the counter-offer');
+          }
+          await orders.finalizeCounterOfferPayment(meta.paymentId, meta.orderId);
+          this.logger.log(`Order ${meta.orderId} re-authorized for a counter-offer`);
+        }
         break;
       }
       case 'payment_intent.succeeded': {
@@ -280,6 +298,13 @@ export class PaymentsService {
         if (meta.purpose === 'order' && meta.paymentId) {
           await this.cancelOrderPayment(meta.paymentId, meta.orderId);
         }
+        if (meta.purpose === COUNTER_OFFER_PAYMENT_PURPOSE && meta.orderId) {
+          // A replacement hold that was cancelled before it could be used. The
+          // ORIGINAL hold is still in place — it is released only once the
+          // replacement holds money — so the order simply goes back to the pool.
+          const orders = await this.resolveOrdersService();
+          await orders?.abandonCounterOfferPayment(meta.orderId, 'payment intent canceled');
+        }
         break;
       }
       case 'payment_intent.payment_failed': {
@@ -296,6 +321,15 @@ export class PaymentsService {
             })
             .catch(() => undefined);
           this.logger.warn(`Order payment ${meta.paymentId} failed — order left CREATED`);
+        }
+        if (meta.purpose === COUNTER_OFFER_PAYMENT_PURPOSE && meta.orderId) {
+          // The card was refused for the higher price. Unlike an order's first
+          // payment, this cannot be left open: the order is locked against the
+          // pool while it waits, and the customer still has a perfectly good
+          // hold at the original price.
+          const orders = await this.resolveOrdersService();
+          await orders?.abandonCounterOfferPayment(meta.orderId, 'card was refused');
+          this.logger.warn(`Counter-offer payment ${meta.paymentId} failed — order back in the pool`);
         }
         break;
       }
@@ -630,6 +664,8 @@ export class PaymentsService {
     dispatch: (orderId: string) => Promise<unknown>;
     parkPayoutForFailedTransfer: (orderId: string, reason: string) => Promise<void>;
     authorizeOrderPayment: (paymentId: string, orderId: string) => Promise<void>;
+    finalizeCounterOfferPayment: (paymentId: string, orderId: string) => Promise<void>;
+    abandonCounterOfferPayment: (orderId: string, detail: string) => Promise<void>;
   } | null> {
     try {
       const { OrdersService } = await import('../orders/orders.service');

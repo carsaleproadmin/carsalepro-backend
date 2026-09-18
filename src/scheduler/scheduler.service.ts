@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { KycService } from '../kyc/kyc.service';
 import { ListingsService } from '../listings/listings.service';
 import { LegalContractService } from '../legal/legal-contract.service';
+import { CounterOffersService } from '../orders/counter-offers.service';
 import { OrdersService } from '../orders/orders.service';
 
 /**
@@ -24,6 +25,7 @@ export class SchedulerService {
 
   constructor(
     private readonly orders: OrdersService,
+    private readonly counterOffers: CounterOffersService,
     private readonly listings: ListingsService,
     private readonly kyc: KycService,
     private readonly legalContract: LegalContractService,
@@ -44,6 +46,30 @@ export class SchedulerService {
       if (expired > 0) this.logger.log(`expireStaleOffers: ${expired} offer(s) expired`);
     } catch (err) {
       this.logger.error(`expireStaleOffers failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Every minute: close the counter-offers whose time ran out (DEN-344).
+   *
+   * A minute, not five, because both deadlines here hold something shut. An
+   * unanswered offer keeps the order's single active slot, so every inspector
+   * behind it waits; and an unpaid one keeps the whole order locked against
+   * dispatch. Five minutes of either is five minutes taken out of a search that
+   * is already failing.
+   */
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'expire-counter-offers' })
+  async expireCounterOffers(): Promise<void> {
+    if (this.disabled) return;
+    try {
+      const { expired, abandoned } = await this.counterOffers.sweepExpired();
+      if (expired > 0 || abandoned > 0) {
+        this.logger.log(
+          `expireCounterOffers: ${expired} offer(s) expired, ${abandoned} payment(s) abandoned`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(`expireCounterOffers failed: ${(err as Error).message}`);
     }
   }
 

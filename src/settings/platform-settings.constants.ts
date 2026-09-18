@@ -20,6 +20,9 @@ export const SETTING_KEYS = {
   expertSearchRadiusKm: 'expertSearchRadiusKm',
   offerTimeoutMinutes: 'offerTimeoutMinutes',
   orderSearchWindowMinutes: 'orderSearchWindowMinutes',
+  counterOfferWindowMinutes: 'counterOfferWindowMinutes',
+  counterOfferPaymentMinutes: 'counterOfferPaymentMinutes',
+  counterOfferMaxMultiplier: 'counterOfferMaxMultiplier',
   autoApproveAfterDays: 'autoApproveAfterDays',
   inspectionStartDeadlineDays: 'inspectionStartDeadlineDays',
   minReportQualityScore: 'minReportQualityScore',
@@ -185,6 +188,44 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    * in this payment model.
    */
   orderSearchWindowMinutes: 1440,
+  /**
+   * How long a counter-offer waits for the customer's answer (DEN-344).
+   *
+   * Twenty minutes is a compromise between two costs that pull opposite ways.
+   * Shorter, and the customer never sees it: the notification arrives by bell
+   * and e-mail, and nobody sits in their account waiting. Longer, and one
+   * expensive inspector keeps the order closed to everybody else, because only
+   * ONE counter-offer can be live at a time - so the window IS the price of
+   * that exclusivity.
+   *
+   * The search window is 24 hours, so five or six offers in a row still fit.
+   */
+  counterOfferWindowMinutes: 20,
+  /**
+   * How long the customer has to pay after accepting a counter-offer (DEN-344).
+   *
+   * The order is locked against dispatch for this whole time - two people must
+   * not be able to buy the same order - so it is deliberately short. The
+   * customer is already on the screen and only has to enter a card; ten minutes
+   * covers a 3DS app switch and a mistyped number, and it caps how long a
+   * customer who walked away can hold the order shut.
+   */
+  counterOfferPaymentMinutes: 10,
+  /**
+   * How far above the FAIR price of their own trip an inspector may ask
+   * (DEN-344).
+   *
+   * The fair price is the order re-priced on this inspector's distance and
+   * their own base fee, so the multiplier is the room on top of it: the
+   * straight line is shorter than the road, and a difficult address costs more
+   * than the kilometres say.
+   *
+   * It is proportional, so watch the ABSOLUTE figure: 1.5 over a fair 40 EUR
+   * permits 60, but over a fair 200 EUR it permits 300. If customers refuse
+   * mostly the expensive counter-offers, lower this before changing anything
+   * else.
+   */
+  counterOfferMaxMultiplier: 1.5,
   autoApproveAfterDays: 7,
   /**
    * How long an accepted order may sit without the inspection starting, before

@@ -204,7 +204,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
   }
 
   async function paymentIntentIdFor(orderId: string): Promise<string> {
-    const payment = await prisma.payment.findUniqueOrThrow({ where: { orderId } });
+    const payment = await prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
     if (!payment.stripePaymentIntentId) throw new Error(`Order ${orderId} has no PaymentIntent`);
     return payment.stripePaymentIntentId;
   }
@@ -216,7 +216,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
    * hold is not refundable.
    */
   async function payOrder(orderId: string): Promise<string> {
-    const payment = await prisma.payment.findUniqueOrThrow({ where: { orderId } });
+    const payment = await prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
     const piId = payment.stripePaymentIntentId as string;
     stripe.confirm(piId);
     await stripe.capturePaymentIntent(piId, payment.id);
@@ -297,7 +297,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
 
       const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
       expect(order.status).toBe(OrderStatus.CREATED);
-      const payment = await prisma.payment.findUniqueOrThrow({ where: { orderId } });
+      const payment = await prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
       expect(payment.status).toBe('pending');
 
       const res = await request(app.getHttpServer())
@@ -362,7 +362,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       expect(refund.lastError).toBeNull();
 
       expect(stripe.refundsFor(piId)).toHaveLength(1);
-      const payment = await prisma.payment.findUniqueOrThrow({ where: { orderId } });
+      const payment = await prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
       expect(payment.status).toBe('refunded');
     });
 
@@ -444,7 +444,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       expect(delayMs).toBeLessThan(6 * 60_000);
 
       // The payment is NOT marked refunded — the money did not move.
-      const payment = await prisma.payment.findUniqueOrThrow({ where: { orderId } });
+      const payment = await prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
       expect(payment.status).toBe('succeeded');
 
       const failedEvents = await eventsOfType(orderId, 'refund_failed');
@@ -481,7 +481,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       // One row, still. The retry updates; it never inserts a second refund.
       expect(await prisma.refund.count({ where: { orderId } })).toBe(1);
 
-      const payment = await prisma.payment.findUniqueOrThrow({ where: { orderId } });
+      const payment = await prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
       expect(payment.status).toBe('refunded');
     });
 
@@ -675,8 +675,8 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
     // in it directly, so the branch the two waves must compose on is executable
     // today rather than on trust.
     stripe.confirm(piId);
-    await prisma.payment.update({
-      where: { orderId },
+    await prisma.payment.updateMany({
+      where: { orderId, supersededAt: null },
       data: { status: 'authorized', authorizedAt: new Date() },
     });
 
@@ -698,7 +698,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
     expect(released).toHaveLength(1);
     expect(released[0].payload).toMatchObject({ released: true });
 
-    const payment = await prisma.payment.findUniqueOrThrow({ where: { orderId } });
+    const payment = await prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
     expect(payment.status).toBe('cancelled');
     expect(payment.canceledAt).toBeTruthy();
   });
@@ -718,7 +718,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       const customer = await makeCustomer();
       await makeInspector();
       const orderId = await createOrder(customer);
-      const payment = await prisma.payment.findUniqueOrThrow({ where: { orderId } });
+      const payment = await prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
       const piId = payment.stripePaymentIntentId as string;
       stripe.confirm(piId);
       await stripe.capturePaymentIntent(piId, payment.id);
@@ -749,7 +749,7 @@ describe('Refunds, webhook lock and entitlement revocation (e2e, Stripe configur
       const customer = await makeCustomer();
       await makeInspector();
       const orderId = await createOrder(customer);
-      const payment = await prisma.payment.findUniqueOrThrow({ where: { orderId } });
+      const payment = await prisma.payment.findFirstOrThrow({ where: { orderId, supersededAt: null } });
       const piId = payment.stripePaymentIntentId as string;
       stripe.confirm(piId);
       await stripe.capturePaymentIntent(piId, payment.id);
