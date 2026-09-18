@@ -45,6 +45,7 @@ import { effectiveBaseFeeCents } from './inspector-base-fee';
 import { RegionalOverrides, exceedsCap, resolveTariff } from './tariff-resolution';
 import { ADMIN_DECISION_EVENT, AdminDecision } from './admin-decision';
 import { MONEY_RETRY_MAX_ATTEMPTS, planRetry } from './retry-schedule';
+import { CounterOfferQueueService } from './counter-offer-queue.service';
 import {
   countMissing,
   currentRequiredAngles,
@@ -304,6 +305,7 @@ export class OrdersService {
     private readonly payments: PaymentsService,
     private readonly legalContract: LegalContractService,
     private readonly notifications: NotificationsService,
+    private readonly counterOfferQueue: CounterOfferQueueService,
   ) {}
 
   // ============================================================
@@ -1550,6 +1552,10 @@ export class OrdersService {
       data: {
         status: stillOpen ? 'PENDING' : 'EXPIRED',
         acceptingUntil: null,
+        // It keeps `presentedAt` when it goes back to PENDING: the customer is
+        // still looking at this price, and re-queueing it would put a dearer
+        // one in front of the one they just tried to pay for. When it expires,
+        // the screen is free and the queue moves on below.
         ...(stillOpen ? {} : { respondedAt: now }),
       },
     });
@@ -1570,6 +1576,10 @@ export class OrdersService {
 
     if (!stillOpen) {
       await this.notifyCounterOfferExpired(counter.id);
+      // The screen this offer held is free, so the next-cheapest price in the
+      // queue takes it (DEN-350). Only on the expired branch: a returned offer
+      // is still the one the customer is looking at.
+      await this.counterOfferQueue.promoteQuietly(orderId);
     }
     // The pool was held out while the customer paid. Ask again at once rather
     // than waiting for the next round: those minutes came out of the search.
@@ -1726,6 +1736,13 @@ export class OrdersService {
           counterOfferId: counter.id,
           reason: 'inspector took another order',
         });
+      }
+      // Some of those withdrawals were the price a customer was looking at on
+      // another order. Each of those screens gets the next price in its own
+      // queue (DEN-350) - otherwise one inspector taking a job silently stalls
+      // every other order they had bid on.
+      for (const orderId of new Set(withdrawn.map((c) => c.orderId))) {
+        await this.counterOfferQueue.promoteQuietly(orderId);
       }
     }
   }

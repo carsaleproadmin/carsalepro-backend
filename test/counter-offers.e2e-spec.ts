@@ -58,6 +58,13 @@ describe('Counter-offers (e2e)', () => {
     counterOffers = app.get(CounterOffersService);
     settings = app.get(SettingsService);
     tariff = await pinTariff(app);
+    /*
+     * The collection window is off for the suite (DEN-351). It delays the FIRST
+     * price on an order by minutes, which every other test here would have to
+     * wait out or fake; the tests that are about the window turn it back on
+     * themselves.
+     */
+    await settings.set('counterOfferCollectMinutes', 0);
   });
 
   afterEach(async () => {
@@ -242,58 +249,253 @@ describe('Counter-offers (e2e)', () => {
     });
   });
 
-  describe('one offer at a time', () => {
-    it('refuses a second inspector while the first price waits', async () => {
-      const first = await makeInspector({ baseFeeCents: 40_000, lat: FAR_LAT, lng: FAR_LNG });
-      const second = await makeInspector({ baseFeeCents: 45_000, lat: FAR_LAT, lng: FAR_LNG });
+  describe('the queue (DEN-350)', () => {
+    /*
+     * Ten euros below the ceiling. The ceiling is the fair price times 1.2 and
+     * the fair price is already above what the order pays, so a tenner of room
+     * exists on any order this suite builds - and the point of the number is
+     * only that one price is cheaper than the other.
+     */
+    const UNDERCUT_CENTS = 1_000;
+
+    it('accepts a second price and queues it behind the cheaper one', async () => {
+      const dear = await makeInspector({ baseFeeCents: 40_000, lat: FAR_LAT, lng: FAR_LNG });
+      const cheap = await makeInspector({ baseFeeCents: 45_000, lat: FAR_LAT, lng: FAR_LNG });
       const customer = await register('cust');
       const orderId = await orderWaitingForTrade(customer.token);
-      const max = await payoutCeilingFor(orderId, first.userId);
+      const max = await payoutCeilingFor(orderId, dear.userId);
 
-      await request(app.getHttpServer())
+      // The DEARER price arrives FIRST, which is the case the old one-slot rule
+      // got wrong: it gave the order to the fastest hand.
+      const first = await request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/counter-offers`)
-        .set('Authorization', `Bearer ${first.token}`)
+        .set('Authorization', `Bearer ${dear.token}`)
         .send({ payoutCents: max, reason: 'The car is 38 km from me.' })
         .expect(201);
+      expect(first.body.presented).toBe(true);
+      expect(first.body.queuePosition).toBe(1);
 
-      const res = await request(app.getHttpServer())
+      const second = await request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/counter-offers`)
-        .set('Authorization', `Bearer ${second.token}`)
-        .send({ payoutCents: max, reason: 'I can go too.' })
-        .expect(409);
-
-      expect(res.body.error.code).toBe('counter_offer_slot_taken');
+        .set('Authorization', `Bearer ${cheap.token}`)
+        .send({ payoutCents: max - UNDERCUT_CENTS, reason: 'I can go for less.' })
+        .expect(201);
+      // Not refused, and not shown either: it waits its turn.
+      expect(second.body.presented).toBe(false);
     });
 
-    it('frees the slot the moment the customer refuses', async () => {
-      const first = await makeInspector({ baseFeeCents: 40_000, lat: FAR_LAT, lng: FAR_LNG });
-      const second = await makeInspector({ baseFeeCents: 45_000, lat: FAR_LAT, lng: FAR_LNG });
+    it('shows the customer one price at a time, and the next only after a refusal', async () => {
+      const dear = await makeInspector({ baseFeeCents: 40_000, lat: FAR_LAT, lng: FAR_LNG });
+      const cheap = await makeInspector({ baseFeeCents: 45_000, lat: FAR_LAT, lng: FAR_LNG });
       const customer = await register('cust');
       const orderId = await orderWaitingForTrade(customer.token);
-      const max = await payoutCeilingFor(orderId, first.userId);
+      const max = await payoutCeilingFor(orderId, dear.userId);
 
-      const created = await request(app.getHttpServer())
+      const dearOffer = await request(app.getHttpServer())
         .post(`/api/v1/orders/${orderId}/counter-offers`)
-        .set('Authorization', `Bearer ${first.token}`)
+        .set('Authorization', `Bearer ${dear.token}`)
         .send({ payoutCents: max, reason: 'The car is 38 km from me.' })
         .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${cheap.token}`)
+        .send({ payoutCents: max - UNDERCUT_CENTS, reason: 'I can go for less.' })
+        .expect(201);
+
+      // The dearer price is still the one on the screen: it was answered by
+      // nobody, and taking a live question away to replace it with a cheaper
+      // one would move the price under a customer mid-decision.
+      const shown = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/counter-offers/current`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      expect(shown.body.counterOffer.id).toBe(dearOffer.body.id);
+      // One waiting behind it, and the customer is told the number, never the price.
+      expect(shown.body.counterOffer.queuedBehind).toBe(1);
 
       await request(app.getHttpServer())
-        .post(`/api/v1/orders/${orderId}/counter-offers/${created.body.id}/decline`)
+        .post(`/api/v1/orders/${orderId}/counter-offers/${dearOffer.body.id}/decline`)
         .set('Authorization', `Bearer ${customer.token}`)
         .expect(200);
 
-      // No waiting period: the search window is short enough as it is.
-      await request(app.getHttpServer())
-        .post(`/api/v1/orders/${orderId}/counter-offers`)
-        .set('Authorization', `Bearer ${second.token}`)
-        .send({ payoutCents: max, reason: 'I can go instead.' })
-        .expect(201);
+      // "Continue the search" is also "show me the next one".
+      const next = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/counter-offers/current`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      expect(next.body.counterOffer).not.toBeNull();
+      expect(next.body.counterOffer.id).not.toBe(dearOffer.body.id);
+      expect(next.body.counterOffer.priceCents).toBeLessThan(
+        shown.body.counterOffer.priceCents,
+      );
+      expect(next.body.counterOffer.queuedBehind).toBe(0);
 
       // The customer's hold was never touched by any of this.
       const payments = await prisma.payment.findMany({ where: { orderId } });
       expect(payments).toHaveLength(1);
       expect(payments[0].status).toBe('authorized');
+    });
+
+    it('presents the cheapest of a queue built while nothing was on the screen', async () => {
+      const dear = await makeInspector({ baseFeeCents: 40_000, lat: FAR_LAT, lng: FAR_LNG });
+      const cheap = await makeInspector({ baseFeeCents: 45_000, lat: FAR_LAT, lng: FAR_LNG });
+      const customer = await register('cust');
+      const orderId = await orderWaitingForTrade(customer.token);
+      const max = await payoutCeilingFor(orderId, dear.userId);
+
+      const dearOffer = await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${dear.token}`)
+        .send({ payoutCents: max, reason: 'The car is 38 km from me.' })
+        .expect(201);
+      const cheapOffer = await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${cheap.token}`)
+        .send({ payoutCents: max - UNDERCUT_CENTS, reason: 'I can go for less.' })
+        .expect(201);
+
+      // The dear one is withdrawn before the customer answers, so the screen
+      // empties and the queue - not the order of arrival - decides who is next.
+      await request(app.getHttpServer())
+        .post(`/api/v1/counter-offers/${dearOffer.body.id}/withdraw`)
+        .set('Authorization', `Bearer ${dear.token}`)
+        .expect(200);
+
+      const shown = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/counter-offers/current`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      expect(shown.body.counterOffer.id).toBe(cheapOffer.body.id);
+    });
+
+    it('refuses an accept aimed at a price still waiting in the queue', async () => {
+      const dear = await makeInspector({ baseFeeCents: 40_000, lat: FAR_LAT, lng: FAR_LNG });
+      const cheap = await makeInspector({ baseFeeCents: 45_000, lat: FAR_LAT, lng: FAR_LNG });
+      const customer = await register('cust');
+      const orderId = await orderWaitingForTrade(customer.token);
+      const max = await payoutCeilingFor(orderId, dear.userId);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${dear.token}`)
+        .send({ payoutCents: max, reason: 'The car is 38 km from me.' })
+        .expect(201);
+      const queued = await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${cheap.token}`)
+        .send({ payoutCents: max - UNDERCUT_CENTS, reason: 'I can go for less.' })
+        .expect(201);
+
+      // A hand-made request naming the queued id. The queue is the platform's
+      // order, not a menu.
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers/${queued.body.id}/accept`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(409);
+      expect(res.body.error.code).toBe('counter_offer_unavailable');
+    });
+  });
+
+  /*
+   * DEN-351. The queue can only sort the prices it HAS, so the first price on
+   * an order is held for a few minutes and the cheapest of what arrives goes on
+   * the screen. Without it the nearest inspector - who is not the cheapest one
+   * - decides what the customer thinks the inspection costs.
+   */
+  describe('the collection window (DEN-351)', () => {
+    const UNDERCUT_CENTS = 1_000;
+
+    beforeEach(async () => {
+      await settings.set('counterOfferCollectMinutes', 10);
+    });
+    afterEach(async () => {
+      await settings.set('counterOfferCollectMinutes', 0);
+    });
+
+    it('holds the first price instead of showing it, and shows the cheapest when the window ends', async () => {
+      const dear = await makeInspector({ baseFeeCents: 40_000, lat: FAR_LAT, lng: FAR_LNG });
+      const cheap = await makeInspector({ baseFeeCents: 45_000, lat: FAR_LAT, lng: FAR_LNG });
+      const customer = await register('cust');
+      const orderId = await orderWaitingForTrade(customer.token);
+      const max = await payoutCeilingFor(orderId, dear.userId);
+
+      const dearOffer = await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${dear.token}`)
+        .send({ payoutCents: max, reason: 'The car is 38 km from me.' })
+        .expect(201);
+      expect(dearOffer.body.presented).toBe(false);
+
+      const cheapOffer = await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${cheap.token}`)
+        .send({ payoutCents: max - UNDERCUT_CENTS, reason: 'I can go for less.' })
+        .expect(201);
+
+      // Nothing at all on the customer's screen while the window runs.
+      const during = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/counter-offers/current`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      expect(during.body.counterOffer).toBeNull();
+
+      // The window ends by the clock, so the sweep is what ends it. Age the
+      // prices rather than wait ten minutes.
+      await prisma.orderCounterOffer.updateMany({
+        where: { orderId },
+        data: { createdAt: new Date(Date.now() - 20 * 60_000) },
+      });
+      await counterOffers.sweepExpired();
+
+      const after = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/counter-offers/current`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      expect(after.body.counterOffer.id).toBe(cheapOffer.body.id);
+      expect(after.body.counterOffer.queuedBehind).toBe(1);
+    });
+
+    it('does not hold the price that follows a refusal', async () => {
+      const dear = await makeInspector({ baseFeeCents: 40_000, lat: FAR_LAT, lng: FAR_LNG });
+      const cheap = await makeInspector({ baseFeeCents: 45_000, lat: FAR_LAT, lng: FAR_LNG });
+      const customer = await register('cust');
+      const orderId = await orderWaitingForTrade(customer.token);
+      const max = await payoutCeilingFor(orderId, dear.userId);
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${dear.token}`)
+        .send({ payoutCents: max, reason: 'The car is 38 km from me.' })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers`)
+        .set('Authorization', `Bearer ${cheap.token}`)
+        .send({ payoutCents: max - UNDERCUT_CENTS, reason: 'I can go for less.' })
+        .expect(201);
+
+      await prisma.orderCounterOffer.updateMany({
+        where: { orderId },
+        data: { createdAt: new Date(Date.now() - 20 * 60_000) },
+      });
+      await counterOffers.sweepExpired();
+
+      const first = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/counter-offers/current`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${orderId}/counter-offers/${first.body.counterOffer.id}/decline`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+
+      // The window is over for this order for good: the next price is asked at
+      // once, with no sweep and no second pause.
+      const next = await request(app.getHttpServer())
+        .get(`/api/v1/orders/${orderId}/counter-offers/current`)
+        .set('Authorization', `Bearer ${customer.token}`)
+        .expect(200);
+      expect(next.body.counterOffer).not.toBeNull();
+      expect(next.body.counterOffer.id).not.toBe(first.body.counterOffer.id);
     });
   });
 

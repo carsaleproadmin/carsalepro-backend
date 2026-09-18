@@ -13,6 +13,7 @@ import { GeoService } from '../geo/geo.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { StripeService } from '../payments/stripe.service';
 import { OrdersService } from './orders.service';
+import { CounterOfferQueueService } from './counter-offer-queue.service';
 import {
   COUNTER_OFFER_PAYMENT_PURPOSE,
   counterOfferCeilingCents,
@@ -34,9 +35,17 @@ import {
  * keep the trade from turning into an auction.
  *
  * The single hardest rule, and the reason several methods look defensive:
- * **one active counter-offer per order**. Two inspectors who press the button
- * in the same millisecond both pass any check written in TypeScript, so the
- * refusal is a partial unique index and this code reads its violation.
+ * **one PRESENTED counter-offer per order**. Any number of inspectors may name
+ * a price - they queue, cheapest first (DEN-350) - but the customer answers one
+ * question at a time, and the next price is shown only when the current one is
+ * answered, withdrawn or expires. Two promotions that race both pass any check
+ * written in TypeScript, so the refusal is a partial unique index and this code
+ * reads its violation.
+ *
+ * Promotion happens in exactly one place, `CounterOfferQueueService.promote`,
+ * and every path that can end the presented offer calls it. Spreading "show the
+ * next one" over the call sites is how an order ends up with a queue nobody
+ * drains.
  */
 @Injectable()
 export class CounterOffersService {
@@ -45,6 +54,7 @@ export class CounterOffersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly orders: OrdersService,
+    private readonly queue: CounterOfferQueueService,
     private readonly settings: SettingsService,
     private readonly geo: GeoService,
     private readonly notifications: NotificationsService,
@@ -64,10 +74,10 @@ export class CounterOffersService {
    * the inspector could do nothing about any of them and would learn to ignore
    * the tab.
    *
-   * An order already carrying an active counter-offer stays in the list, marked
-   * `locked` with the time the customer's answer is due. Hiding it would leave
-   * the inspector watching a job vanish and reappear with no explanation, and
-   * the lock is exactly what they need to decide whether to wait.
+   * An order already carrying prices from other inspectors stays in the list
+   * and says how many are queued ahead (DEN-350). Naming a price is never
+   * refused for it: a cheaper price entering the queue goes in FRONT of the
+   * dearer ones, which is the whole reason the queue is sorted on price.
    */
   async listOpenForInspector(userId: string) {
     const profile = await this.prisma.inspectorProfile.findUnique({ where: { userId } });
@@ -116,18 +126,39 @@ export class CounterOffersService {
     const [active, mine, multiplier] = await Promise.all([
       this.prisma.orderCounterOffer.findMany({
         where: { orderId: { in: reachable.map((r) => r.orderId) }, status: { in: ['PENDING', 'ACCEPTING'] } },
-        select: { orderId: true, inspectorId: true, expiresAt: true, acceptingUntil: true },
+        select: {
+          orderId: true,
+          inspectorId: true,
+          status: true,
+          priceCents: true,
+          createdAt: true,
+          presentedAt: true,
+          expiresAt: true,
+          acceptingUntil: true,
+        },
       }),
       this.prisma.orderCounterOffer.findMany({
         where: { inspectorId: userId, orderId: { in: reachable.map((r) => r.orderId) } },
-        select: { orderId: true, status: true, priceCents: true, inspectorShareCents: true },
+        select: {
+          orderId: true,
+          status: true,
+          priceCents: true,
+          createdAt: true,
+          presentedAt: true,
+          inspectorShareCents: true,
+        },
       }),
       this.settings.getNumber('counterOfferMaxMultiplier'),
     ]);
     // The inspector names what they will BE PAID (DEN-344), so every bound on
     // the card is given in that unit as well as the customer's.
     const platformFeePercent = await this.settings.getNumber('platformFeePercent');
-    const activeByOrder = new Map(active.map((a) => [a.orderId, a]));
+    const activeByOrder = new Map<string, typeof active>();
+    for (const row of active) {
+      const bucket = activeByOrder.get(row.orderId);
+      if (bucket) bucket.push(row);
+      else activeByOrder.set(row.orderId, [row]);
+    }
     const mineByOrder = new Map(mine.map((m) => [m.orderId, m]));
     const orderById = new Map(open.map((o) => [o.id, o]));
 
@@ -147,8 +178,23 @@ export class CounterOffersService {
       // will offer them in the ordinary way, so it does not belong here.
       if (fair.totalCents <= order.totalCents) continue;
 
-      const lock = activeByOrder.get(orderId);
+      const queue = activeByOrder.get(orderId) ?? [];
+      const presented = queue.find((c) => c.presentedAt !== null) ?? null;
       const own = mineByOrder.get(orderId);
+      // What the inspector needs in order to decide: how many prices are in
+      // front of theirs, and by when the customer must answer the one on the
+      // screen. Never the prices themselves - that would let an inspector
+      // undercut a colleague by a cent and turn the queue into a bidding war.
+      const ahead =
+        own && own.status === 'PENDING'
+          ? queue.filter(
+              (c) =>
+                c.inspectorId !== userId &&
+                (c.presentedAt !== null ||
+                  c.priceCents < own.priceCents ||
+                  (c.priceCents === own.priceCents && c.createdAt < own.createdAt)),
+            ).length
+          : queue.length;
       items.push({
         orderId,
         number: order.number,
@@ -176,11 +222,25 @@ export class CounterOffersService {
         platformFeePercent,
         currency: order.currency,
         searchExpiresAt: order.searchExpiresAt?.toISOString() ?? null,
-        /** True while another inspector's price waits for the customer. */
-        locked: lock !== undefined && lock.inspectorId !== userId,
-        lockedUntil: lock ? (lock.acceptingUntil ?? lock.expiresAt).toISOString() : null,
+        /**
+         * How many prices are ahead of this inspector's in the queue - or, when
+         * they have not named one, how many are waiting in total. Zero means
+         * naming a price now puts it straight in front of the customer.
+         */
+        queuedAhead: ahead,
+        /** When the price on the customer's screen stops waiting, if there is one. */
+        answerDueAt: presented
+          ? (presented.acceptingUntil ?? presented.expiresAt).toISOString()
+          : null,
         myCounterOffer: own
-          ? { status: own.status, priceCents: own.priceCents, payoutCents: own.inspectorShareCents }
+          ? {
+              status: own.status,
+              priceCents: own.priceCents,
+              payoutCents: own.inspectorShareCents,
+              /** True while this is the price the customer is looking at. */
+              presented: own.presentedAt !== null && own.status === 'PENDING',
+              queuePosition: own.status === 'PENDING' ? ahead + 1 : 0,
+            }
           : null,
       });
     }
@@ -188,12 +248,13 @@ export class CounterOffersService {
   }
 
   /**
-   * An inspector names their price.
+   * An inspector names their price, and it joins the order's queue.
    *
-   * Everything that can refuse does so BEFORE the row is written, except the
-   * one thing that cannot be checked in advance: whether another inspector won
-   * the order's single active slot in the microseconds since the read. That
-   * refusal comes from the database.
+   * The row is written UNPRESENTED (`presentedAt: null`) whatever else is going
+   * on, and the queue decides afterwards whether it is the one the
+   * customer sees. That split is what lets a cheaper price arrive while a dearer
+   * one is already on the screen without either write having to know about the
+   * other.
    */
   async create(
     orderId: string,
@@ -205,6 +266,9 @@ export class CounterOffersService {
     priceCents: number;
     platformFeeCents: number;
     expiresAt: string;
+    /** 1 when this price is the one the customer is being shown (DEN-350). */
+    queuePosition: number;
+    presented: boolean;
   }> {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) {
@@ -290,6 +354,8 @@ export class CounterOffersService {
           straightLineKm: new Prisma.Decimal(distanceKm.toFixed(2)),
           round: order.dispatchRound,
           expiresAt,
+          // Unpresented: the queue decides, not the order of arrival.
+          presentedAt: null,
         },
         update: {
           status: 'PENDING',
@@ -303,6 +369,10 @@ export class CounterOffersService {
           expiresAt,
           acceptingUntil: null,
           respondedAt: null,
+          // A re-priced offer re-enters the queue at its new price. Keeping the
+          // old `presentedAt` would let an inspector whose payment failed hold
+          // the screen at a price nobody has answered.
+          presentedAt: null,
         },
       });
 
@@ -313,18 +383,15 @@ export class CounterOffersService {
         distanceKm,
       });
 
-      await this.notifications.notify(order.customerId, 'counter_offer.received', {
-        orderId,
-        orderNumber: order.number,
-        make: order.make,
-        model: order.model,
-        priceCents: created.priceCents,
-        orderTotalCents: order.totalCents,
-        distanceKm,
-        reason: created.reason,
-        windowMinutes,
-        expiresAt: created.expiresAt.toISOString(),
+      // The customer is told by the queue, and only about the price they
+      // are actually being shown. Notifying here would announce every queued
+      // price - the auction the one-question rule exists to prevent.
+      await this.queue.promote(orderId);
+
+      const current = await this.prisma.orderCounterOffer.findUnique({
+        where: { id: created.id },
       });
+      const queuePosition = await this.queuePositionOf(created.id);
 
       // All three figures, because the confirmation has to be able to repeat
       // the breakdown the inspector was shown before they sent it.
@@ -333,17 +400,21 @@ export class CounterOffersService {
         payoutCents: created.inspectorShareCents,
         priceCents: created.priceCents,
         platformFeeCents: created.platformFeeCents,
-        expiresAt: created.expiresAt.toISOString(),
+        // The promoted deadline when this price went straight to the customer,
+        // and the search-end backstop while it waits its turn.
+        expiresAt: (current ?? created).expiresAt.toISOString(),
+        queuePosition,
+        presented: (current ?? created).presentedAt !== null,
       };
     } catch (e) {
-      // P2002 on `order_counter_offer_active_unique`: somebody else holds the
-      // order's active slot. This is the race the index exists for, and it is
-      // the ONLY place the answer can be correct — every check above is a read.
+      // P2002 here is the inspector's OWN row being written twice at once - a
+      // double submit. Since DEN-350 it is no longer another expert winning a
+      // slot: prices queue, so a second inspector is never a refusal.
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
         throw new ConflictException({
           error: {
-            code: 'counter_offer_slot_taken',
-            message: 'Another expert has named a price for this order. Wait for the answer.',
+            code: 'counter_offer_already_sent',
+            message: 'Your price for this order is already in.',
           },
         });
       }
@@ -482,7 +553,46 @@ export class CounterOffersService {
       counterOfferId,
       reason: 'withdrawn by inspector',
     });
+    // The withdrawal may have been the price on the customer's screen. Show the
+    // next one at once: the queue behind it is unaffected by this inspector
+    // changing their mind.
+    await this.queue.promote(counter.orderId);
     return { orderId: counter.orderId };
+  }
+
+  // ============================================================
+  // The queue
+  // ============================================================
+
+  /**
+   * Where this price stands in its order's queue, counting from 1.
+   *
+   * The presented offer is always 1, so an inspector is never told they are
+   * "second" while the customer is looking at their price. Beyond that the
+   * number is what the queue order says, and it is honest about being a
+   * forecast: a cheaper price arriving later pushes everybody down.
+   */
+  private async queuePositionOf(counterOfferId: string): Promise<number> {
+    const row = await this.prisma.orderCounterOffer.findUnique({
+      where: { id: counterOfferId },
+      select: { orderId: true, status: true, priceCents: true, createdAt: true, presentedAt: true },
+    });
+    if (!row || row.status !== 'PENDING') return 0;
+    if (row.presentedAt) return 1;
+
+    const ahead = await this.prisma.orderCounterOffer.count({
+      where: {
+        orderId: row.orderId,
+        status: { in: ['PENDING', 'ACCEPTING'] },
+        id: { not: counterOfferId },
+        OR: [
+          { presentedAt: { not: null } },
+          { priceCents: { lt: row.priceCents } },
+          { priceCents: row.priceCents, createdAt: { lt: row.createdAt } },
+        ],
+      },
+    });
+    return ahead + 1;
   }
 
   // ============================================================
@@ -504,6 +614,10 @@ export class CounterOffersService {
     const rows = await this.prisma.orderCounterOffer.findMany({
       where: {
         status: 'PENDING',
+        // Presented only (DEN-350). A queued price is not a question anybody
+        // has been asked, and a card calling for an answer to one would put the
+        // customer back in the auction this design refuses.
+        presentedAt: { not: null },
         expiresAt: { gt: new Date() },
         order: { customerId: userId },
       },
@@ -537,16 +651,26 @@ export class CounterOffersService {
    * The one counter-offer waiting for this customer, or null.
    *
    * One, never a list: a customer answering an order should be answering a
-   * question, not running an auction. The exclusivity is enforced when the
-   * offer is created, so this is a read of a rule kept elsewhere.
+   * question, not running an auction. Since DEN-350 there may be several prices
+   * behind it, and the customer is told HOW MANY but never what they are -
+   * a count is reassurance that saying no is safe, while a list of prices is the
+   * auction again.
    */
   async currentForCustomer(orderId: string, userId: string) {
     const order = await this.requireCustomerOrder(orderId, userId);
     const counter = await this.prisma.orderCounterOffer.findFirst({
-      where: { orderId: order.id, status: { in: ['PENDING', 'ACCEPTING'] } },
+      where: {
+        orderId: order.id,
+        presentedAt: { not: null },
+        status: { in: ['PENDING', 'ACCEPTING'] },
+      },
       include: { inspector: { select: { companyName: true, user: { select: { name: true } } } } },
     });
     if (!counter || counter.expiresAt <= new Date()) return { counterOffer: null };
+
+    const waiting = await this.prisma.orderCounterOffer.count({
+      where: { orderId: order.id, status: 'PENDING', presentedAt: null },
+    });
 
     return {
       counterOffer: {
@@ -562,6 +686,12 @@ export class CounterOffersService {
         expertName: counter.inspector.companyName ?? counter.inspector.user.name ?? null,
         expiresAt: counter.expiresAt.toISOString(),
         status: counter.status,
+        /**
+         * How many more prices are queued behind this one, cheapest first. The
+         * count, never the prices: it is there so "continue the search" reads
+         * as a choice rather than as closing the last door.
+         */
+        queuedBehind: waiting,
       },
     };
   }
@@ -611,6 +741,9 @@ export class CounterOffersService {
         where: { id: counter.id, status: 'PENDING' },
         data: { status: 'WITHDRAWN', respondedAt: new Date() },
       });
+      // The screen is free again, so the next price goes up before the customer
+      // is told this one is gone.
+      await this.queue.promote(order.id);
       throw new ConflictException({
         error: {
           code: 'counter_offer_inspector_busy',
@@ -624,8 +757,16 @@ export class CounterOffersService {
 
     // PENDING → ACCEPTING is the lock, and it is conditional so a double click
     // cannot open two payments. The loser joins the session the winner opened.
+    // `presentedAt` is part of the guard: a customer must not be able to accept
+    // a price still queued behind the one they were shown, whatever a stale
+    // page or a hand-made request asks for.
     const claimed = await this.prisma.orderCounterOffer.updateMany({
-      where: { id: counter.id, status: 'PENDING', expiresAt: { gt: new Date() } },
+      where: {
+        id: counter.id,
+        status: 'PENDING',
+        presentedAt: { not: null },
+        expiresAt: { gt: new Date() },
+      },
       data: { status: 'ACCEPTING', acceptingUntil },
     });
     if (claimed.count === 0) {
@@ -719,7 +860,7 @@ export class CounterOffersService {
       throw new NotFoundException({ error: { code: 'not_found', message: 'Offer not found' } });
     }
     const done = await this.prisma.orderCounterOffer.updateMany({
-      where: { id: counter.id, status: 'PENDING' },
+      where: { id: counter.id, status: 'PENDING', presentedAt: { not: null } },
       data: { status: 'DECLINED', respondedAt: new Date() },
     });
     if (done.count === 0) {
@@ -742,8 +883,11 @@ export class CounterOffersService {
       model: order.model,
       priceCents: counter.priceCents,
     });
-    // The slot is free at once: the next inspector may name a price now, and
-    // making them wait would spend the search window on nothing.
+    // "Continue the search" is also "show me the next price" (DEN-350): the
+    // next-cheapest queued offer goes up at once. Waiting for the sweep would
+    // spend the search window on an empty screen, and the customer who just
+    // said no is the one person certain to be looking at it.
+    await this.queue.promote(order.id);
     return { orderId: order.id };
   }
 
@@ -771,7 +915,7 @@ export class CounterOffersService {
    * still locked against the pool until this runs, so it also unlocks and
    * re-dispatches.
    */
-  async sweepExpired(): Promise<{ expired: number; abandoned: number }> {
+  async sweepExpired(): Promise<{ expired: number; abandoned: number; presented: number }> {
     const now = new Date();
 
     const stalePayments = await this.prisma.orderCounterOffer.findMany({
@@ -784,8 +928,12 @@ export class CounterOffersService {
         .catch((e) => this.logger.error(`sweepExpired: order ${orderId}: ${String(e)}`));
     }
 
+    // PRESENTED offers only. A queued price has not been asked of anybody, so
+    // its creation-time deadline is a backstop and not an answer window - it is
+    // rewritten when the offer reaches the screen, and expiring it here would
+    // empty the queue of every price the customer has not got to yet.
     const expired = await this.prisma.orderCounterOffer.findMany({
-      where: { status: 'PENDING', expiresAt: { lte: now } },
+      where: { status: 'PENDING', presentedAt: { not: null }, expiresAt: { lte: now } },
       include: { order: { select: { number: true, make: true, model: true } } },
     });
     if (expired.length) {
@@ -804,6 +952,22 @@ export class CounterOffersService {
       }
     }
 
-    return { expired: expired.length, abandoned: stalePayments.length };
+    // Every order whose screen this sweep just cleared gets its next price.
+    // `abandonCounterOfferPayment` promotes its own, so only the expiries are
+    // collected here.
+    for (const orderId of new Set(expired.map((c) => c.orderId))) {
+      await this.queue.promote(orderId).catch((e) =>
+        this.logger.error(`sweepExpired: promote ${orderId}: ${String(e)}`),
+      );
+    }
+
+    // And the orders whose collection window ended with nothing to end it:
+    // prices waiting on a screen that was free the whole time (DEN-351).
+    const { presented } = await this.queue.sweepCollected().catch((e) => {
+      this.logger.error(`sweepExpired: sweepCollected: ${String(e)}`);
+      return { presented: 0 };
+    });
+
+    return { expired: expired.length, abandoned: stalePayments.length, presented };
   }
 }

@@ -62,10 +62,11 @@ export class SchedulerService {
   async expireCounterOffers(): Promise<void> {
     if (this.disabled) return;
     try {
-      const { expired, abandoned } = await this.counterOffers.sweepExpired();
-      if (expired > 0 || abandoned > 0) {
+      const { expired, abandoned, presented } = await this.counterOffers.sweepExpired();
+      if (expired > 0 || abandoned > 0 || presented > 0) {
         this.logger.log(
-          `expireCounterOffers: ${expired} offer(s) expired, ${abandoned} payment(s) abandoned`,
+          `expireCounterOffers: ${expired} offer(s) expired, ${abandoned} payment(s) abandoned, ` +
+            `${presented} offer(s) presented`,
         );
       }
     } catch (err) {

@@ -22,8 +22,64 @@
  */
 export const COUNTER_OFFER_PAYMENT_PURPOSE = 'order_counter_offer';
 
-/** The counter-offer states that hold the order's single active slot. */
+/** The counter-offer states that are still in play on an order. */
 export const ACTIVE_COUNTER_OFFER_STATUSES = ['PENDING', 'ACCEPTING'] as const;
+
+/**
+ * The queue order (DEN-350): cheapest first, and the earlier price wins a tie.
+ *
+ * The customer is shown one price at a time, and which one is the whole
+ * question. Showing the first to arrive gave the order to the fastest hand: an
+ * inspector asking 90 beat one willing to work for 55, and nothing ever told
+ * the customer the cheaper price had existed. Sorting by price makes the answer
+ * the customer gets the best one available, and makes "next" mean "the next
+ * best", not "the next one to have pressed a button".
+ *
+ * `createdAt` breaks the tie rather than the id, because two identical prices
+ * are genuinely equal on the only axis that matters and the earlier inspector
+ * has waited longer.
+ */
+export function compareQueuedOffers(
+  a: { priceCents: number; createdAt: Date },
+  b: { priceCents: number; createdAt: Date },
+): number {
+  if (a.priceCents !== b.priceCents) return a.priceCents - b.priceCents;
+  return a.createdAt.getTime() - b.createdAt.getTime();
+}
+
+/**
+ * When the collection window over an order's first prices ends (DEN-351).
+ *
+ * The queue sorts what it HAS, and at the start it has one price: the first
+ * inspector to answer. That inspector is usually the nearest one, and the
+ * nearest one is not the cheapest - a high price from next door reached the
+ * customer minutes before a low price from the next town, and became the whole
+ * of the customer's impression of what the inspection now costs.
+ *
+ * So the first price is held rather than shown, and the queue is given time to
+ * fill. When the window ends the cheapest of what arrived goes on the screen.
+ * It costs the customer some minutes and it saves them the worst first
+ * question.
+ *
+ * Only the FIRST presentation waits. After a refusal the other prices are
+ * already in hand, and holding them again would only add silence.
+ *
+ * Returns null when nothing should be held: no window configured, the window
+ * has passed, or the search ends first - a hold that outlived the order would
+ * throw away every price to save the customer from one of them.
+ */
+export function collectionHoldUntil(
+  now: Date,
+  firstOfferAt: Date,
+  collectMinutes: number,
+  searchExpiresAt: Date | null,
+): Date | null {
+  if (!Number.isFinite(collectMinutes) || collectMinutes <= 0) return null;
+  const until = new Date(firstOfferAt.getTime() + collectMinutes * 60_000);
+  if (until.getTime() <= now.getTime()) return null;
+  if (searchExpiresAt && searchExpiresAt.getTime() <= until.getTime()) return null;
+  return until;
+}
 
 export type CounterOfferStatus =
   | 'PENDING'
@@ -170,8 +226,13 @@ export function counterOfferPriceError(input: CounterOfferPriceInput): string | 
  * The search window is the whole of the order's life: past it the hold is
  * released and the order is cancelled. A counter-offer that outlived it would
  * let a customer accept a price for an order that no longer exists — and, worse,
- * would hold the order's only active slot shut for the last minutes of a search
- * that could still have found somebody at the tariff.
+ * would keep the customer's screen shut against the rest of the queue for the
+ * last minutes of a search that could still have found somebody at the tariff.
+ *
+ * Called TWICE per offer since DEN-350: once at creation, where it is only the
+ * search-end backstop for a price nobody is looking at yet, and again at
+ * promotion, where it starts the answer window. A queued price must not spend
+ * its minutes waiting its turn.
  *
  * Returns null when there is no time left at all, which is the caller's signal
  * to refuse the counter-offer rather than to write one that expires at once.

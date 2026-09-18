@@ -5,6 +5,8 @@ import {
   counterOfferPayoutFromTotal,
   counterOfferPriceError,
   counterOfferTotalFromPayout,
+  compareQueuedOffers,
+  collectionHoldUntil,
 } from './counter-offer-rules';
 
 describe('counterOfferCeilingCents', () => {
@@ -152,5 +154,80 @@ describe('counterOfferMaxPayoutCents', () => {
         expect(counterOfferTotalFromPayout(max + 1, pct)).toBeGreaterThan(ceiling);
       }
     }
+  });
+});
+
+describe('compareQueuedOffers (DEN-350)', () => {
+  const at = (iso: string) => new Date(iso);
+
+  /*
+   * The defect the queue exists to fix: an inspector asking 90 beat one willing
+   * to work for 55 purely by pressing the button first, and the customer never
+   * learned the cheaper price had been offered at all.
+   */
+  it('puts the cheaper price first however late it arrived', () => {
+    const dear = { priceCents: 9_000, createdAt: at('2026-09-18T10:00:00Z') };
+    const cheap = { priceCents: 5_500, createdAt: at('2026-09-18T10:09:00Z') };
+    expect([dear, cheap].sort(compareQueuedOffers)).toEqual([cheap, dear]);
+  });
+
+  /* Equal prices are equal on the only axis that matters, so waiting wins. */
+  it('breaks a tie on the earlier offer', () => {
+    const late = { priceCents: 7_000, createdAt: at('2026-09-18T10:05:00Z') };
+    const early = { priceCents: 7_000, createdAt: at('2026-09-18T10:00:00Z') };
+    expect([late, early].sort(compareQueuedOffers)).toEqual([early, late]);
+  });
+
+  it('is a total order over a whole queue', () => {
+    const queue = [
+      { priceCents: 9_000, createdAt: at('2026-09-18T10:00:00Z') },
+      { priceCents: 5_500, createdAt: at('2026-09-18T10:09:00Z') },
+      { priceCents: 7_000, createdAt: at('2026-09-18T10:02:00Z') },
+      { priceCents: 5_500, createdAt: at('2026-09-18T10:01:00Z') },
+    ];
+    expect(queue.slice().sort(compareQueuedOffers).map((o) => o.priceCents)).toEqual([
+      5_500, 5_500, 7_000, 9_000,
+    ]);
+    expect(queue.slice().sort(compareQueuedOffers)[0].createdAt).toEqual(
+      at('2026-09-18T10:01:00Z'),
+    );
+  });
+});
+
+describe('collectionHoldUntil (DEN-351)', () => {
+  const at = (iso: string) => new Date(iso);
+  const search = at('2026-09-19T10:00:00Z');
+
+  it('holds the first price for the collection window', () => {
+    expect(
+      collectionHoldUntil(at('2026-09-18T10:03:00Z'), at('2026-09-18T10:00:00Z'), 10, search),
+    ).toEqual(at('2026-09-18T10:10:00Z'));
+  });
+
+  it('lets the price through when the window has passed', () => {
+    expect(
+      collectionHoldUntil(at('2026-09-18T10:10:00Z'), at('2026-09-18T10:00:00Z'), 10, search),
+    ).toBeNull();
+  });
+
+  it('holds nothing when the window is off', () => {
+    expect(
+      collectionHoldUntil(at('2026-09-18T10:00:00Z'), at('2026-09-18T10:00:00Z'), 0, search),
+    ).toBeNull();
+  });
+
+  /*
+   * A hold that outlives the search throws away every price to save the
+   * customer from one of them: the order is cancelled before anybody is asked.
+   */
+  it('holds nothing when the search ends first', () => {
+    expect(
+      collectionHoldUntil(
+        at('2026-09-18T10:00:00Z'),
+        at('2026-09-18T10:00:00Z'),
+        10,
+        at('2026-09-18T10:05:00Z'),
+      ),
+    ).toBeNull();
   });
 });
