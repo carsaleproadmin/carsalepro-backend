@@ -44,6 +44,9 @@ export const SETTING_LIMITS: Record<SettingKey, SettingLimit> = {
   // The floor is not 0: a window of zero expires every counter-offer at the
   // moment it is made, which reads as "the button does nothing".
   counterOfferWindowMinutes: { min: 5, max: 240 },
+  // Zero is allowed here, unlike the answer window: it means "show the first
+  // price at once", which is a policy and not a broken button.
+  counterOfferCollectMinutes: { min: 0, max: 120 },
   // The order is locked against dispatch for this long, so the ceiling is an
   // hour and not a day.
   counterOfferPaymentMinutes: { min: 5, max: 60 },

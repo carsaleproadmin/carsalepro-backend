@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { LegalModule } from '../legal/legal.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { CounterOfferQueueService } from './counter-offer-queue.service';
 import { CounterOffersController } from './counter-offers.controller';
 import { CounterOffersService } from './counter-offers.service';
 import { OffersController } from './offers.controller';
@@ -15,7 +16,11 @@ import { OrdersService } from './orders.service';
   // CounterOffersService depends on OrdersService and never the other way
   // round: the money paths a counter-offer ends in (capture, release, assign)
   // live in OrdersService, and the webhook reaches them through it.
-  providers: [OrdersService, CounterOffersService],
-  exports: [OrdersService, CounterOffersService],
+  //
+  // CounterOfferQueueService is what keeps that one-way (DEN-350). Both of the
+  // others have to be able to show the customer the next price, so the method
+  // that does it depends on neither of them.
+  providers: [OrdersService, CounterOffersService, CounterOfferQueueService],
+  exports: [OrdersService, CounterOffersService, CounterOfferQueueService],
 })
 export class OrdersModule {}

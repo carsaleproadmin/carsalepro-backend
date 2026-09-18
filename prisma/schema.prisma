@@ -588,6 +588,10 @@ model OrderCounterOffer {
   /// alongside the normal search - a candidate who accepts at the tariff price
   /// SUPERSEDEs a waiting counter-offer, which is the right outcome: the
   /// customer pays less.
+  ///
+  /// PENDING now covers TWO different things, and `presentedAt` tells them
+  /// apart: a price waiting in the queue, and the one price the customer is
+  /// actually looking at (DEN-350).
   status String @default("PENDING")
 
   /// What the inspector asks, in cents, and the split that follows from it.
@@ -611,7 +615,17 @@ model OrderCounterOffer {
   /// The order's `dispatchRound` when the offer was made.
   round Int
 
-  /// When the offer stops waiting for the customer.
+  /// When this price was put in front of the customer, or null while it waits
+  /// its turn in the queue (DEN-350).
+  ///
+  /// The queue is ordered by `priceCents`, so an offer can sit here for a long
+  /// time through no fault of the inspector who made it. That is why the answer
+  /// window counts from HERE and not from `createdAt`: a price that expired
+  /// unseen would punish the expert for the platform's ordering.
+  presentedAt DateTime? @map("presented_at")
+
+  /// When the offer stops waiting for the customer. Written at creation as the
+  /// search-end backstop and rewritten to `presentedAt + window` on promotion.
   expiresAt      DateTime  @map("expires_at")
   /// Deadline of the payment window, set on entry to ACCEPTING and cleared when
   /// it ends. Past it, the sweep returns the offer to PENDING for whatever is
@@ -626,13 +640,16 @@ model OrderCounterOffer {
   /// One offer per inspector per order. The retry after a failed payment reuses
   /// this row rather than writing a second one.
   @@unique([orderId, inspectorId])
-  /// "One ACTIVE counter-offer per order" is the rule this cannot express:
-  /// a partial unique index on order_id WHERE status IN ('PENDING','ACCEPTING')
-  /// carries it, in raw SQL in the migration
-  /// (`order_counter_offer_active_unique`). Two inspectors who press the button
-  /// in the same millisecond both pass any check in the code, so the database
-  /// has to be the one that refuses.
+  /// "One PRESENTED counter-offer per order" is the rule this cannot express:
+  /// a partial unique index on order_id WHERE status = 'ACCEPTING' OR (status =
+  /// 'PENDING' AND presented_at IS NOT NULL) carries it, in raw SQL in the
+  /// migration (`order_counter_offer_presented_unique`). Many inspectors may
+  /// QUEUE a price at once - that is the point of the queue - but two promotions
+  /// that race must not both put a price on the customer's screen, and no check
+  /// written in TypeScript can refuse that.
   @@index([orderId, status])
+  /// The queue read: cheapest PENDING first, per order.
+  @@index([orderId, status, priceCents])
   @@index([inspectorId, status])
   @@map("order_counter_offer")
 }

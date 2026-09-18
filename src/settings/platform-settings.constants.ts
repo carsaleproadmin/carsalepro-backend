@@ -21,6 +21,7 @@ export const SETTING_KEYS = {
   offerTimeoutMinutes: 'offerTimeoutMinutes',
   orderSearchWindowMinutes: 'orderSearchWindowMinutes',
   counterOfferWindowMinutes: 'counterOfferWindowMinutes',
+  counterOfferCollectMinutes: 'counterOfferCollectMinutes',
   counterOfferPaymentMinutes: 'counterOfferPaymentMinutes',
   counterOfferMaxMultiplier: 'counterOfferMaxMultiplier',
   autoApproveAfterDays: 'autoApproveAfterDays',
@@ -201,6 +202,23 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    * The search window is 24 hours, so five or six offers in a row still fit.
    */
   counterOfferWindowMinutes: 20,
+  /**
+   * How long the first prices on an order are collected before one is shown
+   * (DEN-351).
+   *
+   * The queue can only sort the prices it has. The first to arrive is usually
+   * the nearest inspector, and the nearest is not the cheapest: without this
+   * pause the customer's first - and often only - impression of the price is
+   * whoever lives closest, however much they ask.
+   *
+   * Ten minutes is set against the search window of 24 hours, so the cost to
+   * the customer is invisible, and against how fast inspectors answer a bell
+   * notification, which is minutes. Only the first presentation waits; after a
+   * refusal the next price is shown at once.
+   *
+   * Zero turns the pause off and restores "show the first price that arrives".
+   */
+  counterOfferCollectMinutes: 10,
   /**
    * How long the customer has to pay after accepting a counter-offer (DEN-344).
    *
