@@ -48,6 +48,13 @@ export interface CreateOrderPaymentIntentParams {
   orderId: string;
   paymentId: string;
   userId: string;
+  /**
+   * What the webhook must do when this hold appears (DEN-344). Defaults to
+   * 'order' — the first authorization of an order, which starts the search.
+   * A counter-offer's replacement authorization carries its own purpose,
+   * because the same event then means "release the old hold and assign".
+   */
+  purpose?: string;
 }
 
 export interface CreatePpvCheckoutParams {
@@ -55,15 +62,6 @@ export interface CreatePpvCheckoutParams {
   reportId: string;
   userId: string;
   reportCode: string;
-  amountCents: number;
-  successUrl: string;
-  cancelUrl: string;
-}
-
-export interface CreateGoldCheckoutParams {
-  paymentId: string;
-  listingId: string;
-  userId: string;
   amountCents: number;
   successUrl: string;
   cancelUrl: string;
@@ -277,38 +275,6 @@ export class StripeService implements OnModuleInit {
     return { checkoutUrl: session.url, sessionId: session.id };
   }
 
-  /** Create a one-time payment Checkout Session for a Gold listing upgrade. */
-  async createGoldCheckout(
-    params: CreateGoldCheckoutParams,
-  ): Promise<{ checkoutUrl: string; sessionId: string }> {
-    const session = await this.requireClient().checkout.sessions.create(
-      {
-        mode: 'payment',
-        success_url: params.successUrl,
-        cancel_url: params.cancelUrl,
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'eur',
-              unit_amount: params.amountCents,
-              product_data: { name: 'CarSalePro Gold listing' },
-            },
-          },
-        ],
-        metadata: {
-          paymentId: params.paymentId,
-          listingId: params.listingId,
-          userId: params.userId,
-          purpose: 'gold',
-        },
-      },
-      this.idempotently(params.paymentId),
-    );
-    if (!session.url) throw new Error('Stripe did not return a Checkout URL');
-    return { checkoutUrl: session.url, sessionId: session.id };
-  }
-
   /**
    * Create a PaymentIntent for an inspection order. Automatic payment methods
    * are enabled; the order/payment ids ride along in metadata so the webhooks
@@ -341,7 +307,7 @@ export class StripeService implements OnModuleInit {
         orderId: params.orderId,
         paymentId: params.paymentId,
         userId: params.userId,
-        purpose: 'order',
+        purpose: params.purpose ?? 'order',
       },
     });
   }

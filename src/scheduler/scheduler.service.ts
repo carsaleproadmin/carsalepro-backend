@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { KycService } from '../kyc/kyc.service';
 import { ListingsService } from '../listings/listings.service';
 import { LegalContractService } from '../legal/legal-contract.service';
+import { CounterOffersService } from '../orders/counter-offers.service';
 import { OrdersService } from '../orders/orders.service';
 
 /**
@@ -24,6 +25,7 @@ export class SchedulerService {
 
   constructor(
     private readonly orders: OrdersService,
+    private readonly counterOffers: CounterOffersService,
     private readonly listings: ListingsService,
     private readonly kyc: KycService,
     private readonly legalContract: LegalContractService,
@@ -44,6 +46,31 @@ export class SchedulerService {
       if (expired > 0) this.logger.log(`expireStaleOffers: ${expired} offer(s) expired`);
     } catch (err) {
       this.logger.error(`expireStaleOffers failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Every minute: close the counter-offers whose time ran out (DEN-344).
+   *
+   * A minute, not five, because both deadlines here hold something shut. An
+   * unanswered offer keeps the order's single active slot, so every inspector
+   * behind it waits; and an unpaid one keeps the whole order locked against
+   * dispatch. Five minutes of either is five minutes taken out of a search that
+   * is already failing.
+   */
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'expire-counter-offers' })
+  async expireCounterOffers(): Promise<void> {
+    if (this.disabled) return;
+    try {
+      const { expired, abandoned, presented } = await this.counterOffers.sweepExpired();
+      if (expired > 0 || abandoned > 0 || presented > 0) {
+        this.logger.log(
+          `expireCounterOffers: ${expired} offer(s) expired, ${abandoned} payment(s) abandoned, ` +
+            `${presented} offer(s) presented`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(`expireCounterOffers failed: ${(err as Error).message}`);
     }
   }
 
@@ -104,6 +131,29 @@ export class SchedulerService {
       }
     } catch (err) {
       this.logger.error(`expireUnfilledSearches failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Every five minutes: an order whose candidate pool ran out is offered to the
+   * pool again (DEN-326).
+   *
+   * Five minutes is granularity, not a pace. The pace comes from the offer
+   * itself: a round cannot end faster than its offers expire, so this job finds
+   * nothing to do on most passes and picks an order up soon after it lands in
+   * UNASSIGNED. It rides beside `expire-unfilled-searches` rather than inside
+   * it because the two jobs disagree about an order — one gives it another
+   * chance, the other ends it — and a conditional write decides which of them
+   * owns a given row.
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'redispatch-unfilled-orders' })
+  async redispatchUnfilledOrders(): Promise<void> {
+    if (this.disabled) return;
+    try {
+      const { rounds } = await this.orders.redispatchUnfilledOrders();
+      if (rounds > 0) this.logger.log(`redispatchUnfilledOrders: ${rounds} new round(s)`);
+    } catch (err) {
+      this.logger.error(`redispatchUnfilledOrders failed: ${(err as Error).message}`);
     }
   }
 

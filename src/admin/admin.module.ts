@@ -3,6 +3,7 @@ import { KycModule } from '../kyc/kyc.module';
 import { ListingsModule } from '../listings/listings.module';
 import { OrdersModule } from '../orders/orders.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { ReportsModule } from '../reports/reports.module';
 import { UsersModule } from '../users/users.module';
 import { AdminAuditController } from './admin-audit.controller';
 import { AdminAuditModule } from './admin-audit.module';
@@ -16,6 +17,7 @@ import { AdminListingsController } from './admin-listings.controller';
 import { AdminListingsService } from './admin-listings.service';
 import { AdminOrdersController } from './admin-orders.controller';
 import { AdminOrdersService } from './admin-orders.service';
+import { AdminReportsController } from './admin-reports.controller';
 import { AdminSettingsController } from './admin-settings.controller';
 import { AdminUsersController } from './admin-users.controller';
 import { AdminUsersService } from './admin-users.service';
@@ -33,10 +35,12 @@ import { AdminUsersService } from './admin-users.service';
     ListingsModule,
     KycModule,
     AdminAuditModule,
+    ReportsModule,
   ],
   controllers: [
     AdminUsersController,
     AdminOrdersController,
+    AdminReportsController,
     AdminListingsController,
     AdminSettingsController,
     AdminLegalController,

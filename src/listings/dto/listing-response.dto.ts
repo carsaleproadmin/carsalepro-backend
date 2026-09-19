@@ -92,26 +92,6 @@ export class MyListingsListDto {
   items!: MyListingItemDto[];
 }
 
-export class ListingPackageDto {
-  @ApiProperty({ example: 'gold', enum: ['standard', 'gold'] })
-  package!: 'standard' | 'gold';
-
-  @ApiProperty({ example: 999, description: 'Integer cents. 0 means free.' })
-  amountCents!: number;
-
-  @ApiProperty({ example: 'EUR' })
-  currency!: string;
-}
-
-/**
- * Package prices, so the seller-facing picker renders live tariffs instead of
- * copy baked into the translation files.
- */
-export class ListingPackagesDto {
-  @ApiProperty({ type: [ListingPackageDto] })
-  items!: ListingPackageDto[];
-}
-
 export class PublishResultDto {
   @ApiPropertyOptional({ example: 'ACTIVE' })
   status?: string;
@@ -121,16 +101,4 @@ export class PublishResultDto {
 
   @ApiPropertyOptional({ example: 'EUR' })
   currency?: string;
-
-  @ApiPropertyOptional({
-    example: 'https://checkout.stripe.com/c/pay/cs_test_...',
-    description: 'Present for a Gold checkout — redirect the seller here.',
-  })
-  checkoutUrl?: string;
-
-  @ApiPropertyOptional({
-    example: true,
-    description: 'True when Stripe is unconfigured and the Gold upgrade was auto-activated (mock mode).',
-  })
-  mock?: boolean;
 }

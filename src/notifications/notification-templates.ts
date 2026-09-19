@@ -158,6 +158,113 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Новый заказ ${str(p, 'orderNumber')} доступен.`,
     }),
   },
+  /**
+   * To the CUSTOMER: an inspector who cannot take the order at its price says
+   * what they would do it for. The body carries the distance because that is
+   * usually the reason, and the reason line the inspector wrote, verbatim.
+   */
+  'counter_offer.received': {
+    de: (p) => ({
+      subject: `Ein Prüfer bietet ${formatEur(p.priceCents)} für Auftrag ${str(p, 'orderNumber')}`,
+      body: `Wir haben zum Preis von ${formatEur(p.orderTotalCents)} keinen Prüfer gefunden. Ein Prüfer in ${str(p, 'distanceKm')} km übernimmt den Auftrag ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) für ${formatEur(p.priceCents)}. Begründung: ${str(p, 'reason')}. Sie haben ${str(p, 'windowMinutes')} Minuten Zeit, um anzunehmen oder weiter zu suchen.`,
+      short: `Angebot über ${formatEur(p.priceCents)} für Auftrag ${str(p, 'orderNumber')}.`,
+    }),
+    en: (p) => ({
+      subject: `An expert asks ${formatEur(p.priceCents)} for order ${str(p, 'orderNumber')}`,
+      body: `We found no expert at ${formatEur(p.orderTotalCents)}. An expert ${str(p, 'distanceKm')} km away will do order ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) for ${formatEur(p.priceCents)}. Their reason: ${str(p, 'reason')}. You have ${str(p, 'windowMinutes')} minutes to accept or to continue the search.`,
+      short: `An offer of ${formatEur(p.priceCents)} for order ${str(p, 'orderNumber')}.`,
+    }),
+    ru: (p) => ({
+      subject: `Эксперт предлагает ${formatEur(p.priceCents)} за заказ ${str(p, 'orderNumber')}`,
+      body: `За ${formatEur(p.orderTotalCents)} эксперта найти не удалось. Эксперт в ${str(p, 'distanceKm')} км готов выполнить заказ ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) за ${formatEur(p.priceCents)}. Причина: ${str(p, 'reason')}. У вас есть ${str(p, 'windowMinutes')} минут, чтобы принять или продолжить поиск.`,
+      short: `Предложение ${formatEur(p.priceCents)} по заказу ${str(p, 'orderNumber')}.`,
+    }),
+  },
+  'counter_offer.accepted': {
+    de: (p) => ({
+      subject: `Ihr Preis für Auftrag ${str(p, 'orderNumber')} wurde angenommen`,
+      body: `Der Kunde hat Ihren Preis von ${formatEur(p.priceCents)} für den Auftrag ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) angenommen. Ihr Anteil: ${formatEur(p.inspectorShareCents)}. Der Auftrag gehört Ihnen.`,
+      short: `Preis für Auftrag ${str(p, 'orderNumber')} angenommen.`,
+    }),
+    en: (p) => ({
+      subject: `Your price for order ${str(p, 'orderNumber')} is accepted`,
+      body: `The customer accepted your price of ${formatEur(p.priceCents)} for order ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}). Your share: ${formatEur(p.inspectorShareCents)}. The order is yours.`,
+      short: `Your price for order ${str(p, 'orderNumber')} is accepted.`,
+    }),
+    ru: (p) => ({
+      subject: `Ваша цена по заказу ${str(p, 'orderNumber')} принята`,
+      body: `Клиент принял вашу цену ${formatEur(p.priceCents)} по заказу ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}). Ваша доля: ${formatEur(p.inspectorShareCents)}. Заказ ваш.`,
+      short: `Ваша цена по заказу ${str(p, 'orderNumber')} принята.`,
+    }),
+  },
+  'counter_offer.declined': {
+    de: (p) => ({
+      subject: `Ihr Preis für Auftrag ${str(p, 'orderNumber')} wurde abgelehnt`,
+      body: `Der Kunde hat Ihren Preis von ${formatEur(p.priceCents)} für den Auftrag ${str(p, 'orderNumber')} abgelehnt. Die Suche lauft weiter.`,
+      short: `Preis für Auftrag ${str(p, 'orderNumber')} abgelehnt.`,
+    }),
+    en: (p) => ({
+      subject: `Your price for order ${str(p, 'orderNumber')} is refused`,
+      body: `The customer refused your price of ${formatEur(p.priceCents)} for order ${str(p, 'orderNumber')}. The search continues.`,
+      short: `Your price for order ${str(p, 'orderNumber')} is refused.`,
+    }),
+    ru: (p) => ({
+      subject: `Ваша цена по заказу ${str(p, 'orderNumber')} отклонена`,
+      body: `Клиент отклонил вашу цену ${formatEur(p.priceCents)} по заказу ${str(p, 'orderNumber')}. Поиск продолжается.`,
+      short: `Ваша цена по заказу ${str(p, 'orderNumber')} отклонена.`,
+    }),
+  },
+  'counter_offer.expired': {
+    de: (p) => ({
+      subject: `Ihr Angebot für Auftrag ${str(p, 'orderNumber')} ist abgelaufen`,
+      body: `Der Kunde hat auf Ihr Angebot für den Auftrag ${str(p, 'orderNumber')} nicht geantwortet. Der Auftrag ist wieder für Angebote offen.`,
+      short: `Angebot für Auftrag ${str(p, 'orderNumber')} abgelaufen.`,
+    }),
+    en: (p) => ({
+      subject: `Your offer for order ${str(p, 'orderNumber')} expired`,
+      body: `The customer did not answer your offer for order ${str(p, 'orderNumber')}. The order is open for offers again.`,
+      short: `Your offer for order ${str(p, 'orderNumber')} expired.`,
+    }),
+    ru: (p) => ({
+      subject: `Ваше предложение по заказу ${str(p, 'orderNumber')} истекло`,
+      body: `Клиент не ответил на ваше предложение по заказу ${str(p, 'orderNumber')}. Заказ снова открыт для предложений.`,
+      short: `Предложение по заказу ${str(p, 'orderNumber')} истекло.`,
+    }),
+  },
+  'counter_offer.superseded': {
+    de: (p) => ({
+      subject: `Auftrag ${str(p, 'orderNumber')} wurde bereits vergeben`,
+      body: `Während Ihr Angebot lief, hat ein Prüfer den Auftrag ${str(p, 'orderNumber')} zum regulären Preis übernommen. Ihr Angebot ist damit hinfällig.`,
+      short: `Auftrag ${str(p, 'orderNumber')} ist vergeben.`,
+    }),
+    en: (p) => ({
+      subject: `Order ${str(p, 'orderNumber')} is already taken`,
+      body: `While your offer waited, an expert took order ${str(p, 'orderNumber')} at the tariff price. Your offer is closed.`,
+      short: `Order ${str(p, 'orderNumber')} is taken.`,
+    }),
+    ru: (p) => ({
+      subject: `Заказ ${str(p, 'orderNumber')} уже занят`,
+      body: `Пока ваше предложение ожидало ответа, эксперт взял заказ ${str(p, 'orderNumber')} по обычной цене. Ваше предложение закрыто.`,
+      short: `Заказ ${str(p, 'orderNumber')} занят.`,
+    }),
+  },
+  'offer.expired': {
+    de: (p) => ({
+      subject: `Auftrag ${str(p, 'orderNumber')} ist abgelaufen`,
+      body: `Die Zeit für den Auftrag ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) ist abgelaufen. Der Auftrag ging an einen anderen Prüfer.`,
+      short: `Auftrag ${str(p, 'orderNumber')} ist abgelaufen.`,
+    }),
+    en: (p) => ({
+      subject: `Job ${str(p, 'orderNumber')} has expired`,
+      body: `The time for job ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) is over. The job went to a different inspector.`,
+      short: `Job ${str(p, 'orderNumber')} has expired.`,
+    }),
+    ru: (p) => ({
+      subject: `Заказ ${str(p, 'orderNumber')} истёк`,
+      body: `Время на заказ ${str(p, 'orderNumber')} (${str(p, 'make')} ${str(p, 'model')}) вышло. Заказ передан другому инспектору.`,
+      short: `Заказ ${str(p, 'orderNumber')} истёк.`,
+    }),
+  },
   'order.assigned': {
     de: (p) => ({
       subject: `Prüfer für ${str(p, 'orderNumber')} zugewiesen`,

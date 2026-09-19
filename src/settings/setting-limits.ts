@@ -36,13 +36,23 @@ export const SETTING_LIMITS: Record<SettingKey, SettingLimit> = {
   orderRoutingCacheHours: { min: 0, max: 720 },
   platformFeePercent: { min: 0, max: 50 },
   payPerViewPriceEur: { min: 0, max: 100 },
-  goldPackagePriceEur: { min: 0, max: 200 },
-  standardListingPriceEur: { min: 0, max: 200 },
   expertSearchRadiusKm: { min: 10, max: 1000 },
   offerTimeoutMinutes: { min: 5, max: 1440 },
   // The ceiling stays far below Stripe's 7-day authorization expiry: a hold
   // that sits near it strands real money (see the default's comment).
   orderSearchWindowMinutes: { min: 30, max: 4320 },
+  // The floor is not 0: a window of zero expires every counter-offer at the
+  // moment it is made, which reads as "the button does nothing".
+  counterOfferWindowMinutes: { min: 5, max: 240 },
+  // Zero is allowed here, unlike the answer window: it means "show the first
+  // price at once", which is a policy and not a broken button.
+  counterOfferCollectMinutes: { min: 0, max: 120 },
+  // The order is locked against dispatch for this long, so the ceiling is an
+  // hour and not a day.
+  counterOfferPaymentMinutes: { min: 5, max: 60 },
+  // Never below 1: under it the ceiling would sit BELOW the inspector's own
+  // fair price, and no honest counter-offer could pass validation.
+  counterOfferMaxMultiplier: { min: 1, max: 3 },
   autoApproveAfterDays: { min: 1, max: 30 },
   inspectionStartDeadlineDays: { min: 1, max: 30 },
   minReportQualityScore: { min: 0, max: 100 },

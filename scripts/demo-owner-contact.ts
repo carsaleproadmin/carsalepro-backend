@@ -120,7 +120,7 @@ async function main(): Promise<void> {
   console.log('');
   for (const car of CARS) {
     const created = await orders.createOrder(customer.id, car);
-    const payment = await prisma.payment.findUnique({ where: { orderId: created.orderId } });
+    const payment = await prisma.payment.findFirst({ where: { orderId: created.orderId, supersededAt: null } });
     if (!payment) throw new Error('the order was created without a payment row');
 
     // The website confirms the intent in the browser with Stripe Elements. An

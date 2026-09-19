@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import type {
-  CreateGoldCheckoutParams,
   CreateOrderPaymentIntentParams,
   CreatePpvCheckoutParams,
   CreateTransferParams,
@@ -396,12 +395,6 @@ export class FakeStripeService {
 
   async createPpvCheckout(
     params: CreatePpvCheckoutParams,
-  ): Promise<{ checkoutUrl: string; sessionId: string }> {
-    return this.checkout(params.paymentId);
-  }
-
-  async createGoldCheckout(
-    params: CreateGoldCheckoutParams,
   ): Promise<{ checkoutUrl: string; sessionId: string }> {
     return this.checkout(params.paymentId);
   }

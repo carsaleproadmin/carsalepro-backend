@@ -8,13 +8,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
 import { Listing, ListingPhoto, Prisma, Report } from '@prisma/client';
-import { AppConfig } from '../config/configuration';
 import { NotificationsService } from '../notifications/notifications.service';
-import { PaymentsService } from '../payments/payments.service';
-import { StripeService } from '../payments/stripe.service';
 import { PhotoProcessingService } from '../common/photo/photo-processing.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
@@ -27,7 +23,6 @@ import {
 } from './dto/listing-photo.dto';
 import { UpdateListingDto } from './dto/update-listing.dto';
 import {
-  ListingPackagesDto,
   MyListingsListDto,
   PublishResultDto,
 } from './dto/listing-response.dto';
@@ -64,20 +59,14 @@ export interface ShowroomMirrorResult {
 @Injectable()
 export class ListingsService {
   private readonly logger = new Logger(ListingsService.name);
-  private readonly webOrigin: string;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
-    private readonly stripe: StripeService,
-    private readonly payments: PaymentsService,
     private readonly notifications: NotificationsService,
     private readonly r2: R2Service,
     private readonly photoProcessing: PhotoProcessingService,
-    config: ConfigService<AppConfig, true>,
-  ) {
-    this.webOrigin = config.get('web', { infer: true }).origin.replace(/\/$/, '');
-  }
+  ) {}
 
   /**
    * Claim a Report ID and open a DRAFT listing for it.
@@ -300,15 +289,10 @@ export class ListingsService {
   }
 
   /**
-   * Publish an owned listing.
-   * - standard: activate immediately.
-   * - gold: create a Stripe Checkout (or auto-activate in mock mode).
+   * Publish an owned listing. Publishing is free and there is one package,
+   * standard: the platform does not sell Gold any more (DEN-309).
    */
-  async publish(
-    userId: string,
-    id: string,
-    pkg: 'standard' | 'gold',
-  ): Promise<PublishResultDto> {
+  async publish(userId: string, id: string): Promise<PublishResultDto> {
     const listing = await this.requireOwnedListing(userId, id);
     // An admin hide is not the seller's to undo (DEN-295). Before this check
     // the "Publish" button on a HIDDEN row undid moderation in one click.
@@ -322,49 +306,8 @@ export class ListingsService {
     }
     await this.assertPublishable(listing);
 
-    if (pkg === 'standard') {
-      await this.activateStandard(id);
-      return {
-        status: 'ACTIVE',
-        amountCents: await this.settings.getCents('standardListingPriceEur'),
-        currency: 'EUR',
-      };
-    }
-
-    // Gold: charge via Stripe (or auto-activate in mock mode).
-    const amountCents = await this.settings.getCents('goldPackagePriceEur');
-    const payment = await this.prisma.payment.create({
-      data: { purpose: 'gold', userId, amountCents, status: 'pending' },
-    });
-
-    if (!this.stripe.configured) {
-      await this.payments.activateGoldListing(payment.id, id);
-      return {
-        checkoutUrl: `${this.webOrigin}/account/listings?gold=mock`,
-        mock: true,
-        amountCents,
-        currency: 'EUR',
-      };
-    }
-
-    const { checkoutUrl, sessionId } = await this.stripe.createGoldCheckout({
-      paymentId: payment.id,
-      listingId: id,
-      userId,
-      amountCents,
-      successUrl: `${this.webOrigin}/account/listings?gold=success`,
-      cancelUrl: `${this.webOrigin}/account/listings`,
-    });
-
-    // Stripe hands us the session id; it used to be scraped out of the URL with
-    // a regex whose failure was silent, leaving the payment with no session id
-    // and reconciliation with nothing to ask Stripe about.
-    await this.prisma.payment.update({
-      where: { id: payment.id },
-      data: { stripeCheckoutSessionId: sessionId },
-    });
-
-    return { checkoutUrl, amountCents, currency: 'EUR' };
+    await this.activateStandard(id);
+    return { status: 'ACTIVE', amountCents: 0, currency: 'EUR' };
   }
 
   /**
@@ -397,27 +340,6 @@ export class ListingsService {
         missing,
       },
     });
-  }
-
-  /**
-   * The package price list. Exists so the seller-facing picker renders live
-   * tariffs — before this, the prices were hardcoded strings inside the
-   * website's translation files, one copy per locale.
-   *
-   * A published listing has NO end date (DEN-XXX): it stays in the showroom
-   * until the seller hides it or marks it sold, so no duration is quoted here.
-   */
-  async packages(): Promise<ListingPackagesDto> {
-    const [standardCents, goldCents] = await Promise.all([
-      this.settings.getCents('standardListingPriceEur'),
-      this.settings.getCents('goldPackagePriceEur'),
-    ]);
-    return {
-      items: [
-        { package: 'standard', amountCents: standardCents, currency: 'EUR' },
-        { package: 'gold', amountCents: goldCents, currency: 'EUR' },
-      ],
-    };
   }
 
   /** Hide a listing from the showroom. */
@@ -899,11 +821,9 @@ export class ListingsService {
 
   /**
    * The publication hook: notify the seller, then make sure the listing's
-   * showroom photos have permanent URLs. Both paths run through it — Standard
-   * from `activateStandard`, Gold from `PaymentsService.activateGoldListing`
-   * once Stripe confirms — which is why the mirror hangs off it rather than off
-   * `publish()`: a Gold listing goes live in a webhook, not in the request that
-   * started the checkout.
+   * showroom photos have permanent URLs. `activateStandard` runs it once the
+   * listing is live. (A paid Gold listing used to reach it from the Stripe
+   * webhook; Gold is not sold since DEN-309.)
    *
    * Neither half may throw into the caller. A notification that fails must not
    * unpublish a paid listing, and neither must a photo copy — an un-mirrored

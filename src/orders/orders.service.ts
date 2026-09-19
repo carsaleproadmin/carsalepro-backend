@@ -7,8 +7,9 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { Order, OrderStatus, Prisma, Role } from '@prisma/client';
+import { Order, OrderStatus, Payment, Prisma, Role } from '@prisma/client';
 import { ADMIN_ROLES, isAdminRole } from '../auth/roles';
+import { COUNTER_OFFER_PAYMENT_PURPOSE } from './counter-offer-rules';
 import { randomUUID } from 'node:crypto';
 import { GeoService, NearestInspector } from '../geo/geo.service';
 import { RouteEstimate, RoutingService } from '../geo/routing.service';
@@ -29,6 +30,8 @@ import {
   CreateOrderDto,
   InspectorStatusUpdate,
   OrderRole,
+  OrderSort,
+  OrderTab,
   QuoteOrderDto,
 } from './dto/order.dto';
 import { ATTACHABLE_REPORT_ORDER_STATUSES, canTransition } from './order-state-machine';
@@ -42,6 +45,7 @@ import { effectiveBaseFeeCents } from './inspector-base-fee';
 import { RegionalOverrides, exceedsCap, resolveTariff } from './tariff-resolution';
 import { ADMIN_DECISION_EVENT, AdminDecision } from './admin-decision';
 import { MONEY_RETRY_MAX_ATTEMPTS, planRetry } from './retry-schedule';
+import { CounterOfferQueueService } from './counter-offer-queue.service';
 import {
   countMissing,
   currentRequiredAngles,
@@ -234,6 +238,18 @@ const PUBLIC_PAYMENT_STATE: Record<string, OrderPaymentState> = {
  */
 const RECONCILE_MIN_AGE_MS = 5 * 60_000;
 
+/**
+ * How many inspectors a quote looks at (DEN-352).
+ *
+ * It was three, which was the size the "who is near you" list needs. The quote
+ * now takes the lowest base fee of the set, and the lowest of three neighbours
+ * is still largely a lottery - a wider set makes the price describe the area
+ * rather than one person. The query is a bounded PostGIS KNN scan on an index,
+ * so the extra rows cost effectively nothing, and the customer-facing list is
+ * sliced back to three where it is built.
+ */
+const QUOTE_CANDIDATE_LIMIT = 10;
+
 /** Order statuses in which we are still looking for an inspector. */
 const PRE_ASSIGNMENT_STATUSES: OrderStatus[] = [
   OrderStatus.CREATED,
@@ -301,6 +317,7 @@ export class OrdersService {
     private readonly payments: PaymentsService,
     private readonly legalContract: LegalContractService,
     private readonly notifications: NotificationsService,
+    private readonly counterOfferQueue: CounterOfferQueueService,
   ) {}
 
   // ============================================================
@@ -462,7 +479,7 @@ export class OrdersService {
       lat,
       lng,
       radiusKm,
-      limit: 3,
+      limit: QUOTE_CANDIDATE_LIMIT,
       excludeCustomerId: customerId ?? null,
     });
 
@@ -508,19 +525,61 @@ export class OrdersService {
       candidates,
       routingSource: route.source,
       /*
-       * DEN-213. Priced on the NEAREST inspector's own base fee.
+       * DEN-213. Priced on an inspector's own base fee - since DEN-352, on the
+       * LOWEST base fee in the candidate set rather than the nearest one's.
        *
        * The customer is shown ONE price and is never charged more than it. The
        * order that follows authorises exactly this total, and dispatch will not
        * offer the job to anybody who costs more (`dispatch`), so the number on
-       * the screen is a ceiling as well as a quote.
+       * the screen is a ceiling as well as a quote - which is why WHOSE base
+       * fee it is matters so much. Taking the nearest inspector's let one
+       * expensive neighbour set the price of the whole area: the quote was the
+       * highest rate in reach, the customer left at the order form, and the
+       * cheaper inspectors three streets further away were never offered the
+       * work at all.
+       *
+       * The route stays the nearest inspector's. Pricing each candidate would
+       * cost a routing request each to change a figure the base fee dominates,
+       * and the distance of the person who actually takes the job is not known
+       * at quote time anyway.
+       *
+       * The trade is deliberate: a quote can now land below what the inspector
+       * offering that base fee would accept for this drive. Then nobody takes
+       * it at the tariff and the order goes to the counter-offer queue
+       * (DEN-350/DEN-351), where the customer is asked a real price WITH a
+       * reason - which is the right place for that conversation, and a far
+       * better one than an order form nobody fills in.
        */
       price: computePrice({
         distanceKm: route.distanceKm,
         durationMin: route.durationMin,
-        tariff: await this.tariffForInspector(tariff, nearest.userId),
+        tariff: await this.cheapestCandidateTariff(tariff, candidates),
       }),
     };
+  }
+
+  /**
+   * The tariff for a quote: the LOWEST base fee among the candidates (DEN-352).
+   *
+   * One query for the whole set rather than one per candidate, and a candidate
+   * with no stated base fee counts as the platform base - the same fallback
+   * {@link tariffForInspector} applies, so a pool that states nothing prices
+   * exactly as it did before DEN-213.
+   */
+  private async cheapestCandidateTariff(
+    tariff: PricingTariff,
+    candidates: Array<{ userId: string }>,
+  ): Promise<PricingTariff> {
+    const profiles = await this.prisma.inspectorProfile.findMany({
+      where: { userId: { in: candidates.map((c) => c.userId) } },
+      select: { baseFeeCents: true },
+    });
+    // NOT seeded with the platform base: that would floor the answer at it, and
+    // a pool where everybody charges more than the platform base would be
+    // quoted a price none of them accepts.
+    const stated = profiles.map((p) => effectiveBaseFeeCents(p.baseFeeCents, tariff.baseFeeCents));
+    const baseFeeCents = stated.length ? Math.min(...stated) : tariff.baseFeeCents;
+    return baseFeeCents === tariff.baseFeeCents ? tariff : { ...tariff, baseFeeCents };
   }
 
   /**
@@ -753,6 +812,38 @@ export class OrdersService {
   }
 
   /**
+   * The order's LIVE payment — the one row that describes where its money is
+   * now (DEN-344).
+   *
+   * `Payment.orderId` stopped being unique when counter-offers arrived:
+   * accepting a price above the authorization replaces the PaymentIntent, and
+   * the replaced row stays behind as the record of a hold that existed and was
+   * released. Every reader of "the order's payment" wants the live one, so the
+   * lookup lives here rather than being spelled out at six call sites — each of
+   * which would otherwise be one forgotten `supersededAt` away from cancelling
+   * or capturing an authorization that Stripe has already let go.
+   *
+   * A row that HOLDS money wins over a newer one that does not. During a
+   * counter-offer payment the order carries both: the original authorization,
+   * which is still the order's money, and a pending replacement the customer
+   * has not confirmed. Answering with the pending one would have the expiry
+   * sweep "release" a hold that does not exist and leave the real one standing.
+   *
+   * `payment_active_order_unique` guarantees there is at most one holding row,
+   * so the ordering only decides between rows that hold nothing.
+   */
+  async activePaymentForOrder(orderId: string): Promise<Payment | null> {
+    const holding = await this.prisma.payment.findFirst({
+      where: { orderId, supersededAt: null, status: { in: ['authorized', 'succeeded'] } },
+    });
+    if (holding) return holding;
+    return this.prisma.payment.findFirst({
+      where: { orderId, supersededAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
    * Take the money that has been held for an order — the single place a capture
    * happens. Never throws; see {@link CaptureOutcome} for what the caller must
    * do with each answer.
@@ -762,7 +853,7 @@ export class OrdersService {
    * first and refuses the assignment unless it comes back captured.
    */
   async captureOrderPayment(orderId: string, amountCents?: number): Promise<CaptureOutcome> {
-    const payment = await this.prisma.payment.findUnique({ where: { orderId } });
+    const payment = await this.activePaymentForOrder(orderId);
     if (!payment) return { status: 'fatal', detail: 'order has no payment' };
     if (payment.status === 'succeeded') return { status: 'already_captured' };
     if (payment.status !== 'authorized' && payment.status !== 'pending') {
@@ -929,24 +1020,75 @@ export class OrdersService {
   private static readonly DISPATCH_CANDIDATE_LIMIT = 5;
 
   /**
+   * True while a customer is paying for a counter-offer on this order
+   * (DEN-344).
+   *
+   * The payment window is the one moment two people could buy the same order:
+   * the customer is entering a card for a price ABOVE the hold, which takes a
+   * 3DS round trip, and for those minutes the ordinary pool must not be able to
+   * take the job underneath them. The alternative — letting dispatch run and
+   * sorting out the loser afterwards — means either two holds on one order or a
+   * customer told "accepted" and then "taken", after they paid.
+   *
+   * Read from the counter-offer row rather than from a flag on the order, so a
+   * process that dies mid-payment cannot leave a lock nothing clears: the
+   * deadline is in the row, and a stale ACCEPTING is simply not a lock any more.
+   */
+  private async counterOfferPaymentLock(orderId: string): Promise<boolean> {
+    const active = await this.prisma.orderCounterOffer.findFirst({
+      where: { orderId, status: 'ACCEPTING', acceptingUntil: { gt: new Date() } },
+      select: { id: true },
+    });
+    return active !== null;
+  }
+
+  /**
    * Offer the order to the nearest eligible inspector not already offered or
    * declined for it. Creates a PENDING OrderOffer (expiresAt = now +
    * offerTimeoutMinutes). If nobody is left → UNASSIGNED.
    */
-  async dispatch(orderId: string): Promise<void> {
+  async dispatch(orderId: string): Promise<boolean> {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
-    if (!order) return;
+    if (!order) return false;
     if (order.status !== OrderStatus.PAID && order.status !== OrderStatus.UNASSIGNED) {
       // Only dispatch when waiting for assignment.
-      return;
+      return false;
     }
+    // Somebody is paying for this order right now (DEN-344). Answering `false`
+    // rather than waiting is correct: the sweep re-dispatches when the payment
+    // window closes, and an offer sent now would be an offer the winner of the
+    // payment immediately invalidates.
+    if (await this.counterOfferPaymentLock(orderId)) return false;
 
     const { lat, lng } = await this.readOrderLatLng(orderId);
     const radiusKm = await this.settings.getNumber('expertSearchRadiusKm');
 
-    // Exclude inspectors already offered (any status) for this order.
+    /*
+     * Who is out, and for how long (DEN-326).
+     *
+     * It used to be "everybody ever offered this order", which is what made
+     * UNASSIGNED a dead end: once the pool was exhausted there was nobody left
+     * to ask, for ever. The exclusion is now read per status.
+     *
+     *  - DECLINED — out for ever, in every round. The inspector said no with
+     *    their hands. Sending the same job again makes the platform a nuisance,
+     *    and the end of that is a person who turns push messages off.
+     *  - PENDING / ACCEPTED — out, as before. Somebody is holding it.
+     *  - EXPIRED — out for THIS round only. Silence is not a refusal: the
+     *    inspector was driving, or asleep, or the offer arrived at 03:00.
+     *
+     * Reading the round rather than deleting the rows keeps the history: every
+     * offer ever made is still on the order, and `round` says which pass it
+     * belonged to.
+     */
     const prior = await this.prisma.orderOffer.findMany({
-      where: { orderId },
+      where: {
+        orderId,
+        OR: [
+          { status: { in: ['DECLINED', 'PENDING', 'ACCEPTED'] } },
+          { status: 'EXPIRED', round: order.dispatchRound },
+        ],
+      },
       select: { inspectorId: true },
     });
     const excluded = prior.map((o) => o.inspectorId);
@@ -977,7 +1119,7 @@ export class OrdersService {
       if (order.status !== OrderStatus.UNASSIGNED) {
         await this.transition(orderId, OrderStatus.UNASSIGNED, 'system');
       }
-      return;
+      return false;
     }
 
     const { candidate: nearest, price } = affordable;
@@ -989,6 +1131,7 @@ export class OrdersService {
         inspectorId: nearest.userId,
         status: 'PENDING',
         expiresAt,
+        round: order.dispatchRound,
         // How far THIS inspector is, which is not what the order was priced on
         // once dispatch has walked past the first candidate.
         straightLineKm: new Prisma.Decimal(nearest.distanceKm.toFixed(2)),
@@ -1006,6 +1149,7 @@ export class OrdersService {
     await this.writeEvent(orderId, 'system', 'offer_sent', null, null, {
       inspectorId: nearest.userId,
       expiresAt: expiresAt.toISOString(),
+      round: order.dispatchRound,
     });
     // E11: notify the inspector an offer was sent to them (non-throwing).
     await this.notifications.notify(nearest.userId, 'offer.received', {
@@ -1018,6 +1162,7 @@ export class OrdersService {
       inspectorShareCents: price.inspectorShareCents,
       expiresAt: expiresAt.toISOString(),
     });
+    return true;
   }
 
   /**
@@ -1051,6 +1196,42 @@ export class OrdersService {
       if (price.totalCents <= order.totalCents) return { candidate, price };
     }
     return null;
+  }
+
+  /**
+   * What this order would have cost if THIS inspector had been the nearest one
+   * (DEN-344) — the fair price a counter-offer ceiling is built on.
+   *
+   * The order's own total is priced on the distance to the nearest candidate
+   * and is the same figure for all five; the whole reason a counter-offer
+   * exists is that the inspector who is willing to go may be much further away
+   * and is currently asked to drive it for somebody else's kilometres. So this
+   * re-prices the order on their distance and their own base fee.
+   *
+   * Two deliberate approximations, both in the direction of costing nothing:
+   *
+   *  - The distance is the STRAIGHT LINE times `orderDetourFactor`, the same
+   *    fallback the quote uses when routing is unavailable. Routing here would
+   *    cost a provider request every time an inspector opens the form.
+   *  - The minutes are the order's own, scaled by how much further this
+   *    inspector is. There is no measured duration for a trip nobody routed,
+   *    and holding the minutes fixed would price a 40 km drive with the time of
+   *    a 12 km one.
+   */
+  async fairPriceForInspector(
+    order: Order,
+    inspectorUserId: string,
+    straightLineKm: number,
+  ): Promise<PriceBreakdown> {
+    const base = await this.tariffForStoredOrder(order);
+    const tariff = await this.tariffForInspector(base.tariff, inspectorUserId);
+    const detourFactor = await this.settings.getNumber('orderDetourFactor');
+    const distanceKm = Math.max(0, straightLineKm) * Math.max(1, detourFactor);
+    const durationMin =
+      base.distanceKm > 0
+        ? Math.round(base.durationMin * (distanceKm / base.distanceKm))
+        : base.durationMin;
+    return computePrice({ distanceKm, durationMin, tariff });
   }
 
   /**
@@ -1148,6 +1329,19 @@ export class OrdersService {
         error: {
           code: 'self_assignment_forbidden',
           message: 'You cannot accept an inspection you ordered yourself',
+        },
+      });
+    }
+
+    // DEN-344: a customer is paying for a counter-offer on this order. Their
+    // money is in flight at a price this offer knows nothing about, so the pool
+    // waits. The inspector keeps their PENDING offer and can accept the moment
+    // the payment window closes without a winner.
+    if (await this.counterOfferPaymentLock(order.id)) {
+      throw new ConflictException({
+        error: {
+          code: 'order_locked_by_counter_offer',
+          message: 'The customer is paying for another expert\u2019s price. Try again in a few minutes.',
         },
       });
     }
@@ -1264,8 +1458,463 @@ export class OrdersService {
       });
     }
 
+    await this.settleCounterOffersOnAssignment(order.id, userId);
     await this.transition(order.id, OrderStatus.ASSIGNED, userId);
     return { orderId: order.id, status: OrderStatus.ASSIGNED };
+  }
+
+  /**
+   * The customer's replacement hold is in place: finish the counter-offer
+   * (DEN-344).
+   *
+   * This is the second half of a two-authorization handover, and the ORDER of
+   * what it does is the whole safety argument. The new hold already exists when
+   * this runs - it is what the `amount_capturable_updated` webhook reports - so
+   * the old one is released only now, when its release can no longer leave the
+   * order with no money at all. The reverse order reads tidier and loses a
+   * customer's order to any declined card.
+   *
+   * Idempotent in every half: Stripe redelivers, and the reconciler calls the
+   * same path when the webhook was lost.
+   */
+  async finalizeCounterOfferPayment(paymentId: string, orderId: string): Promise<void> {
+    /*
+     * The payment row decides whether this event still applies, and it is read
+     * FIRST for that reason.
+     *
+     * Stripe redelivers, and a customer may accept twice: a first payment is
+     * abandoned, a second is opened, and the late webhook of the FIRST one
+     * arrives with an ACCEPTING row on the order that belongs to the second.
+     * Keyed on the order alone, this method claimed the order for the wrong
+     * price and then released the live hold as "replaced" - an order with no
+     * money and no offer. `abandonCounterOfferPayment` supersedes a payment it
+     * gives up on, so a superseded row is exactly the signal to stop here.
+     */
+    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+    if (
+      !payment ||
+      payment.orderId !== orderId ||
+      payment.purpose !== COUNTER_OFFER_PAYMENT_PURPOSE ||
+      payment.supersededAt !== null ||
+      payment.status === 'cancelled'
+    ) {
+      this.logger.warn(
+        `finalizeCounterOfferPayment: payment ${paymentId} on order ${orderId} is not the live one`,
+      );
+      return;
+    }
+
+    const counter = await this.prisma.orderCounterOffer.findFirst({
+      where: { orderId, status: 'ACCEPTING' },
+    });
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!counter || !order) return;
+    // The hold must also be for the price this offer names. A stale event whose
+    // row survived the checks above still buys the wrong amount.
+    if (payment.amountCents !== counter.priceCents) {
+      await this.releaseSupersededHold(paymentId, orderId, 'counter_offer_lost');
+      return;
+    }
+    if (order.status !== OrderStatus.PAID && order.status !== OrderStatus.UNASSIGNED) {
+      // Somebody reached ASSIGNED another way. The payment lock is supposed to
+      // make this impossible, so the hold is given back rather than kept.
+      await this.releaseSupersededHold(paymentId, orderId, 'counter_offer_lost');
+      return;
+    }
+
+    const now = new Date();
+
+    // The inspector must still be free. `accept` asked the same question, but
+    // minutes have passed since - the customer spent them on a card and a 3DS
+    // round trip - and an inspector is allowed to take other work while their
+    // price waits. Assigning them twice is the defect this repeats the check
+    // for; the hold goes back, and the offer ends where the sweep can see it.
+    const busy = await this.prisma.order.findFirst({
+      where: {
+        inspectorId: counter.inspectorId,
+        status: { in: [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE, OrderStatus.IN_PROGRESS] },
+      },
+      select: { id: true },
+    });
+    if (busy) {
+      await this.releaseSupersededHold(paymentId, orderId, 'counter_offer_inspector_busy');
+      await this.prisma.orderCounterOffer.updateMany({
+        where: { id: counter.id, status: 'ACCEPTING' },
+        data: { status: 'WITHDRAWN', acceptingUntil: null, respondedAt: now },
+      });
+      await this.writeEvent(orderId, counter.inspectorId, 'counter_offer_withdrawn', null, null, {
+        counterOfferId: counter.id,
+        reason: 'inspector took another order',
+      });
+      await this.counterOfferQueue.promoteQuietly(orderId);
+      await this.dispatch(orderId);
+      return;
+    }
+
+    // Claim the order for the inspector who named the price, on the same
+    // conditional update `acceptOffer` uses. The payment lock already keeps the
+    // pool out; this is the guard for everything that does not consult it.
+    const claim = await this.prisma.order.updateMany({
+      where: {
+        id: orderId,
+        status: { in: [OrderStatus.PAID, OrderStatus.UNASSIGNED] },
+        inspectorId: null,
+      },
+      data: { inspectorId: counter.inspectorId },
+    });
+    if (claim.count === 0) {
+      await this.releaseSupersededHold(paymentId, orderId, 'counter_offer_lost');
+      return;
+    }
+
+    // The OLD authorization goes back now, and only now. It is a release and
+    // never a refund: nothing was ever taken from it, so a Refund row here would
+    // double-count the hold in the finance ledger.
+    //
+    // This runs BEFORE the replacement row is marked authorized, and the order
+    // matters twice over. At Stripe the new hold already exists - the webhook
+    // reporting it is what called this method - so the customer is never
+    // without cover. In our ledger `payment_active_order_unique` allows exactly
+    // one row that holds money, so the old row has to stop holding before the
+    // new one starts.
+    await this.releaseReplacedHold(orderId, paymentId);
+
+    await this.prisma.payment
+      .updateMany({
+        where: { id: paymentId, status: { in: ['pending', 'failed'] } },
+        data: { status: 'authorized', authorizedAt: now },
+      })
+      // Not fatal: `captureOrderPayment` accepts a row that is still 'pending',
+      // so the capture below goes ahead. It is logged because a ledger row that
+      // disagrees with Stripe is the start of every money investigation.
+      .catch((e) =>
+        this.logger.error(
+          `finalizeCounterOfferPayment: payment ${paymentId} not marked authorized: ${String(e)}`,
+        ),
+      );
+
+    const capture = await this.captureOrderPayment(orderId);
+    if (capture.status !== 'captured' && capture.status !== 'already_captured') {
+      // The replacement hold cannot be taken. Undo the claim and leave the
+      // counter-offer for the sweep, which returns it to the customer's screen
+      // if its window still has time. The old hold is already gone, so the
+      // order carries no money - `searchExpiresAt` still ends it.
+      await this.releaseOrderClaim(orderId, counter.inspectorId);
+      // And the replacement hold goes back. It cannot be captured, the old one
+      // is already released, and a row left 'authorized' holds a customer's
+      // money for the seven days Stripe takes to expire an authorization.
+      await this.releaseSupersededHold(paymentId, orderId, 'counter_offer_capture_failed');
+      await this.writeEvent(orderId, counter.inspectorId, 'counter_offer_capture_failed', null, null, {
+        counterOfferId: counter.id,
+        detail: capture.detail ?? null,
+      });
+      return;
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.orderCounterOffer.updateMany({
+        where: { id: counter.id, status: 'ACCEPTING' },
+        data: { status: 'ACCEPTED', acceptingUntil: null, respondedAt: now },
+      }),
+      // The order's money must describe the sale that happened. The contract,
+      // the invoice and the payout all read these columns, and the customer's
+      // statement now shows the counter-offer's figure.
+      this.prisma.order.update({
+        where: { id: orderId },
+        data: {
+          totalCents: counter.priceCents,
+          platformFeeCents: counter.platformFeeCents,
+          inspectorShareCents: counter.inspectorShareCents,
+        },
+      }),
+      // Every ordinary offer still waiting is dead: the order is sold.
+      this.prisma.orderOffer.updateMany({
+        where: { orderId, status: 'PENDING' },
+        data: { status: 'EXPIRED' },
+      }),
+    ]);
+
+    await this.writeEvent(orderId, counter.inspectorId, 'counter_offer_accepted', null, null, {
+      counterOfferId: counter.id,
+      quotedCents: order.totalCents,
+      chargedCents: counter.priceCents,
+    });
+
+    await this.settleCounterOffersOnAssignment(orderId, counter.inspectorId);
+    await this.transition(orderId, OrderStatus.ASSIGNED, counter.inspectorId);
+
+    await this.notifications.notify(counter.inspectorId, 'counter_offer.accepted', {
+      orderId,
+      orderNumber: order.number,
+      make: order.make,
+      model: order.model,
+      priceCents: counter.priceCents,
+      inspectorShareCents: counter.inspectorShareCents,
+    });
+  }
+
+  /**
+   * The customer did not pay for the counter-offer they accepted (DEN-344):
+   * the card was refused, they closed the page, or the payment window ran out.
+   *
+   * Everything goes back to where it was. The original hold was never touched -
+   * it is released only once the replacement holds money - so the order still
+   * has its money and its place in the search. The counter-offer returns to the
+   * customer's screen for whatever is left of its own window, because a
+   * mistyped card is not a refusal.
+   */
+  async abandonCounterOfferPayment(
+    orderId: string,
+    detail: string,
+    /**
+     * True when Stripe has ALREADY cancelled the intent - the caller is the
+     * `payment_intent.canceled` webhook. Cancelling it again answers with an
+     * error and says nothing, so the cancel below is skipped.
+     */
+    alreadyCanceledAtStripe = false,
+  ): Promise<void> {
+    const counter = await this.prisma.orderCounterOffer.findFirst({
+      where: { orderId, status: 'ACCEPTING' },
+    });
+    if (!counter) return;
+
+    const now = new Date();
+    const stillOpen = counter.expiresAt > now;
+    await this.prisma.orderCounterOffer.updateMany({
+      where: { id: counter.id, status: 'ACCEPTING' },
+      data: {
+        status: stillOpen ? 'PENDING' : 'EXPIRED',
+        acceptingUntil: null,
+        // It keeps `presentedAt` when it goes back to PENDING: the customer is
+        // still looking at this price, and re-queueing it would put a dearer
+        // one in front of the one they just tried to pay for. When it expires,
+        // the screen is free and the queue moves on below.
+        ...(stillOpen ? {} : { respondedAt: now }),
+      },
+    });
+
+    /*
+     * The replacement intent is GIVEN BACK at Stripe, and only then does the row
+     * stop being the order's live one.
+     *
+     * The timeout path is the one that needs this. A card left half-entered
+     * leaves the intent alive and payable, so a customer who finishes 3DS ten
+     * minutes late places a real hold on an order that has moved on - and
+     * `finalizeCounterOfferPayment` now refuses a superseded row, so nothing
+     * would ever release it. The `canceled` webhook path arrives with the work
+     * already done and says so.
+     */
+    const open = await this.prisma.payment.findMany({
+      where: { orderId, purpose: COUNTER_OFFER_PAYMENT_PURPOSE, supersededAt: null },
+    });
+    for (const payment of open) {
+      if (alreadyCanceledAtStripe || !this.stripe.configured || !payment.stripePaymentIntentId) {
+        continue;
+      }
+      await this.stripe
+        .cancelPaymentIntent(payment.stripePaymentIntentId, payment.id, 'counter_offer_abandoned')
+        .catch((e) =>
+          // Loud, and never fatal: the order must still go back to the pool.
+          // `reconcileAbandonedCounterOfferHolds` tries the cancel again.
+          this.logger.error(
+            `abandonCounterOfferPayment: order ${orderId} payment ${payment.id} not released: ${String(e)}`,
+          ),
+        );
+    }
+
+    // The half-made payment row must stop being the order's live one, or every
+    // later reader - capture, release, the admin finance page - would find a
+    // PaymentIntent that holds nothing.
+    await this.prisma.payment.updateMany({
+      where: { orderId, purpose: COUNTER_OFFER_PAYMENT_PURPOSE, supersededAt: null },
+      data: { status: 'failed', supersededAt: now },
+    });
+
+    await this.writeEvent(orderId, counter.inspectorId, 'counter_offer_payment_abandoned', null, null, {
+      counterOfferId: counter.id,
+      detail,
+      returnedToCustomer: stillOpen,
+    });
+
+    if (!stillOpen) {
+      await this.notifyCounterOfferExpired(counter.id);
+      // The screen this offer held is free, so the next-cheapest price in the
+      // queue takes it (DEN-350). Only on the expired branch: a returned offer
+      // is still the one the customer is looking at.
+      await this.counterOfferQueue.promoteQuietly(orderId);
+    }
+    // The pool was held out while the customer paid. Ask again at once rather
+    // than waiting for the next round: those minutes came out of the search.
+    await this.dispatch(orderId);
+  }
+
+  /**
+   * Release the hold the counter-offer replaced, once the replacement is live.
+   *
+   * The replaced row keeps its history and stops being the order's live payment
+   * in the same write, because the partial unique index allows exactly one row
+   * with a null `supersededAt` - so the new payment and the old one cannot both
+   * be live for even one statement.
+   */
+  private async releaseReplacedHold(orderId: string, keepPaymentId: string): Promise<void> {
+    const replaced = await this.prisma.payment.findMany({
+      where: { orderId, supersededAt: null, id: { not: keepPaymentId } },
+    });
+    for (const payment of replaced) {
+      let released = !this.stripe.configured;
+      if (this.stripe.configured && payment.stripePaymentIntentId) {
+        try {
+          await this.stripe.cancelPaymentIntent(
+            payment.stripePaymentIntentId,
+            payment.id,
+            'counter_offer_replaced',
+          );
+          released = true;
+        } catch (e) {
+          // A hold we could not release is real money sitting on a customer's
+          // card. It must be loud, and it must not stop the handover: the new
+          // authorization is already in place and the order has to proceed.
+          this.logger.error(
+            `releaseReplacedHold: order ${orderId} payment ${payment.id} not released: ${String(e)}`,
+          );
+        }
+      }
+      await this.prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          supersededAt: new Date(),
+          ...(released ? { status: 'cancelled', canceledAt: new Date() } : {}),
+        },
+      });
+      await this.writeEvent(orderId, 'system', 'authorization_released', null, null, {
+        reason: 'counter_offer_replaced',
+        released,
+        paymentId: payment.id,
+      });
+    }
+  }
+
+  /**
+   * Give back a replacement hold that arrived too late to be used, and leave no
+   * live payment behind it.
+   */
+  private async releaseSupersededHold(
+    paymentId: string,
+    orderId: string,
+    reason: string,
+  ): Promise<void> {
+    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) return;
+    // The flag must describe what Stripe actually did. Writing `cancelled` over
+    // a cancel that threw hides real money on a customer's card from the
+    // reconciler, which is the one thing that can still take it back.
+    let released = !this.stripe.configured;
+    if (this.stripe.configured && payment.stripePaymentIntentId) {
+      try {
+        await this.stripe.cancelPaymentIntent(payment.stripePaymentIntentId, payment.id, reason);
+        released = true;
+      } catch (e) {
+        this.logger.error(`releaseSupersededHold: ${payment.id} not released: ${String(e)}`);
+      }
+    }
+    await this.prisma.payment.update({
+      where: { id: paymentId },
+      data: {
+        supersededAt: new Date(),
+        ...(released ? { status: 'cancelled', canceledAt: new Date() } : {}),
+      },
+    });
+    await this.writeEvent(orderId, 'system', 'authorization_released', null, null, {
+      reason,
+      released,
+      paymentId,
+    });
+  }
+
+  /** Tell an inspector their counter-offer ran out of time. */
+  private async notifyCounterOfferExpired(counterOfferId: string): Promise<void> {
+    const counter = await this.prisma.orderCounterOffer.findUnique({
+      where: { id: counterOfferId },
+      include: { order: { select: { number: true, make: true, model: true } } },
+    });
+    if (!counter) return;
+    await this.notifications.notify(counter.inspectorId, 'counter_offer.expired', {
+      orderId: counter.orderId,
+      orderNumber: counter.order.number,
+      make: counter.order.make,
+      model: counter.order.model,
+      priceCents: counter.priceCents,
+    });
+  }
+
+  /**
+   * Close the counter-offers an assignment has just made pointless (DEN-344).
+   *
+   * Two different things end here, and they are told apart because they read
+   * differently to the person who gets the message:
+   *
+   *  - **On this order** — somebody else got the job, usually at the tariff
+   *    price. The waiting inspector refused nothing and was refused nothing;
+   *    the ordinary search simply won, which is the outcome the platform wants.
+   *    `SUPERSEDED`.
+   *  - **On every OTHER order** — the inspector who has just been assigned is
+   *    now busy, and a price they named while free must stop waiting on a
+   *    customer's screen. `WITHDRAWN`, and the customer's card is untouched:
+   *    nothing was ever authorized for it.
+   *
+   * An ACCEPTING row is deliberately left alone. A customer is mid-payment
+   * there, the payment lock means this assignment cannot be on that order, and
+   * cancelling a counter-offer whose money is in flight would strand the
+   * PaymentIntent it is creating.
+   */
+  private async settleCounterOffersOnAssignment(
+    orderId: string,
+    inspectorId: string,
+  ): Promise<void> {
+    const superseded = await this.prisma.orderCounterOffer.findMany({
+      where: { orderId, status: 'PENDING' },
+      include: { order: { select: { number: true, make: true, model: true } } },
+    });
+    const withdrawn = await this.prisma.orderCounterOffer.findMany({
+      where: { inspectorId, status: 'PENDING', orderId: { not: orderId } },
+      include: { order: { select: { number: true, make: true, model: true } } },
+    });
+
+    if (superseded.length) {
+      await this.prisma.orderCounterOffer.updateMany({
+        where: { id: { in: superseded.map((c) => c.id) }, status: 'PENDING' },
+        data: { status: 'SUPERSEDED', respondedAt: new Date() },
+      });
+      for (const counter of superseded) {
+        await this.notifications.notify(counter.inspectorId, 'counter_offer.superseded', {
+          orderId: counter.orderId,
+          orderNumber: counter.order.number,
+          make: counter.order.make,
+          model: counter.order.model,
+          priceCents: counter.priceCents,
+        });
+      }
+    }
+
+    if (withdrawn.length) {
+      await this.prisma.orderCounterOffer.updateMany({
+        where: { id: { in: withdrawn.map((c) => c.id) }, status: 'PENDING' },
+        data: { status: 'WITHDRAWN', respondedAt: new Date() },
+      });
+      for (const counter of withdrawn) {
+        await this.writeEvent(counter.orderId, inspectorId, 'counter_offer_withdrawn', null, null, {
+          counterOfferId: counter.id,
+          reason: 'inspector took another order',
+        });
+      }
+      // Some of those withdrawals were the price a customer was looking at on
+      // another order. Each of those screens gets the next price in its own
+      // queue (DEN-350) - otherwise one inspector taking a job silently stalls
+      // every other order they had bid on.
+      for (const orderId of new Set(withdrawn.map((c) => c.orderId))) {
+        await this.counterOfferQueue.promoteQuietly(orderId);
+      }
+    }
   }
 
   /**
@@ -1784,10 +2433,7 @@ export class OrdersService {
 
     // Reconcile offers: accept the chosen inspector's (creating one if absent),
     // expire any other still-pending offer for this order.
-    await this.prisma.orderOffer.updateMany({
-      where: { orderId, inspectorId: { not: inspectorId }, status: 'PENDING' },
-      data: { status: 'EXPIRED' },
-    });
+    await this.expirePendingOffers(orderId, order, inspectorId);
     const chosen = await this.prisma.orderOffer.findFirst({ where: { orderId, inspectorId } });
     if (chosen) {
       await this.prisma.orderOffer.update({ where: { id: chosen.id }, data: { status: 'ACCEPTED' } });
@@ -1802,6 +2448,7 @@ export class OrdersService {
       });
     }
 
+    await this.settleCounterOffersOnAssignment(orderId, inspectorId);
     return this.transition(orderId, OrderStatus.ASSIGNED, `admin:${adminId}`);
   }
 
@@ -1980,44 +2627,219 @@ export class OrdersService {
   // Queries
   // ============================================================
 
+  /** The statuses each inspector tab stands for (DEN-328). */
+  private static readonly ACTIVE_STATUSES = [
+    OrderStatus.ASSIGNED,
+    OrderStatus.EN_ROUTE,
+    OrderStatus.IN_PROGRESS,
+  ];
+  private static readonly COMPLETED_STATUSES = [
+    OrderStatus.SUBMITTED,
+    OrderStatus.APPROVED,
+    OrderStatus.DISPUTED,
+    OrderStatus.CANCELLED,
+    OrderStatus.COMPLETED,
+    OrderStatus.REFUNDED,
+  ];
+
   async listMine(
     userId: string,
     role: OrderRole,
     status?: string,
-  ): Promise<{ items: Array<ReturnType<OrdersService['toListItem']>> }> {
+    opts: { tab?: OrderTab; sort?: OrderSort; page?: number; pageSize?: number } = {},
+  ): Promise<{
+    items: Array<ReturnType<OrdersService['toListItem']>>;
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
     const statusFilter = status ? { status: status as OrderStatus } : {};
-    let orders: Order[];
-    const offerDeadlines = new Map<string, Date>();
-    if (role === OrderRole.inspector) {
-      const now = new Date();
-      // Orders assigned to me OR for which I have an active offer.
-      const offered = await this.prisma.orderOffer.findMany({
-        where: {
-          inspectorId: userId,
-          status: 'PENDING',
-          expiresAt: { gt: now },
-        },
-        select: { orderId: true, expiresAt: true },
-      });
-      const offeredIds = offered.map((o) => o.orderId);
-      // Keep the deadline of the offer made to THIS inspector, so the row can
-      // count down to it. One order holds at most one PENDING offer per
-      // inspector; the last write wins if that ever changes.
-      for (const o of offered) offerDeadlines.set(o.orderId, o.expiresAt);
-      orders = await this.prisma.order.findMany({
-        where: {
-          ...statusFilter,
-          OR: [{ inspectorId: userId }, { id: { in: offeredIds } }],
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-    } else {
-      orders = await this.prisma.order.findMany({
-        where: { customerId: userId, ...statusFilter },
-        orderBy: { createdAt: 'desc' },
-      });
+    const desc = (opts.sort ?? OrderSort.newest) === OrderSort.newest;
+    /*
+     * Paging is OPT-IN (DEN-328). A caller that sends neither field gets its
+     * whole list, exactly as before the tabs — the customer cabinet and the
+     * mobile-era callers among them. `total` is answered either way, so a
+     * client can show a count without asking to be paged.
+     */
+    const paged = opts.page !== undefined || opts.pageSize !== undefined;
+    const page = Math.max(1, opts.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 20));
+    const skip = paged ? (page - 1) * pageSize : undefined;
+    const take = paged ? pageSize : undefined;
+
+    if (role !== OrderRole.inspector) {
+      const where = { customerId: userId, ...statusFilter };
+      const [orders, total] = await this.prisma.$transaction([
+        this.prisma.order.findMany({
+          where,
+          orderBy: { createdAt: desc ? 'desc' : 'asc' },
+          skip,
+          take,
+        }),
+        this.prisma.order.count({ where }),
+      ]);
+      return { items: orders.map((o) => this.toListItem(o)), total, page, pageSize };
     }
-    return { items: orders.map((o) => this.toListItem(o, offerDeadlines.get(o.id) ?? null)) };
+
+    const now = new Date();
+    // Orders assigned to me OR for which I have an active offer.
+    const offered = await this.prisma.orderOffer.findMany({
+      where: { inspectorId: userId, status: 'PENDING', expiresAt: { gt: now } },
+      select: { orderId: true, expiresAt: true },
+    });
+    const offeredIds = offered.map((o) => o.orderId);
+    // Keep the deadline of the offer made to THIS inspector, so the row can
+    // count down to it. One order holds at most one PENDING offer per
+    // inspector; the last write wins if that ever changes.
+    const offerDeadlines = new Map<string, Date>();
+    for (const o of offered) offerDeadlines.set(o.orderId, o.expiresAt);
+
+    /*
+     * Each tab is a different question, so each carries its own filter AND its
+     * own sort field. Sorting all three by `createdAt` would put the wrong row
+     * at the top of the active list: what matters there is which job burns
+     * first, not which was ordered last.
+     *
+     * Ordering happens in the QUERY, never after the slice — a page sorted
+     * after it was cut is not the page the reader asked for.
+     */
+    const mine = { inspectorId: userId };
+    /*
+     * A tab and an explicit `status` INTERSECT, they do not override.
+     *
+     * The tab list used to be spread after `statusFilter`, so the later key won
+     * and `?tab=active&status=ASSIGNED` answered all three active statuses —
+     * a filter the caller can see it applied and the answer does not honour.
+     * A status the tab does not hold asks for nothing, and an empty `in` is the
+     * honest answer rather than a silently widened one.
+     */
+    const tabStatuses = (list: OrderStatus[]) => ({
+      status: { in: status ? list.filter((s) => s === (status as OrderStatus)) : list },
+    });
+    const where =
+      opts.tab === OrderTab.offers
+        ? { ...statusFilter, id: { in: offeredIds } }
+        : opts.tab === OrderTab.active
+          ? { ...mine, ...tabStatuses(OrdersService.ACTIVE_STATUSES) }
+          : opts.tab === OrderTab.completed
+            ? { ...mine, ...tabStatuses(OrdersService.COMPLETED_STATUSES) }
+            : { ...statusFilter, OR: [{ inspectorId: userId }, { id: { in: offeredIds } }] };
+
+    const orderBy: Prisma.OrderOrderByWithRelationInput =
+      opts.tab === OrderTab.active
+        ? // The clock that can take the job away. Nulls are orders assigned
+          // before the deadline existed, and they are asked for LAST in both
+          // directions: Postgres puts them first on a DESC sort, which would
+          // open the newest-first page with the rows that have no clock at all.
+          { inspectionDeadlineAt: { sort: desc ? 'desc' : 'asc', nulls: 'last' } }
+        : { createdAt: desc ? 'desc' : 'asc' };
+
+    const [orders, total] = await this.prisma.$transaction([
+      this.prisma.order.findMany({ where, orderBy, skip, take }),
+      this.prisma.order.count({ where }),
+    ]);
+    return {
+      items: orders.map((o) => this.toListItem(o, offerDeadlines.get(o.id) ?? null)),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * The jobs this inspector was offered and never answered (DEN-327).
+   *
+   * `listMine` cannot show them: it holds the orders the inspector is assigned
+   * to plus those with a LIVE `PENDING` offer, so the hour runs out and the
+   * order leaves the cabinet with nothing left behind. DEN-324 tells the
+   * inspector once, in the bell; this is the list.
+   *
+   * Three rules, each a decision:
+   *
+   *  - **EXPIRED only.** A `DECLINED` offer was a deliberate answer, and a list
+   *    that reminds somebody of work they refused is noise.
+   *  - **A window, not a purge.** Rows older than `days` fall out of this
+   *    answer and stay in the database. Deleting them would re-admit a declined
+   *    inspector to the same order (DEN-326) and tear events out of the order's
+   *    own history.
+   *  - **One entry per order.** After DEN-326 the same order can expire on this
+   *    inspector once per round, so the rounds collapse into one entry carrying
+   *    the latest expiry and how many times the job was offered.
+   *
+   * The money is the OFFER's own share and never the order's: dispatch walks
+   * down the candidates and prices each on their own base fee, so the order
+   * total belongs to whoever it was quoted for. An offer minted before that
+   * column existed falls back to the order, which is what it was worth then.
+   */
+  async listMissedOffers(
+    userId: string,
+    opts: { days?: number; sort?: OrderSort; page?: number; pageSize?: number } = {},
+  ): Promise<{
+    items: Array<ReturnType<OrdersService['toMissedItem']>>;
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const days = opts.days ?? 7;
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const expired = await this.prisma.orderOffer.findMany({
+      where: {
+        inspectorId: userId,
+        status: 'EXPIRED',
+        expiresAt: { gte: since },
+        // An order this inspector holds NOW is not a missed one, whatever an
+        // earlier round says. After DEN-326 the same order can expire in round
+        // 0 and be accepted by the same person in round 1, and it would then
+        // stand in the missed list and in the active list at the same time.
+        //
+        // The null branch is not decoration: `not` compiles to `<> $1`, which
+        // is UNKNOWN for a NULL column, so an order still looking for anybody
+        // would be dropped from the list this endpoint exists for.
+        OR: [
+          { order: { inspectorId: null } },
+          { order: { inspectorId: { not: userId } } },
+        ],
+      },
+      orderBy: { expiresAt: 'desc' },
+      include: { order: true },
+    });
+
+    // Newest first, so the first row seen for an order is the latest one.
+    const latest = new Map<string, (typeof expired)[number]>();
+    const times = new Map<string, number>();
+    for (const offer of expired) {
+      if (!latest.has(offer.orderId)) latest.set(offer.orderId, offer);
+      times.set(offer.orderId, (times.get(offer.orderId) ?? 0) + 1);
+    }
+
+    /*
+     * Collapse first, THEN count and cut (DEN-328). This is the one list whose
+     * paging cannot be done by the database: a row here is an ORDER, and the
+     * rounds behind it are several offers, so `LIMIT` over the offers would
+     * hand back a page of the wrong length and a `total` that disagrees with
+     * what the reader sees.
+     *
+     * It is safe to do in memory precisely because of the seven-day window:
+     * the set is one inspector's expired offers of one week, not a history.
+     */
+    const collapsed = [...latest.values()];
+    if ((opts.sort ?? OrderSort.newest) === OrderSort.oldest) collapsed.reverse();
+
+    const paged = opts.page !== undefined || opts.pageSize !== undefined;
+    const page = Math.max(1, opts.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 20));
+    const window = paged
+      ? collapsed.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize)
+      : collapsed;
+
+    return {
+      items: window.map((offer) =>
+        this.toMissedItem(offer, offer.order, times.get(offer.orderId) ?? 1),
+      ),
+      total: collapsed.length,
+      page,
+      pageSize,
+    };
   }
 
   async getDetail(orderId: string, userId: string, role: Role): Promise<OrderDetail> {
@@ -2144,7 +2966,7 @@ export class OrdersService {
         : null;
 
     const [payment, minQualityScore] = await Promise.all([
-      this.prisma.payment.findUnique({ where: { orderId } }),
+      this.activePaymentForOrder(orderId),
       this.settings.getNumber('minReportQualityScore'),
     ]);
 
@@ -2298,6 +3120,56 @@ export class OrdersService {
   // Time-based jobs (exposed for the future E11 worker; tested directly)
   // ============================================================
 
+  /**
+   * Every PENDING offer for an order → EXPIRED, and the holder of each one is
+   * told (DEN-324/325).
+   *
+   * The bulk `updateMany` alone leaves the inspector with two invisible
+   * changes: the order leaves `listMine`, because that shows only what they
+   * hold or have a live offer for, and the `offer.received` card in their bell
+   * keeps standing as live work. `expireStaleOffers` explains both for the
+   * one-offer case; this does the same where the order ends around a live
+   * offer — the search window closes, or an admin gives the job to somebody
+   * else.
+   *
+   * `notify` and `markSupersededRead` are non-throwing by contract, so a broken
+   * bell cannot keep an offer alive.
+   *
+   * @param exceptInspectorId the inspector who is KEEPING the order, whose own
+   *   offer is handled by the caller and must not be expired here.
+   */
+  private async expirePendingOffers(
+    orderId: string,
+    order: { number: string; make: string; model: string },
+    exceptInspectorId?: string,
+  ): Promise<void> {
+    const pending = await this.prisma.orderOffer.findMany({
+      where: {
+        orderId,
+        status: 'PENDING',
+        ...(exceptInspectorId ? { inspectorId: { not: exceptInspectorId } } : {}),
+      },
+    });
+    if (pending.length === 0) return;
+    await this.prisma.orderOffer.updateMany({
+      where: { id: { in: pending.map((o) => o.id) } },
+      data: { status: 'EXPIRED' },
+    });
+    for (const offer of pending) {
+      await this.notifications.notify(offer.inspectorId, 'offer.expired', {
+        orderId,
+        orderNumber: order.number,
+        make: order.make,
+        model: order.model,
+      });
+      await this.notifications.markSupersededRead(
+        offer.inspectorId,
+        'offer.received',
+        orderId,
+      );
+    }
+  }
+
   /** PENDING offers past expiresAt → EXPIRED, then cascade dispatch. */
   async expireStaleOffers(): Promise<{ expired: number }> {
     const stale = await this.prisma.orderOffer.findMany({
@@ -2305,9 +3177,120 @@ export class OrdersService {
     });
     for (const offer of stale) {
       await this.prisma.orderOffer.update({ where: { id: offer.id }, data: { status: 'EXPIRED' } });
+      /*
+       * Tell the inspector BEFORE the cascade (DEN-324). Two things happen to
+       * them at once and neither is visible: the order leaves their cabinet,
+       * because `listMine` shows an inspector only what they hold or what they
+       * have a live offer for, and the `offer.received` card in their bell
+       * keeps standing. So one message explains the empty cabinet, and the old
+       * card stops counting as unread (DEN-325).
+       *
+       * Before the cascade because `dispatch` offers the job onward and
+       * notifies the NEXT inspector; the reader of this message should not be
+       * told second. Neither call throws — `notify` and `markSupersededRead`
+       * are non-throwing by contract — so an offer still expires if the bell
+       * is broken.
+       */
+      const order = await this.prisma.order.findUnique({ where: { id: offer.orderId } });
+      if (order) {
+        await this.notifications.notify(offer.inspectorId, 'offer.expired', {
+          orderId: offer.orderId,
+          orderNumber: order.number,
+          make: order.make,
+          model: order.model,
+        });
+        await this.notifications.markSupersededRead(
+          offer.inspectorId,
+          'offer.received',
+          offer.orderId,
+        );
+      }
       await this.dispatch(offer.orderId);
     }
     return { expired: stale.length };
+  }
+
+  /**
+   * An order nobody could be found for, offered again (DEN-326).
+   *
+   * `dispatch` walks the candidate pool one inspector at a time and parks the
+   * order in UNASSIGNED when it runs out. That was the end of the order's life:
+   * `dispatch` is called by the payment webhook, by `declineOffer` and by
+   * `expireStaleOffers`, and an UNASSIGNED order holds no PENDING offer, so no
+   * offer can expire and nothing calls `dispatch` again. No inspector can find
+   * it either — `listMine` shows an inspector only what they hold or have a
+   * live offer for. The order simply waited to be cancelled, while the answer
+   * changed underneath it: an inspector registers in the area, lowers their
+   * base fee, or finishes the job that kept them busy.
+   *
+   * So each pass here is one more ROUND. Raising `dispatchRound` is what makes
+   * an inspector who never answered available again, and `dispatch` reads the
+   * number to decide who is still excluded.
+   *
+   * There is deliberately NO pause between rounds and no cap on how many times
+   * one inspector may be asked. The offer timeout IS the pause: an offer stands
+   * for `offerTimeoutMinutes`, so a round over five candidates already takes
+   * hours. The consequence, stated plainly because it was chosen rather than
+   * overlooked: in a region with one inspector, that inspector is asked again
+   * every hour until the window closes.
+   *
+   * The round is raised by a CONDITIONAL write, which is also how this job
+   * stays out of `expireUnfilledSearches`'s way. That job claims an order by
+   * setting CANCELLED; if it got there first, `count === 0` here and this order
+   * is left alone. `dispatch` re-reads the order and refuses anything that is
+   * not PAID or UNASSIGNED, so the narrow window between the two is closed
+   * there as well.
+   *
+   * An order whose region holds nobody at all raises its round on every pass
+   * and offers nothing. That is a counter moving with no work behind it, which
+   * is cheap and honest; the geo query is the only cost, and the search window
+   * bounds how long it repeats.
+   */
+  async redispatchUnfilledOrders(limit = 50): Promise<{ rounds: number }> {
+    const now = new Date();
+    const due = await this.prisma.order.findMany({
+      where: {
+        status: OrderStatus.UNASSIGNED,
+        inspectorId: null,
+        searchExpiresAt: { not: null, gt: now },
+      },
+      orderBy: { searchExpiresAt: 'asc' },
+      take: limit,
+    });
+
+    let rounds = 0;
+    for (const order of due) {
+      try {
+        const claimed = await this.prisma.order.updateMany({
+          where: {
+            id: order.id,
+            status: OrderStatus.UNASSIGNED,
+            inspectorId: null,
+            searchExpiresAt: { not: null, gt: now },
+          },
+          data: { dispatchRound: { increment: 1 } },
+        });
+        if (claimed.count === 0) continue;
+        // The event is written only when the round reached somebody. A round
+        // that found nobody is the normal state of an order in a thin region,
+        // and this job runs every 5 minutes against a search window of up to 24
+        // hours: writing unconditionally puts ~288 `dispatch_round` rows in a
+        // timeline the CUSTOMER reads, where each one renders as the raw type
+        // name because the message catalogues do not describe it.
+        const offered = await this.dispatch(order.id);
+        if (offered) {
+          await this.writeEvent(order.id, 'system', 'dispatch_round', null, null, {
+            round: order.dispatchRound + 1,
+          });
+        }
+        rounds += 1;
+      } catch (err) {
+        this.logger.error(
+          `redispatchUnfilledOrders(${order.id}) failed: ${(err as Error).message}`,
+        );
+      }
+    }
+    return { rounds };
   }
 
   /**
@@ -2368,10 +3351,7 @@ export class OrdersService {
         });
         if (claimed.count === 0) continue;
 
-        await this.prisma.orderOffer.updateMany({
-          where: { orderId: order.id, status: 'PENDING' },
-          data: { status: 'EXPIRED' },
-        });
+        await this.expirePendingOffers(order.id, order);
         // Releases the hold and writes NO Refund row — nothing ever left the
         // customer's account. Non-throwing by contract.
         const outcome = await this.settleRefund(order, order.totalCents, 'search_expired');
@@ -2590,6 +3570,8 @@ export class OrdersService {
 
     let advanced = 0;
 
+    advanced += await this.reconcileAbandonedCounterOfferHolds(staleBefore, limit);
+
     for (const payment of stranded) {
       const orderId = payment.orderId as string;
       try {
@@ -2639,6 +3621,63 @@ export class OrdersService {
     }
 
     return { scanned: waiting.length + working.length + stranded.length, advanced };
+  }
+
+  /**
+   * Give back the counter-offer holds nothing else can reach (DEN-344).
+   *
+   * The three selections above all read `purpose: 'order'`, so no counter-offer
+   * payment was ever reconciled. That is right for the two that drive an order
+   * forward - a replacement hold must not start a search or be captured on its
+   * own - and wrong for a hold that was abandoned and NOT released: the cancel
+   * in `abandonCounterOfferPayment` can fail, and after it the row is
+   * superseded, which every other reader takes as "no longer our business".
+   * The customer's money then sits frozen until Stripe expires it.
+   *
+   * Only rows that still name an intent are read, and Stripe is the authority:
+   * an intent it reports as `canceled` is simply recorded.
+   */
+  private async reconcileAbandonedCounterOfferHolds(
+    staleBefore: Date,
+    limit: number,
+  ): Promise<number> {
+    if (!this.stripe.configured) return 0;
+    const abandoned = await this.prisma.payment.findMany({
+      where: {
+        purpose: COUNTER_OFFER_PAYMENT_PURPOSE,
+        status: { in: ['pending', 'failed', 'authorized'] },
+        supersededAt: { not: null },
+        canceledAt: null,
+        stripePaymentIntentId: { not: null },
+        createdAt: { lt: staleBefore },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    });
+
+    let released = 0;
+    for (const payment of abandoned) {
+      const intentId = payment.stripePaymentIntentId as string;
+      try {
+        const intent = await this.stripe.retrievePaymentIntent(intentId);
+        if (intent.status !== 'canceled') {
+          await this.stripe.cancelPaymentIntent(intentId, payment.id, 'counter_offer_abandoned');
+          this.logger.warn(
+            `reconcile: released a stranded counter-offer hold on order ${payment.orderId}`,
+          );
+          released += 1;
+        }
+        await this.prisma.payment.update({
+          where: { id: payment.id },
+          data: { status: 'cancelled', canceledAt: new Date() },
+        });
+      } catch (err) {
+        this.logger.error(
+          `reconcile: counter-offer hold ${payment.id} threw: ${(err as Error).message}`,
+        );
+      }
+    }
+    return released;
   }
 
   /**
@@ -2777,7 +3816,7 @@ export class OrdersService {
 
     let stripeTransferId: string | null = `tr_mock_${orderId}`;
     if (this.stripe.configured) {
-      const payment = await this.prisma.payment.findUnique({ where: { orderId } });
+      const payment = await this.activePaymentForOrder(orderId);
       if (!payment?.stripePaymentIntentId) {
         return this.parkPayout(order, amountCents, 'order has no Stripe PaymentIntent');
       }
@@ -3186,7 +4225,7 @@ export class OrdersService {
       return this.skippedRefund(reason, 'refund amount is zero');
     }
 
-    const payment = await this.prisma.payment.findUnique({ where: { orderId: order.id } });
+    const payment = await this.activePaymentForOrder(order.id);
     const paymentStatus = payment?.status ?? null;
 
     if (
@@ -4084,7 +5123,12 @@ export class OrdersService {
     return { lat: Number(rows[0].lat), lng: Number(rows[0].lng) };
   }
 
-  private async writeEvent(
+  /**
+   * Public since DEN-344: `CounterOffersService` writes to the same timeline.
+   * A second copy of this in another service would be a second definition of
+   * what an order's history looks like.
+   */
+  async writeEvent(
     orderId: string,
     actor: string,
     type: string,
@@ -4135,6 +5179,48 @@ export class OrdersService {
        */
       offerExpiresAt: offerExpiresAt ? offerExpiresAt.toISOString() : null,
       inspectionDeadlineAt: o.inspectionDeadlineAt ? o.inspectionDeadlineAt.toISOString() : null,
+    };
+  }
+
+  /**
+   * One row of the missed-offers list (DEN-327).
+   *
+   * Deliberately NOT `toListItem`. That row is built for work the reader can
+   * act on — it carries live deadlines and drives accept and decline buttons —
+   * and none of that is true here. This row answers one question instead: what
+   * was the job, what would it have paid, when did it run out, and what became
+   * of it.
+   *
+   * `outcome` is read from the order as it stands now, so the inspector learns
+   * whether somebody else took the work or whether nobody did. `taken` covers
+   * every state past assignment: to this reader they are one fact, that the
+   * order is not theirs and is not coming back.
+   */
+  private toMissedItem(
+    offer: { id: string; expiresAt: Date; inspectorShareCents: number | null },
+    o: Order,
+    timesOffered: number,
+  ) {
+    const outcome =
+      o.status === OrderStatus.CANCELLED
+        ? 'cancelled'
+        : o.status === OrderStatus.PAID || o.status === OrderStatus.UNASSIGNED
+          ? 'searching'
+          : 'taken';
+    return {
+      offerId: offer.id,
+      orderId: o.id,
+      number: o.number,
+      make: o.make,
+      model: o.model,
+      address: o.address,
+      // What THIS offer would have paid. Null only for an offer minted before
+      // the column existed, where the order's own figure is what it was worth.
+      inspectorShareCents: offer.inspectorShareCents ?? o.inspectorShareCents,
+      currency: o.currency,
+      expiredAt: offer.expiresAt.toISOString(),
+      timesOffered,
+      outcome,
     };
   }
 }
