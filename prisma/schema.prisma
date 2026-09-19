@@ -269,10 +269,11 @@ model InspectorProfile {
   cancelCount        Int                                    @default(0) @map("cancel_count")
   createdAt          DateTime                               @default(now())
 
-  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  orders  Order[]      @relation("InspectorOrders")
-  offers  OrderOffer[]
-  payouts Payout[]
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders        Order[]             @relation("InspectorOrders")
+  offers        OrderOffer[]
+  counterOffers OrderCounterOffer[]
+  payouts       Payout[]
 
   @@map("inspector_profile")
 }
@@ -454,9 +455,9 @@ model Order {
   inspectorShareCents Int     @map("inspector_share_cents")
   currency            String  @default("EUR")
 
-  contractId           String?   @unique @map("contract_id")
-  autoApproveAt        DateTime? @map("auto_approve_at")
-  submittedAt          DateTime? @map("submitted_at")
+  contractId              String?   @unique @map("contract_id")
+  autoApproveAt           DateTime? @map("auto_approve_at")
+  submittedAt             DateTime? @map("submitted_at")
   /// Deadline for finding an inspector, set when the payment is AUTHORIZED.
   /// Past it with nobody assigned, the cron releases the hold and cancels.
   ///
@@ -464,7 +465,7 @@ model Order {
   /// before manual capture shipped already had its money CHARGED, so a release
   /// attempt would target a hold that does not exist. Null means "pre-manual-
   /// capture order — leave it alone".
-  searchExpiresAt      DateTime? @map("search_expires_at")
+  searchExpiresAt         DateTime? @map("search_expires_at")
   /// Deadline for the inspection to START, set on entry to ASSIGNED (DEN-269).
   /// Past it in ASSIGNED or EN_ROUTE, the hourly sweep cancels the order and
   /// refunds the customer in full: the money was captured on acceptance, and an
@@ -473,24 +474,39 @@ model Order {
   /// **Null is load-bearing and must never be backfilled**, exactly as for
   /// `searchExpiresAt`: an order assigned before this shipped has no deadline,
   /// and sweeping it would cancel live work on a rule it was never given.
-  inspectionDeadlineAt DateTime? @map("inspection_deadline_at")
+  inspectionDeadlineAt    DateTime? @map("inspection_deadline_at")
   /// DEN-291: when the assigned inspector confirmed contact with the car owner.
   /// While it is null, `ASSIGNED -> EN_ROUTE` refuses with 409
   /// `owner_contact_required`. "Could not contact" does not write it: that
   /// answer cancels the order instead.
   ownerContactConfirmedAt DateTime? @map("owner_contact_confirmed_at")
-  createdAt            DateTime  @default(now())
+  /// Which pass over the candidate pool the order is on (DEN-326).
+  ///
+  /// Dispatch offers the job to one inspector at a time and excludes everybody
+  /// it has already asked. When the pool runs out the order used to stop for
+  /// good. Now the re-dispatch job raises this number and asks again, so an
+  /// inspector who never answered is asked once per round, while one who
+  /// DECLINED is never asked again.
+  ///
+  /// 0 for every order that predates the rounds, which reads as "the first
+  /// round" and needs no backfill.
+  dispatchRound           Int       @default(0) @map("dispatch_round")
+  createdAt               DateTime  @default(now())
 
-  customer  User              @relation("CustomerOrders", fields: [customerId], references: [id])
-  inspector InspectorProfile? @relation("InspectorOrders", fields: [inspectorId], references: [userId])
-  report    Report?
-  payment   Payment?
-  payout    Payout?
-  refunds   Refund[]
-  dispute   Dispute?
-  offers    OrderOffer[]
-  events    OrderEvent[]
-  contract  OrderContract?    @relation(fields: [contractId], references: [id])
+  customer      User                @relation("CustomerOrders", fields: [customerId], references: [id])
+  inspector     InspectorProfile?   @relation("InspectorOrders", fields: [inspectorId], references: [userId])
+  report        Report?
+  /// A LIST since DEN-344, not a single row: accepting a counter-offer above the
+  /// hold replaces the authorization, and the replaced row stays. The live one
+  /// is the row with `supersededAt` null - `activePaymentForOrder` finds it.
+  payments      Payment[]
+  payout        Payout?
+  refunds       Refund[]
+  dispute       Dispute?
+  offers        OrderOffer[]
+  counterOffers OrderCounterOffer[]
+  events        OrderEvent[]
+  contract      OrderContract?      @relation(fields: [contractId], references: [id])
 
   @@index([status])
   @@index([customerId])
@@ -506,6 +522,13 @@ model OrderOffer {
   status         String   @default("PENDING") // PENDING|ACCEPTED|DECLINED|EXPIRED
   expiresAt      DateTime @map("expires_at")
   createdAt      DateTime @default(now())
+  /// The order's `dispatchRound` when this offer was sent (DEN-326). It is what
+  /// makes "asked already" mean "asked already IN THIS ROUND": an offer that
+  /// expired in round 1 stops excluding its inspector in round 2.
+  ///
+  /// 0 for offers that predate the rounds, which is the same round every old
+  /// order carries.
+  round          Int      @default(0)
   /// Great-circle kilometres from THIS inspector to the vehicle, one direction,
   /// recorded when the offer was made.
   ///
@@ -542,6 +565,93 @@ model OrderOffer {
   @@index([orderId])
   @@index([inspectorId, status])
   @@map("order_offer")
+}
+
+/// A price an inspector names for an order dispatch could not offer them
+/// (DEN-344).
+///
+/// The opposite direction to `OrderOffer`: the platform offers an order to an
+/// inspector, an inspector offers a PRICE to the customer. It is the only way
+/// an order's total can go UP, and it is deliberately the last resort - it
+/// opens only after a dispatch round found nobody, because an inspector who can
+/// wait for a trade stops taking work at the tariff.
+model OrderCounterOffer {
+  id          String @id @default(cuid())
+  orderId     String @map("order_id")
+  inspectorId String @map("inspector_id")
+
+  /// PENDING | ACCEPTING | ACCEPTED | DECLINED | EXPIRED | WITHDRAWN | SUPERSEDED
+  ///
+  /// ACCEPTING is the payment window: the customer said yes and is entering a
+  /// card. It is the one state that locks the order against dispatch, because
+  /// two people must not be able to buy the same order. Everything else runs
+  /// alongside the normal search - a candidate who accepts at the tariff price
+  /// SUPERSEDEs a waiting counter-offer, which is the right outcome: the
+  /// customer pays less.
+  ///
+  /// PENDING now covers TWO different things, and `presentedAt` tells them
+  /// apart: a price waiting in the queue, and the one price the customer is
+  /// actually looking at (DEN-350).
+  status String @default("PENDING")
+
+  /// What the inspector asks, in cents, and the split that follows from it.
+  /// Frozen here: the customer answers the number they were shown.
+  priceCents          Int @map("price_cents")
+  platformFeeCents    Int @map("platform_fee_cents")
+  inspectorShareCents Int @map("inspector_share_cents")
+
+  /// The ceiling that applied when the offer was made, for the record. The
+  /// multiplier behind it is a platform setting and moves.
+  maxPriceCents Int @map("max_price_cents")
+
+  /// One line, shown to the customer verbatim. Mandatory: a bare number reads
+  /// as haggling, "38 km instead of 12" reads as a reason.
+  reason String @db.VarChar(200)
+
+  /// Great-circle kilometres from THIS inspector to the vehicle, one direction.
+  /// The number the order was never priced on, and the basis of the ceiling.
+  straightLineKm Decimal @map("straight_line_km") @db.Decimal(7, 2)
+
+  /// The order's `dispatchRound` when the offer was made.
+  round Int
+
+  /// When this price was put in front of the customer, or null while it waits
+  /// its turn in the queue (DEN-350).
+  ///
+  /// The queue is ordered by `priceCents`, so an offer can sit here for a long
+  /// time through no fault of the inspector who made it. That is why the answer
+  /// window counts from HERE and not from `createdAt`: a price that expired
+  /// unseen would punish the expert for the platform's ordering.
+  presentedAt DateTime? @map("presented_at")
+
+  /// When the offer stops waiting for the customer. Written at creation as the
+  /// search-end backstop and rewritten to `presentedAt + window` on promotion.
+  expiresAt      DateTime  @map("expires_at")
+  /// Deadline of the payment window, set on entry to ACCEPTING and cleared when
+  /// it ends. Past it, the sweep returns the offer to PENDING for whatever is
+  /// left of `expiresAt` and unlocks the order.
+  acceptingUntil DateTime? @map("accepting_until")
+  respondedAt    DateTime? @map("responded_at")
+  createdAt      DateTime  @default(now())
+
+  order     Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  inspector InspectorProfile @relation(fields: [inspectorId], references: [userId])
+
+  /// One offer per inspector per order. The retry after a failed payment reuses
+  /// this row rather than writing a second one.
+  @@unique([orderId, inspectorId])
+  /// "One PRESENTED counter-offer per order" is the rule this cannot express:
+  /// a partial unique index on order_id WHERE status = 'ACCEPTING' OR (status =
+  /// 'PENDING' AND presented_at IS NOT NULL) carries it, in raw SQL in the
+  /// migration (`order_counter_offer_presented_unique`). Many inspectors may
+  /// QUEUE a price at once - that is the point of the queue - but two promotions
+  /// that race must not both put a price on the customer's screen, and no check
+  /// written in TypeScript can refuse that.
+  @@index([orderId, status])
+  /// The queue read: cheapest PENDING first, per order.
+  @@index([orderId, status, priceCents])
+  @@index([inspectorId, status])
+  @@map("order_counter_offer")
 }
 
 /// A group of countries priced alike (DEN-108).
@@ -680,7 +790,28 @@ model OrderEvent {
 /// guard for a fact the state machine does not care about.
 model Payment {
   id                      String    @id @default(cuid())
-  orderId                 String?   @unique @map("order_id")
+  /// NOT unique since DEN-344: an order can carry more than one payment row.
+  ///
+  /// A counter-offer above the authorized sum cannot raise the hold - Stripe
+  /// captures less than an authorization and never more - so accepting one
+  /// creates a SECOND PaymentIntent and releases the first. The old row is the
+  /// record that a hold of the old amount existed and was released, which is
+  /// exactly what a dispute needs, so it is superseded rather than rewritten.
+  ///
+  /// "One payment per order that HOLDS OR HAS TAKEN money" is still enforced,
+  /// by the partial unique index `payment_active_order_unique` (order_id WHERE
+  /// superseded_at IS NULL AND status IN ('authorized','succeeded')). It counts
+  /// money and not rows on purpose: while a customer pays for a counter-offer
+  /// the order carries two rows, because the original hold must stay live until
+  /// the replacement holds something. A 'pending' row holds nothing.
+  ///
+  /// Prisma cannot model a partial index, so it lives in raw SQL in the
+  /// migration - and, like the PostGIS GIST indexes, `prisma migrate diff`
+  /// proposes dropping it on every run. Strip that line before committing.
+  ///
+  /// Read the live row through `OrdersService.activePaymentForOrder`, never
+  /// with `findUnique({ where: { orderId } })`.
+  orderId                 String?   @map("order_id")
   purpose                 String // order | ppv | gold | vin_history
   userId                  String    @map("user_id")
   amountCents             Int       @map("amount_cents")
@@ -695,6 +826,14 @@ model Payment {
   capturedAt              DateTime? @map("captured_at")
   /// Hold released without charging.
   canceledAt              DateTime? @map("canceled_at")
+  /// When a later payment took this row's place (DEN-344).
+  ///
+  /// Set only on the REPLACED row, and only once the replacement holds real
+  /// money. It does not say what happened to the money here - `canceledAt` and
+  /// `status` still do - it says "this row is no longer the order's live
+  /// payment". Null for every payment that was never replaced, which is all of
+  /// them except the ones a counter-offer re-authorized.
+  supersededAt            DateTime? @map("superseded_at")
   createdAt               DateTime  @default(now())
 
   order          Order?          @relation(fields: [orderId], references: [id])
@@ -704,6 +843,7 @@ model Payment {
 
   @@index([userId])
   @@index([status, createdAt])
+  @@index([orderId])
   @@map("payment")
 }
 

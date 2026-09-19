@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
 import { OrderStatus, Payment, Prisma, Report } from '@prisma/client';
 import { ADMIN_ROLES } from '../auth/roles';
+import { COUNTER_OFFER_PAYMENT_PURPOSE } from '../orders/counter-offer-rules';
 import { AppConfig } from '../config/configuration';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
@@ -220,10 +221,12 @@ export class PaymentsService {
         if (meta.purpose === 'ppv' && meta.paymentId && meta.reportId && meta.userId) {
           await this.fulfillPurchase(meta.paymentId, meta.reportId, meta.userId);
           this.logger.log(`PPV purchase fulfilled for payment ${meta.paymentId}`);
-        } else if (meta.purpose === 'gold' && meta.paymentId && meta.listingId) {
-          await this.activateGoldListing(meta.paymentId, meta.listingId);
-          this.logger.log(`Gold listing ${meta.listingId} activated for payment ${meta.paymentId}`);
         }
+        /*
+         * There is no `gold` branch any more (DEN-309). The platform does not
+         * sell Gold, so nothing can create such a session; a redelivery of a
+         * historical one falls through and is marked processed.
+         */
         /*
          * There is no `vin_history` branch any more (DEN-245). The paid VIN
          * history was withdrawn and its module is deleted, so nothing can mint
@@ -252,6 +255,23 @@ export class PaymentsService {
           await orders.authorizeOrderPayment(meta.paymentId, meta.orderId);
           this.logger.log(`Order ${meta.orderId} authorized (hold placed) — searching`);
         }
+        // DEN-344. The SAME event on a counter-offer's replacement hold means
+        // something else entirely: the customer has paid the higher price, so
+        // the old hold is released and the inspector who named it gets the job.
+        // It cannot share the branch above — `authorizeOrderPayment` only acts
+        // on a CREATED order and would silently do nothing here.
+        if (
+          meta.purpose === COUNTER_OFFER_PAYMENT_PURPOSE &&
+          meta.orderId &&
+          meta.paymentId
+        ) {
+          const orders = await this.resolveOrdersService();
+          if (!orders) {
+            throw new Error('OrdersService unavailable — cannot finish the counter-offer');
+          }
+          await orders.finalizeCounterOfferPayment(meta.paymentId, meta.orderId);
+          this.logger.log(`Order ${meta.orderId} re-authorized for a counter-offer`);
+        }
         break;
       }
       case 'payment_intent.succeeded': {
@@ -278,6 +298,15 @@ export class PaymentsService {
         if (meta.purpose === 'order' && meta.paymentId) {
           await this.cancelOrderPayment(meta.paymentId, meta.orderId);
         }
+        if (meta.purpose === COUNTER_OFFER_PAYMENT_PURPOSE && meta.orderId) {
+          // A replacement hold that was cancelled before it could be used. The
+          // ORIGINAL hold is still in place — it is released only once the
+          // replacement holds money — so the order simply goes back to the pool.
+          const orders = await this.resolveOrdersService();
+          // Stripe cancelled it already, so the last argument stops us asking
+          // for the same cancellation a second time.
+          await orders?.abandonCounterOfferPayment(meta.orderId, 'payment intent canceled', true);
+        }
         break;
       }
       case 'payment_intent.payment_failed': {
@@ -294,6 +323,15 @@ export class PaymentsService {
             })
             .catch(() => undefined);
           this.logger.warn(`Order payment ${meta.paymentId} failed — order left CREATED`);
+        }
+        if (meta.purpose === COUNTER_OFFER_PAYMENT_PURPOSE && meta.orderId) {
+          // The card was refused for the higher price. Unlike an order's first
+          // payment, this cannot be left open: the order is locked against the
+          // pool while it waits, and the customer still has a perfectly good
+          // hold at the original price.
+          const orders = await this.resolveOrdersService();
+          await orders?.abandonCounterOfferPayment(meta.orderId, 'card was refused');
+          this.logger.warn(`Counter-offer payment ${meta.paymentId} failed — order back in the pool`);
         }
         break;
       }
@@ -628,62 +666,18 @@ export class PaymentsService {
     dispatch: (orderId: string) => Promise<unknown>;
     parkPayoutForFailedTransfer: (orderId: string, reason: string) => Promise<void>;
     authorizeOrderPayment: (paymentId: string, orderId: string) => Promise<void>;
+    finalizeCounterOfferPayment: (paymentId: string, orderId: string) => Promise<void>;
+    abandonCounterOfferPayment: (
+      orderId: string,
+      detail: string,
+      alreadyCanceledAtStripe?: boolean,
+    ) => Promise<void>;
   } | null> {
     try {
       const { OrdersService } = await import('../orders/orders.service');
       return this.moduleRef.get(OrdersService, { strict: false });
     } catch {
       return null;
-    }
-  }
-
-  /**
-   * Idempotently mark a Gold payment succeeded and activate its listing
-   * (ACTIVE, package 'gold', publishedAt now). A listing has no end date, so
-   * nothing is scheduled here. Safe to call from both the mock path and the
-   * Stripe webhook.
-   *
-   * Only a listing that is still the seller's to publish: not DELETED and not
-   * hidden by an admin. The checkout stays open for up to 24 hours, and an
-   * admin can hide or delete the listing in that time. Before this check the
-   * payment put such a listing back on the showroom. The payment is still
-   * marked succeeded: the money was taken, and what to do with it (a refund
-   * or not) is an open decision (DEN-295).
-   */
-  async activateGoldListing(paymentId: string, listingId: string): Promise<void> {
-    await this.prisma.payment
-      .update({ where: { id: paymentId }, data: { status: 'succeeded' } })
-      .catch(() => undefined);
-
-    const now = new Date();
-
-    const { count } = await this.prisma.listing.updateMany({
-      where: { id: listingId, status: { not: 'DELETED' }, adminHiddenAt: null },
-      data: {
-        status: 'ACTIVE',
-        package: 'gold',
-        publishedAt: now,
-      },
-    });
-    if (count === 0) {
-      this.logger.warn(
-        `Gold payment ${paymentId.slice(0, 6)}… succeeded, but listing ${listingId.slice(0, 6)}… ` +
-          'was not activated: it is deleted, hidden by an admin or absent. ' +
-          'The money needs a manual decision.',
-      );
-      return;
-    }
-    const listing = await this.prisma.listing.findUnique({ where: { id: listingId } });
-
-    // E11: notify the seller their Gold listing is live (non-throwing).
-    // Reads the listing's own denormalised columns — `report` is null for a
-    // manual listing, and Gold is sold to both provenances.
-    if (listing) {
-      await this.notifications.notify(listing.sellerId, 'listing.published', {
-        listingId: listing.id,
-        make: listing.make,
-        model: listing.model,
-      });
     }
   }
 

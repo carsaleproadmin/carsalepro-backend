@@ -17,11 +17,13 @@ export const SETTING_KEYS = {
   orderRoutingCacheHours: 'orderRoutingCacheHours',
   platformFeePercent: 'platformFeePercent',
   payPerViewPriceEur: 'payPerViewPriceEur',
-  goldPackagePriceEur: 'goldPackagePriceEur',
-  standardListingPriceEur: 'standardListingPriceEur',
   expertSearchRadiusKm: 'expertSearchRadiusKm',
   offerTimeoutMinutes: 'offerTimeoutMinutes',
   orderSearchWindowMinutes: 'orderSearchWindowMinutes',
+  counterOfferWindowMinutes: 'counterOfferWindowMinutes',
+  counterOfferCollectMinutes: 'counterOfferCollectMinutes',
+  counterOfferPaymentMinutes: 'counterOfferPaymentMinutes',
+  counterOfferMaxMultiplier: 'counterOfferMaxMultiplier',
   autoApproveAfterDays: 'autoApproveAfterDays',
   inspectionStartDeadlineDays: 'inspectionStartDeadlineDays',
   minReportQualityScore: 'minReportQualityScore',
@@ -32,6 +34,9 @@ export const SETTING_KEYS = {
   // with the TTL from the environment. An admin who set 5 minutes got links
   // that stayed valid for 15. The row can stay in the database: nothing reads
   // it, and `getAll` lists only the keys in this map.
+  // `goldPackagePriceEur` and `standardListingPriceEur` were removed on
+  // 2026-09-14 (DEN-309). The platform does not sell Gold any more, and each
+  // listing is free. Their rows can stay in the database for the same reason.
 } as const;
 
 export type SettingKey = keyof typeof SETTING_KEYS;
@@ -151,8 +156,6 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   orderRoutingCacheHours: 24,
   platformFeePercent: 20,
   payPerViewPriceEur: 14.99,
-  goldPackagePriceEur: 9.99,
-  standardListingPriceEur: 0,
   /**
    * How far dispatch looks for an inspector, as a STRAIGHT LINE.
    *
@@ -167,15 +170,84 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
   offerTimeoutMinutes: 60,
   /**
    * How long we keep looking for an inspector before releasing the customer's
-   * authorization hold and cancelling (six hours).
+   * authorization hold and cancelling (24 hours).
    *
    * The ceiling is Stripe's: an uncaptured authorization expires after 7 days,
    * and letting a hold sit anywhere near that strands real money. The floor is
    * coverage — too short and orders in thin regions fail that could have been
-   * filled. A product number, meant to be tuned from the admin panel once real
-   * fill times exist.
+   * filled.
+   *
+   * **360 -> 1440 on 2026-09-16, and the number now has a job.** It used to be
+   * a product guess. Dispatch offers the order to one inspector at a time for
+   * `offerTimeoutMinutes` (60), so a single pass over five candidates can take
+   * five hours: at six hours the search got ONE pass and died. The re-dispatch
+   * rounds (DEN-326) need room for several passes, or they never run.
+   *
+   * The cost is on the customer's card: the hold stands for the whole window,
+   * and a released authorization stays visible in a bank statement for some
+   * working days. That is the most common "you charged me anyway" support case
+   * in this payment model.
    */
-  orderSearchWindowMinutes: 360,
+  orderSearchWindowMinutes: 1440,
+  /**
+   * How long a counter-offer waits for the customer's answer (DEN-344).
+   *
+   * Twenty minutes is a compromise between two costs that pull opposite ways.
+   * Shorter, and the customer never sees it: the notification arrives by bell
+   * and e-mail, and nobody sits in their account waiting. Longer, and one
+   * expensive inspector keeps the order closed to everybody else, because only
+   * ONE counter-offer can be live at a time - so the window IS the price of
+   * that exclusivity.
+   *
+   * The search window is 24 hours, so five or six offers in a row still fit.
+   */
+  counterOfferWindowMinutes: 20,
+  /**
+   * How long the first prices on an order are collected before one is shown
+   * (DEN-351).
+   *
+   * The queue can only sort the prices it has. The first to arrive is usually
+   * the nearest inspector, and the nearest is not the cheapest: without this
+   * pause the customer's first - and often only - impression of the price is
+   * whoever lives closest, however much they ask.
+   *
+   * Ten minutes is set against the search window of 24 hours, so the cost to
+   * the customer is invisible, and against how fast inspectors answer a bell
+   * notification, which is minutes. Only the first presentation waits; after a
+   * refusal the next price is shown at once.
+   *
+   * Zero turns the pause off and restores "show the first price that arrives".
+   */
+  counterOfferCollectMinutes: 10,
+  /**
+   * How long the customer has to pay after accepting a counter-offer (DEN-344).
+   *
+   * The order is locked against dispatch for this whole time - two people must
+   * not be able to buy the same order - so it is deliberately short. The
+   * customer is already on the screen and only has to enter a card; ten minutes
+   * covers a 3DS app switch and a mistyped number, and it caps how long a
+   * customer who walked away can hold the order shut.
+   */
+  counterOfferPaymentMinutes: 10,
+  /**
+   * How far above the FAIR price of their own trip an inspector may ask
+   * (DEN-344).
+   *
+   * The fair price is the order re-priced on this inspector's distance and
+   * their own base fee, so the multiplier is the room on top of it: the
+   * straight line is shorter than the road, and a difficult address costs more
+   * than the kilometres say.
+   *
+   * It is proportional, so watch the ABSOLUTE figure: 1.2 over a fair 40 EUR
+   * permits 48, but over a fair 200 EUR it permits 240. If customers refuse
+   * mostly the expensive counter-offers, lower this before changing anything
+   * else.
+   *
+   * Lowered from 1.5 on 2026-09-18. Half again the fair price of the trip is a
+   * number a customer reads as opportunism, and the room it bought was room to
+   * ask for more than the extra road costs.
+   */
+  counterOfferMaxMultiplier: 1.2,
   autoApproveAfterDays: 7,
   /**
    * How long an accepted order may sit without the inspection starting, before
@@ -234,9 +306,12 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
 /**
  * Subset exposed publicly via GET /api/v1/settings/public.
  *
- * The first seven are a frozen shape — `test/auth.e2e-spec.ts` asserts both that
+ * The keys are a published shape — `test/auth.e2e-spec.ts` asserts both that
  * `payPerViewPriceEur` is present and that `platformFeePercent` is absent, and
- * the website reads them today. Additions are fine; removals are not.
+ * the website reads them. Additions are fine; a removal needs every reader
+ * changed first. `goldPackagePriceEur` and `standardListingPriceEur` left on
+ * 2026-09-14 (DEN-309): only the website read them, and it stopped in the
+ * same change.
  * `orderSurgeMultiplier` stays private: it is an operator lever, not a
  * published tariff.
  */
@@ -244,8 +319,6 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   'orderBaseFeeEur',
   'orderRatePerKmEur',
   'payPerViewPriceEur',
-  'goldPackagePriceEur',
-  'standardListingPriceEur',
   'expertSearchRadiusKm',
   'orderRatePerMinuteEur',
   'orderMinimumFareEur',

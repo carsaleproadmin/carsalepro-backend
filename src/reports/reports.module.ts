@@ -10,6 +10,7 @@ import { ReportsService } from './reports.service';
   imports: [PaymentsModule, PhotoModule],
   controllers: [ReportsController, ReportAccessController],
   providers: [ReportsService, ReportAccessService],
-  exports: [ReportsService],
+  // ReportAccessService: the admin report routes reuse it (DEN-312).
+  exports: [ReportsService, ReportAccessService],
 })
 export class ReportsModule {}

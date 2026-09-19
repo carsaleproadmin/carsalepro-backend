@@ -21,7 +21,6 @@ describe('SETTING_LIMITS (DEN-297)', () => {
       'orderCapKm',
       'minReportQualityScore',
       'orderMinimumFareEur',
-      'standardListingPriceEur',
       'refundBeforeAssignPercent',
       'refundAfterAssignPercent',
     ] as SettingKey[]) {

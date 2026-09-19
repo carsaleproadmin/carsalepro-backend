@@ -9,6 +9,12 @@ export type NotificationType =
   | 'auth.password_reset'
   | 'order.created'
   | 'offer.received'
+  | 'offer.expired'
+  | 'counter_offer.received'
+  | 'counter_offer.accepted'
+  | 'counter_offer.declined'
+  | 'counter_offer.expired'
+  | 'counter_offer.superseded'
   | 'order.assigned'
   | 'order.en_route'
   | 'order.in_progress'
@@ -57,6 +63,36 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
   'auth.password_reset': ['email'],
   'order.created': ['inapp', 'email'],
   'offer.received': ['inapp', 'email', 'push'],
+  /**
+   * The offer ran out of time and the order went to the next inspector
+   * (DEN-324). In-app only: an e-mail about work the reader did not get is
+   * noise, and the push already told them the job existed. It is here to
+   * explain a cabinet that emptied on its own.
+   */
+  'offer.expired': ['inapp'],
+  /**
+   * An inspector named a price for an order nobody took (DEN-344). To the
+   * CUSTOMER, and the only counter-offer letter that leaves the platform: the
+   * offer waits 20 minutes, and nobody sits in their account for 20 minutes.
+   * Without the e-mail the trade is a lottery over who happened to be looking.
+   */
+  'counter_offer.received': ['inapp', 'email', 'push'],
+  /**
+   * The customer accepted, paid, and the job is the inspector's. Push as well
+   * as in-app: this is work starting, and it is the one counter-offer answer
+   * that needs an action from the reader.
+   */
+  'counter_offer.accepted': ['inapp', 'push'],
+  /** The customer said no. In-app only: an e-mail about work nobody got is noise. */
+  'counter_offer.declined': ['inapp'],
+  /** The customer never answered and the offer ran out. */
+  'counter_offer.expired': ['inapp'],
+  /**
+   * Somebody took the order at the tariff price while the counter-offer waited.
+   * Separate from `declined` because the customer did not refuse anything - the
+   * ordinary search simply won, which is the outcome the platform prefers.
+   */
+  'counter_offer.superseded': ['inapp'],
   'order.assigned': ['inapp', 'email'],
   'order.en_route': ['inapp', 'push'],
   'order.in_progress': ['inapp'],

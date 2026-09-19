@@ -183,7 +183,7 @@ describe('Inspector base fee (e2e)', () => {
   /* ── the quote ───────────────────────────────────────────────────────── */
 
   describe('the price the customer is shown', () => {
-    it('is the nearest inspector own base, not the platform base', async () => {
+    it('is an inspector own base, not the platform base', async () => {
       const dearer = platformBaseCents + 500;
       await makeInspector(dearer);
       const customer = await register('cust');
@@ -208,6 +208,49 @@ describe('Inspector base fee (e2e)', () => {
         .expect(200);
 
       expect(res.body.breakdown.baseFeeCents).toBe(platformBaseCents);
+    });
+
+    /*
+     * DEN-352. The quote used to take the base fee of the NEAREST inspector, so
+     * one expensive neighbour priced the whole area and the customer left at
+     * the order form - while the cheaper inspectors a few kilometres away were
+     * never offered the work, because the quote is also the dispatch ceiling.
+     */
+    it('is the lowest base in the pool, not the nearest inspector one', async () => {
+      const dear = platformBaseCents + 2_000;
+      const cheap = platformBaseCents + 200;
+      await makeInspector(dear); // at the car
+      await makeInspector(cheap, LAT + 0.2, LNG + 0.2); // a little further out
+      const customer = await register('cust');
+
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: LAT, lng: LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      expect(res.body.breakdown.baseFeeCents).toBe(cheap);
+    });
+
+    /*
+     * The floor is the pool, not the platform base: a quote at the platform
+     * base in an area where everybody charges more is a price nobody accepts,
+     * and the order dies in the search with the customer's money held.
+     */
+    it('does not fall to the platform base when everybody charges more', async () => {
+      const dear = platformBaseCents + 2_000;
+      const dearer = platformBaseCents + 3_000;
+      await makeInspector(dear);
+      await makeInspector(dearer, LAT + 0.2, LNG + 0.2);
+      const customer = await register('cust');
+
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: LAT, lng: LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      expect(res.body.breakdown.baseFeeCents).toBe(dear);
     });
   });
 

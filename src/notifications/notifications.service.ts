@@ -284,6 +284,35 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Mark read the in-app rows of `type` that are about `orderId` (DEN-325).
+   *
+   * Called when a later event makes an older card dead — an offer that expired
+   * makes its `offer.received` card dead. The row STAYS: it is the delivery
+   * record, and the reader did get that message. What must not stay is its
+   * claim on the unread badge, which is counted by the API and which the
+   * website cannot filter.
+   *
+   * Non-throwing, like `notify`: this runs inside domain flows that must not
+   * fail because a bell count is wrong.
+   */
+  async markSupersededRead(userId: string, type: NotificationType, orderId: string): Promise<void> {
+    try {
+      await this.prisma.notification.updateMany({
+        where: {
+          userId,
+          channel: 'inapp',
+          type,
+          readAt: null,
+          payload: { path: ['orderId'], equals: orderId },
+        },
+        data: { readAt: new Date() },
+      });
+    } catch (err) {
+      this.logger.warn(`markSupersededRead failed: ${(err as Error).message}`);
+    }
+  }
+
   /** Mark all of the user's in-app notifications read. Returns the count updated. */
   async markAllRead(userId: string): Promise<number> {
     const { count } = await this.prisma.notification.updateMany({
@@ -415,6 +444,7 @@ export class NotificationsService {
       status: row.status,
       readAt: row.readAt ? row.readAt.toISOString() : null,
       createdAt: row.createdAt.toISOString(),
+      orderId: typeof payload.orderId === 'string' ? payload.orderId : null,
     };
   }
 }

@@ -1,6 +1,13 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma, Report } from '@prisma/client';
 import { PaymentsService } from '../payments/payments.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import {
   FullReportDto,
@@ -22,10 +29,46 @@ export class ReportAccessService {
   constructor(
     private readonly payments: PaymentsService,
     private readonly r2: R2Service,
+    private readonly prisma: PrismaService,
   ) {}
 
   async getFull(userId: string, reportId: string): Promise<FullReportDto> {
     const report = await this.payments.assertReportAccess(userId, reportId);
+    return this.toFull(report);
+  }
+
+  /**
+   * The same payload for an admin (DEN-312). There is no owner check: the
+   * caller is `@Roles(Role.ADMIN)` in `AdminReportsController`.
+   */
+  async getFullForAdmin(reportId: string): Promise<FullReportDto> {
+    return this.toFull(await this.findForAdmin(reportId));
+  }
+
+  async getDownload(userId: string, reportId: string): Promise<ReportDownloadDto> {
+    const report = await this.payments.assertReportAccess(userId, reportId);
+    return this.toDownload(report);
+  }
+
+  /** The signed PDF URL for an admin (DEN-312). */
+  async getDownloadForAdmin(reportId: string): Promise<ReportDownloadDto> {
+    return this.toDownload(await this.findForAdmin(reportId));
+  }
+
+  /** Same 404 shape as `PaymentsService.assertReportAccess`. */
+  private async findForAdmin(reportId: string): Promise<Report> {
+    const report = await this.prisma.report.findFirst({
+      where: { id: reportId, deletedAt: null },
+    });
+    if (!report) {
+      throw new NotFoundException({
+        error: { code: 'not_found', message: `Report ${reportId} not found` },
+      });
+    }
+    return report;
+  }
+
+  private async toFull(report: Report): Promise<FullReportDto> {
     const photos = await this.signPhotos(report.photosManifest);
     const pdf = await this.signPdf(report);
 
@@ -51,8 +94,7 @@ export class ReportAccessService {
     };
   }
 
-  async getDownload(userId: string, reportId: string): Promise<ReportDownloadDto> {
-    const report = await this.payments.assertReportAccess(userId, reportId);
+  private async toDownload(report: Report): Promise<ReportDownloadDto> {
     if (!this.r2.isConfigured()) {
       throw new HttpException(
         { error: { code: 'storage_unavailable', message: 'Cloud storage is not configured' } },

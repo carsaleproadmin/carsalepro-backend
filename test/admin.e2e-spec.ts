@@ -2,7 +2,6 @@ import { INestApplication } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import request from 'supertest';
 import { OrdersService } from '../src/orders/orders.service';
-import { PaymentsService } from '../src/payments/payments.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SettingsService } from '../src/settings/settings.service';
 import { PLATFORM_SETTING_DEFAULTS } from '../src/settings/platform-settings.constants';
@@ -587,6 +586,97 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(Array.isArray(detail.body.events)).toBe(true);
     });
 
+    it('11b. list takes the showroom car filters (DEN-316)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      await makeInspector(ORDER_LAT, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const ids = async (filter: string): Promise<string[]> => {
+        const res = await bearer(
+          request(app.getHttpServer()).get(
+            `/api/v1/admin/orders?customerId=${customer.userId}&${filter}`,
+          ),
+          admin.token,
+        ).expect(200);
+        return res.body.items.map((o: { id: string }) => o.id);
+      };
+
+      // The order's own columns. The city is matched in the address, also by alias.
+      expect(await ids('make=bmw&model=320')).toEqual([orderId]);
+      expect(await ids('make=Audi')).toEqual([]);
+      expect(await ids(`country=${order.countryCode.toLowerCase()}`)).toEqual([orderId]);
+      expect(await ids('country=AT')).toEqual([]);
+      expect(await ids(`city=${encodeURIComponent('Берлин')}`)).toEqual([orderId]);
+      expect(await ids('city=Hamburg')).toEqual([]);
+      expect(await ids(`priceFrom=${order.totalCents}&priceTo=${order.totalCents}`)).toEqual([
+        orderId,
+      ]);
+      expect(await ids(`priceFrom=${order.totalCents + 1}`)).toEqual([]);
+      expect(await ids('status=PAID&make=BMW')).toEqual([orderId]);
+
+      // Year and mileage come from the report. No report, no match.
+      expect(await ids('yearFrom=2000')).toEqual([]);
+      await prisma.report.create({
+        data: {
+          deviceId: uniqueDeviceId('rep'),
+          code: `CSP-${Math.random().toString(36).slice(2, 8)}`,
+          tier: 'pro',
+          s3Key: 'pro/x/y.pdf',
+          userId: customer.userId,
+          orderId,
+          year: 2020,
+          mileageKm: 90000,
+        },
+      });
+      expect(await ids('yearFrom=2020&yearTo=2020')).toEqual([orderId]);
+      expect(await ids('yearFrom=2021')).toEqual([]);
+      expect(await ids('mileageTo=90000')).toEqual([orderId]);
+      expect(await ids('mileageTo=89999')).toEqual([]);
+
+      await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/orders?yearFrom=1800'),
+        admin.token,
+      ).expect(400);
+    });
+
+    it('11c. inspectors list feeds the inspector filter (DEN-316)', async () => {
+      const admin = await makeAdmin();
+      const customer = await makeUser('cust');
+      const inspector = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Filter Inspector' });
+      const other = await makeInspector(ORDER_LAT + 0.05, ORDER_LNG);
+      const orderId = await createPaidOrder(customer);
+      await prisma.order.update({ where: { id: orderId }, data: { inspectorId: inspector.userId } });
+
+      const list = await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/orders/inspectors'),
+        admin.token,
+      ).expect(200);
+      const row = list.body.items.find((i: { id: string }) => i.id === inspector.userId);
+      expect(row).toEqual(
+        expect.objectContaining({ id: inspector.userId, email: expect.any(String) }),
+      );
+      expect(list.body.items.some((i: { id: string }) => i.id === other.userId)).toBe(true);
+      expect(list.body.items.some((i: { id: string }) => i.id === customer.userId)).toBe(false);
+
+      const ids = async (inspectorId: string): Promise<string[]> => {
+        const res = await bearer(
+          request(app.getHttpServer()).get(
+            `/api/v1/admin/orders?customerId=${customer.userId}&inspectorId=${inspectorId}`,
+          ),
+          admin.token,
+        ).expect(200);
+        return res.body.items.map((o: { id: string }) => o.id);
+      };
+      expect(await ids(inspector.userId)).toEqual([orderId]);
+      expect(await ids(other.userId)).toEqual([]);
+
+      await bearer(
+        request(app.getHttpServer()).get('/api/v1/admin/orders/inspectors'),
+        customer.token,
+      ).expect(403);
+    });
+
     it('12. adminAssign moves UNASSIGNED → ASSIGNED with inspector set', async () => {
       const admin = await makeAdmin();
       const customer = await makeUser('cust');
@@ -684,7 +774,7 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(res.body.refundCents).toBe(0);
       expect(res.body.refundMode).toBe('authorization_released');
       expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
-      const payment = await prisma.payment.findUnique({ where: { orderId } });
+      const payment = await prisma.payment.findFirst({ where: { orderId, supersededAt: null } });
       expect(payment!.status).toBe('cancelled');
     });
 
@@ -935,6 +1025,72 @@ describe('Admin panel (E9) (e2e)', () => {
       ).expect(404);
     });
 
+    it('20f. list takes the showroom car filters (DEN-316)', async () => {
+      const admin = await makeAdmin();
+      const seller = await makeUser('seller');
+      const base = {
+        sellerId: seller.userId,
+        status: 'ACTIVE' as const,
+        source: 'manual',
+        package: 'standard',
+        publishedAt: new Date(),
+      };
+      const bmw = await prisma.listing.create({
+        data: {
+          ...base,
+          priceCents: 1850000,
+          city: 'Berlin',
+          citySearch: 'berlin',
+          countryCode: 'DE',
+          make: 'BMW',
+          makeSearch: 'bmw',
+          model: '320d',
+          modelSearch: '320d',
+          year: 2020,
+          mileageKm: 90000,
+        },
+      });
+      const merc = await prisma.listing.create({
+        data: {
+          ...base,
+          status: 'HIDDEN',
+          priceCents: 3200000,
+          city: 'Wien',
+          citySearch: 'wien',
+          countryCode: 'AT',
+          make: 'Mercedes-Benz',
+          makeSearch: 'mercedesbenz',
+          model: 'C 220',
+          modelSearch: 'c220',
+          year: 2017,
+          mileageKm: 150000,
+        },
+      });
+      const ids = async (filter: string): Promise<string[]> => {
+        const res = await bearer(
+          request(app.getHttpServer()).get(
+            `/api/v1/admin/listings?sellerId=${seller.userId}&${filter}`,
+          ),
+          admin.token,
+        ).expect(200);
+        return res.body.items.map((l: { id: string }) => l.id).sort();
+      };
+
+      expect(await ids('make=mercedes%20benz&model=c-220')).toEqual([merc.id]);
+      expect(await ids('country=de')).toEqual([bmw.id]);
+      expect(await ids('city=Vienna')).toEqual([merc.id]);
+      expect(await ids(`city=${encodeURIComponent('Берлин')}`)).toEqual([bmw.id]);
+      expect(await ids('priceFrom=2000000')).toEqual([merc.id]);
+      expect(await ids('priceTo=1850000')).toEqual([bmw.id]);
+      expect(await ids('yearFrom=2018&yearTo=2021')).toEqual([bmw.id]);
+      expect(await ids('mileageTo=100000')).toEqual([bmw.id]);
+      expect(await ids('mileageTo=0')).toEqual([]);
+      // Status stays a filter beside the car filters.
+      expect(await ids('status=HIDDEN&priceFrom=0')).toEqual([merc.id]);
+      expect(await ids('status=ACTIVE&make=Mercedes')).toEqual([]);
+      expect(await ids('')).toEqual([bmw.id, merc.id].sort());
+    });
+
     it('20b. hide needs a reason; the seller is told, sees it, and cannot publish again (DEN-295)', async () => {
       const admin = await makeAdmin();
       const seller = await makeUser('seller');
@@ -1053,57 +1209,6 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(sellerHidden.every((i) => i.adminHiddenAt === null)).toBe(true);
     });
 
-    it('20f. a Gold payment does not publish a listing an admin hid or deleted during the checkout', async () => {
-      const admin = await makeAdmin();
-      const seller = await makeUser('seller');
-      // The Stripe webhook calls this method; here the test calls it directly.
-      const payments = app.get(PaymentsService);
-      const goldPayment = () =>
-        prisma.payment.create({
-          data: { purpose: 'gold', userId: seller.userId, amountCents: 999, status: 'pending' },
-        });
-      const adminPost = (id: string, action: 'hide' | 'delete') =>
-        bearer(
-          request(app.getHttpServer())
-            .post(`/api/v1/admin/listings/${id}/${action}`)
-            .send({ reason: REASON }),
-          admin.token,
-        ).expect(200);
-
-      const hiddenId = await seedListing(seller, 'ACTIVE');
-      await adminPost(hiddenId, 'hide');
-      const deletedId = await seedListing(seller, 'ACTIVE');
-      await adminPost(deletedId, 'delete');
-
-      for (const [id, status] of [
-        [hiddenId, 'HIDDEN'],
-        [deletedId, 'DELETED'],
-      ] as const) {
-        const payment = await goldPayment();
-        await payments.activateGoldListing(payment.id, id);
-        const row = await prisma.listing.findUniqueOrThrow({ where: { id } });
-        expect(row.status).toBe(status);
-        expect(row.package).toBe('standard');
-        // The money was taken; the payment row must say so.
-        expect((await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).status).toBe(
-          'succeeded',
-        );
-      }
-      expect(
-        await prisma.notification.count({
-          where: { userId: seller.userId, type: 'listing.published' },
-        }),
-      ).toBe(0);
-
-      // A listing that is still the seller's to publish goes live as before.
-      const draftId = await seedListing(seller, 'DRAFT');
-      const payment = await goldPayment();
-      await payments.activateGoldListing(payment.id, draftId);
-      const live = await prisma.listing.findUniqueOrThrow({ where: { id: draftId } });
-      expect(live.status).toBe('ACTIVE');
-      expect(live.package).toBe('gold');
-    });
-
     it('20c. a seller who unpublished the listing may still publish it again (DEN-295)', async () => {
       const seller = await makeUser('seller');
       const listingId = await seedListing(seller, 'ACTIVE');
@@ -1173,6 +1278,74 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(again.body.error.code).toBe('listing_already_deleted');
     });
 
+  });
+
+  // ============================================================
+  // Reports area (DEN-312)
+  // ============================================================
+  describe('reports', () => {
+    it('DEN-312. an admin reads any report; a user cannot use the admin route', async () => {
+      const admin = await makeAdmin();
+      const owner = await makeUser('owner');
+      const stranger = await makeUser('stranger');
+      const report = await prisma.report.create({
+        data: {
+          deviceId: uniqueDeviceId('rep'),
+          code: `CSP-${Math.random().toString(36).slice(2, 8)}`,
+          tier: 'pro',
+          s3Key: 'pro/x/y.pdf',
+          userId: owner.userId,
+          make: 'BMW',
+          model: '320d',
+          year: 2020,
+        },
+      });
+      const server = () => request(app.getHttpServer());
+
+      try {
+        const full = await bearer(
+          server().get(`/api/v1/admin/reports/${report.id}/full`),
+          admin.token,
+        ).expect(200);
+        expect(full.body.id).toBe(report.id);
+        expect(full.body.code).toBe(report.code);
+        expect(Array.isArray(full.body.photos)).toBe(true);
+        // The PDF is not uploaded, so there is no URL.
+        expect(full.body.pdf.downloadUrl).toBeNull();
+
+        // The customer route keeps its access rule: the admin is not the owner.
+        await bearer(
+          server().get(`/api/v1/reports/${report.id}/full`),
+          admin.token,
+        ).expect(403);
+
+        // The owner and a stranger cannot use the admin routes.
+        for (const user of [owner, stranger]) {
+          await bearer(
+            server().get(`/api/v1/admin/reports/${report.id}/full`),
+            user.token,
+          ).expect(403);
+          await bearer(
+            server().get(`/api/v1/admin/reports/${report.id}/download`),
+            user.token,
+          ).expect(403);
+        }
+
+        await bearer(
+          server().get('/api/v1/admin/reports/00000000-0000-4000-8000-000000000000/full'),
+          admin.token,
+        ).expect(404);
+
+        // 409 report_not_uploaded; 503 when the environment has no R2.
+        const download = await bearer(
+          server().get(`/api/v1/admin/reports/${report.id}/download`),
+          admin.token,
+        );
+        expect([409, 503]).toContain(download.status);
+      } finally {
+        await prisma.report.delete({ where: { id: report.id } });
+      }
+    });
   });
 
   // ============================================================

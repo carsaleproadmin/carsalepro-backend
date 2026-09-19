@@ -495,7 +495,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(order!.minimumFareApplied).toBe(FARE.minimumFareApplied);
     expect(order!.routingSource).toBe('haversine');
 
-    const payment = await prisma.payment.findUnique({ where: { orderId: order!.id } });
+    const payment = await prisma.payment.findFirst({ where: { orderId: order!.id, supersededAt: null } });
     // AUTHORIZED, not charged. Under manual capture the funds are only held at
     // this point — nobody has agreed to do the work yet, so nothing is taken.
     expect(payment!.status).toBe('authorized');
@@ -1202,7 +1202,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     // The money is taken HERE, not at creation: acceptance is the first moment
     // anyone has agreed to do the work. An order must never be ASSIGNED with
     // uncaptured money.
-    const payment = await prisma.payment.findUnique({ where: { orderId } });
+    const payment = await prisma.payment.findFirst({ where: { orderId, supersededAt: null } });
     expect(payment!.status).toBe('succeeded');
     expect(payment!.capturedAt).toBeTruthy();
     expect(payment!.authorizedAt!.getTime()).toBeLessThanOrEqual(
@@ -1957,7 +1957,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     // finance ledger.
     expect(await prisma.refund.count({ where: { orderId } })).toBe(0);
 
-    const payment = await prisma.payment.findUnique({ where: { orderId } });
+    const payment = await prisma.payment.findFirst({ where: { orderId, supersededAt: null } });
     expect(payment!.status).toBe('cancelled');
     expect(payment!.canceledAt).toBeTruthy();
     expect(payment!.capturedAt).toBeNull();
@@ -2362,6 +2362,181 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(order!.status).toBe('ASSIGNED');
   });
 
+  /*
+   * DEN-326. An order whose candidate pool ran out used to lie in UNASSIGNED
+   * until the window cancelled it: nothing called dispatch again, and no
+   * inspector could find it. Each pass of the job is one more round.
+   */
+  it('9i. a silent inspector is offered the order again on the next round', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    // Round 1: the only inspector in the area says nothing.
+    const first = await pendingOfferFor(orderId);
+    expect(first!.inspectorId).toBe(inspector.userId);
+    expect(first!.round).toBe(0);
+    await prisma.orderOffer.update({
+      where: { id: first!.id },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    await orders.expireStaleOffers();
+
+    // The pool is empty, so the order parks.
+    const parked = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(parked!.status).toBe('UNASSIGNED');
+    expect(await pendingOfferFor(orderId)).toBeNull();
+
+    // Round 2: the same inspector is asked again. Silence is not a refusal.
+    const { rounds } = await orders.redispatchUnfilledOrders();
+    expect(rounds).toBeGreaterThanOrEqual(1);
+    const second = await pendingOfferFor(orderId);
+    expect(second).not.toBeNull();
+    expect(second!.inspectorId).toBe(inspector.userId);
+    expect(second!.round).toBe(1);
+    expect(second!.id).not.toBe(first!.id);
+  });
+
+  it('9j. an inspector who DECLINED is never offered the order again', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    const offer = await pendingOfferFor(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${offer!.id}/decline`)
+      .set('Authorization', `Bearer ${inspectorTokens.get(inspector.userId)}`)
+      .expect(200);
+
+    // Nobody else in range, so declining empties the pool at once.
+    const parked = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(parked!.status).toBe('UNASSIGNED');
+
+    // Three rounds, and the refusal holds in every one of them.
+    for (let i = 0; i < 3; i += 1) await orders.redispatchUnfilledOrders();
+    expect(await pendingOfferFor(orderId)).toBeNull();
+    const after = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(after!.status).toBe('UNASSIGNED');
+    expect(after!.dispatchRound).toBe(3);
+  });
+
+  it('9k. a round is never started for an order whose search window closed', async () => {
+    const customer = await makeCustomer();
+    await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+
+    const offer = await pendingOfferFor(orderId);
+    await prisma.orderOffer.update({
+      where: { id: offer!.id },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    await orders.expireStaleOffers();
+    // The deadline is what ends the search; past it the order belongs to
+    // expireUnfilledSearches, which releases the hold and cancels.
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { searchExpiresAt: new Date(Date.now() - 60_000) },
+    });
+
+    await orders.redispatchUnfilledOrders();
+    expect(await pendingOfferFor(orderId)).toBeNull();
+    const after = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(after!.dispatchRound).toBe(0);
+  });
+
+  /*
+   * DEN-327. An offer that ran out leaves the cabinet with no trace, so the
+   * inspector has no record that the job existed.
+   */
+  it('9l. GET /orders/me/missed lists an expired offer once, with its own share', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    const offer = await pendingOfferFor(orderId);
+    await prisma.orderOffer.update({
+      where: { id: offer!.id },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    await orders.expireStaleOffers();
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const row = res.body.items.find((i: { orderId: string }) => i.orderId === orderId);
+    expect(row).toBeDefined();
+    expect(row.number).toBeTruthy();
+    expect(row.timesOffered).toBe(1);
+    // The share the OFFER froze, never the order's own figure.
+    expect(row.inspectorShareCents).toBe(offer!.inspectorShareCents);
+    // Nobody took it: the pool held only this inspector.
+    expect(row.outcome).toBe('searching');
+
+    // A second round on the same order is the same card, counted twice.
+    await orders.redispatchUnfilledOrders();
+    const again = await pendingOfferFor(orderId);
+    await prisma.orderOffer.update({
+      where: { id: again!.id },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    await orders.expireStaleOffers();
+
+    const res2 = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const rows = res2.body.items.filter((i: { orderId: string }) => i.orderId === orderId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].timesOffered).toBe(2);
+  });
+
+  it('9m. a missed offer older than the window is not listed, and the row survives', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    const offer = await pendingOfferFor(orderId);
+    // Eight days ago: outside the seven-day window the list reads.
+    await prisma.orderOffer.update({
+      where: { id: offer!.id },
+      data: { status: 'EXPIRED', expiresAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
+    });
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(res.body.items.find((i: { orderId: string }) => i.orderId === orderId)).toBeUndefined();
+
+    // The window hides it. Nothing deletes it — DEN-326 reads these rows to
+    // decide who may be offered the order again.
+    const still = await prisma.orderOffer.findUnique({ where: { id: offer!.id } });
+    expect(still).not.toBeNull();
+  });
+
+  it('9n. a DECLINED offer is never a missed one', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const { orderId } = await createPaidOrder(customer);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    const offer = await pendingOfferFor(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${offer!.id}/decline`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(res.body.items.find((i: { orderId: string }) => i.orderId === orderId)).toBeUndefined();
+  });
+
   it('10. dispute from SUBMITTED → DISPUTED + Dispute row', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);
@@ -2631,6 +2806,22 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(expRes.expired).toBeGreaterThanOrEqual(1);
     const expired = await prisma.orderOffer.findUnique({ where: { id: staleOffer!.id } });
     expect(expired!.status).toBe('EXPIRED');
+
+    // --- DEN-324/DEN-325: the inspector is told, and the dead card stops
+    // counting as unread. Without both, the order leaves their cabinet while a
+    // card that reads as live work stays in their bell.
+    const bell = await prisma.notification.findMany({
+      where: { userId: staleOffer!.inspectorId, channel: 'inapp' },
+    });
+    const expiredCard = bell.find((n) => n.type === 'offer.expired');
+    expect(expiredCard).toBeDefined();
+    expect((expiredCard!.payload as { orderId?: string }).orderId).toBe(order3);
+    const receivedCard = bell.find(
+      (n) =>
+        n.type === 'offer.received' &&
+        (n.payload as { orderId?: string }).orderId === order3,
+    );
+    expect(receivedCard!.readAt).not.toBeNull();
   });
 
   // ============================================================
@@ -2695,6 +2886,122 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   // ============================================================
   // 16. The inspector's row carries both clocks that can take the job away
   // ============================================================
+  /*
+   * DEN-328. The cabinet is tabs now, and each tab is its own query: the page
+   * must not read the inspector's whole history to render one of them.
+   */
+  it('15b. tabs split the inspector list, and each answers its own total', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    // One order accepted (active) and one still on offer (offers).
+    const { orderId: activeId } = await createPaidOrder(customer);
+    await acceptPendingOffer(activeId);
+    const { orderId: offeredId } = await createPaidOrder(customer);
+
+    const tab = async (name: string) =>
+      (
+        await request(app.getHttpServer())
+          .get(`/api/v1/orders/me?role=inspector&tab=${name}`)
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200)
+      ).body;
+
+    const active = await tab('active');
+    expect(active.items.map((o: { id: string }) => o.id)).toContain(activeId);
+    expect(active.items.map((o: { id: string }) => o.id)).not.toContain(offeredId);
+    expect(active.total).toBe(active.items.length);
+
+    const offers = await tab('offers');
+    expect(offers.items.map((o: { id: string }) => o.id)).toContain(offeredId);
+    expect(offers.items.map((o: { id: string }) => o.id)).not.toContain(activeId);
+    // The live offer still carries its own deadline, as the untabbed list did.
+    expect(offers.items[0].offerExpiresAt).toBeTruthy();
+
+    const completed = await tab('completed');
+    expect(completed.items.map((o: { id: string }) => o.id)).not.toContain(activeId);
+  });
+
+  it('15c. paging is opt-in, and the sort flips', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const { orderId } = await createPaidOrder(customer);
+      await acceptPendingOffer(orderId);
+      ids.push(orderId);
+    }
+
+    // No page and no pageSize: the whole list, exactly as before the tabs.
+    const all = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector&tab=active')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(all.body.items.length).toBe(all.body.total);
+    expect(all.body.total).toBeGreaterThanOrEqual(3);
+
+    const firstPage = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector&tab=active&page=1&pageSize=2&sort=newest')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(firstPage.body.items).toHaveLength(2);
+    expect(firstPage.body.total).toBe(all.body.total);
+    expect(firstPage.body.page).toBe(1);
+
+    const secondPage = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector&tab=active&page=2&pageSize=2&sort=newest')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const firstIds = firstPage.body.items.map((o: { id: string }) => o.id);
+    const secondIds = secondPage.body.items.map((o: { id: string }) => o.id);
+    // A second page is a DIFFERENT page - the slice must not repeat rows.
+    expect(secondIds.some((id: string) => firstIds.includes(id))).toBe(false);
+
+    const oldest = await request(app.getHttpServer())
+      .get('/api/v1/orders/me?role=inspector&tab=active&sort=oldest')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(oldest.body.items.map((o: { id: string }) => o.id)).toEqual(
+      [...all.body.items.map((o: { id: string }) => o.id)].reverse(),
+    );
+  });
+
+  it('15d. the missed list pages over ORDERS, not over the rounds behind them', async () => {
+    const customer = await makeCustomer();
+    const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
+    const token = inspectorTokens.get(inspector.userId)!;
+
+    // Two orders, each expired TWICE on this inspector: four offer rows, two cards.
+    for (let i = 0; i < 2; i += 1) {
+      const { orderId } = await createPaidOrder(customer);
+      const first = await pendingOfferFor(orderId);
+      await prisma.orderOffer.update({
+        where: { id: first!.id },
+        data: { expiresAt: new Date(Date.now() - 60_000) },
+      });
+      await orders.expireStaleOffers();
+      await orders.redispatchUnfilledOrders();
+      const second = await pendingOfferFor(orderId);
+      await prisma.orderOffer.update({
+        where: { id: second!.id },
+        data: { expiresAt: new Date(Date.now() - 60_000) },
+      });
+      await orders.expireStaleOffers();
+    }
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed?page=1&pageSize=1')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(res.body.items).toHaveLength(1);
+    // Two cards, not the four offer rows behind them.
+    expect(res.body.total).toBe(2);
+    expect(res.body.items[0].timesOffered).toBe(2);
+  });
+
   it('16. GET /orders/me?role=inspector carries offerExpiresAt, then inspectionDeadlineAt', async () => {
     const customer = await makeCustomer();
     await makeInspector(ORDER_LAT, ORDER_LNG);

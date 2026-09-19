@@ -463,15 +463,11 @@ describe('Listings (e2e)', () => {
     }
   });
 
-  it('7. publish gold (mock) activates as gold, marks payment succeeded, and ranks gold-first', async () => {
+  it('7. publish with package gold gets 400; the free publish has no checkout (DEN-309)', async () => {
     const owner = await registerUser(app);
     const code = uniqueCode();
     const report = await seedReport({ code, userId: owner.userId });
-    // A standard listing in the same city to verify gold-first ordering.
-    const stdCode = uniqueCode();
-    const stdReport = await seedReport({ code: stdCode, userId: owner.userId });
     let listingId: string | undefined;
-    let stdListingId: string | undefined;
     try {
       const created = await request(app.getHttpServer())
         .post('/api/v1/listings')
@@ -479,63 +475,32 @@ describe('Listings (e2e)', () => {
         .send({ reportCode: code })
         .expect(201);
       listingId = created.body.id;
-
       await request(app.getHttpServer())
         .patch(`/api/v1/listings/${listingId}`)
         .set('Authorization', `Bearer ${owner.token}`)
         .send({ priceCents: 2500000, city: 'Hamburg' })
         .expect(200);
 
-      const res = await request(app.getHttpServer())
+      await request(app.getHttpServer())
         .post(`/api/v1/listings/${listingId}/publish`)
         .set('Authorization', `Bearer ${owner.token}`)
         .send({ package: 'gold' })
-        .expect(201);
-      expect(res.body.mock).toBe(true);
-      expect(typeof res.body.checkoutUrl).toBe('string');
-      expect(res.body.checkoutUrl).toContain('gold=mock');
+        .expect(400);
+      const row = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
+      expect(row.status).not.toBe('ACTIVE');
+      expect(
+        await prisma.payment.count({ where: { userId: owner.userId, purpose: 'gold' } }),
+      ).toBe(0);
 
-      const goldListing = await prisma.listing.findUnique({ where: { id: listingId } });
-      expect(goldListing!.status).toBe('ACTIVE');
-      expect(goldListing!.package).toBe('gold');
-      expect(goldListing!.publishedAt).toBeTruthy();
-
-      const goldPayment = await prisma.payment.findFirst({
-        where: { userId: owner.userId, purpose: 'gold' },
-        orderBy: { createdAt: 'desc' },
-      });
-      expect(goldPayment!.status).toBe('succeeded');
-
-      // Seed a standard ACTIVE listing in Hamburg and confirm gold ranks first.
-      const stdCreated = await request(app.getHttpServer())
-        .post('/api/v1/listings')
-        .set('Authorization', `Bearer ${owner.token}`)
-        .send({ reportCode: stdCode })
-        .expect(201);
-      stdListingId = stdCreated.body.id;
-      await request(app.getHttpServer())
-        .patch(`/api/v1/listings/${stdListingId}`)
-        .set('Authorization', `Bearer ${owner.token}`)
-        .send({ priceCents: 900000, city: 'Hamburg' })
-        .expect(200);
-      await request(app.getHttpServer())
-        .post(`/api/v1/listings/${stdListingId}/publish`)
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/publish`)
         .set('Authorization', `Bearer ${owner.token}`)
         .send({ package: 'standard' })
         .expect(201);
-
-      const showroom = await request(app.getHttpServer())
-        .get('/api/v1/public/listings?city=Hamburg')
-        .expect(200);
-      const ids: string[] = showroom.body.items.map((i: { id: string }) => i.id);
-      const goldIdx = ids.indexOf(listingId!);
-      const stdIdx = ids.indexOf(stdListingId!);
-      expect(goldIdx).toBeGreaterThanOrEqual(0);
-      expect(stdIdx).toBeGreaterThanOrEqual(0);
-      expect(goldIdx).toBeLessThan(stdIdx);
+      expect(res.body).toMatchObject({ status: 'ACTIVE', amountCents: 0, currency: 'EUR' });
+      expect(res.body.checkoutUrl).toBeUndefined();
     } finally {
       await cleanup({ listingId, reportId: report.id });
-      await cleanup({ listingId: stdListingId, reportId: stdReport.id });
     }
   });
 
