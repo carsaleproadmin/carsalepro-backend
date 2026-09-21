@@ -16,8 +16,6 @@
  * inspection time, so no time exists to price against.
  */
 
-import { chargeableKm } from './tariff-resolution';
-
 /** Tariff inputs, all integer cents except the unitless multipliers. */
 export interface PricingTariff {
   baseFeeCents: number;
@@ -39,15 +37,11 @@ export interface PricingTariff {
    * fare doubles. See DEN-108.
    */
   returnTripFactor: number;
-  /**
-   * Kilometres of the one-direction trip that carry no travel charge.
-   *
-   * Subtracted from the distance, never used as an on/off threshold — see
-   * `chargeableKm`. Below the minimum fare it is mostly invisible anyway: a
-   * short trip is floored to `minimumFareCents` whether or not its kilometres
-   * were charged. It earns its place by saying so out loud.
-   */
-  freeRadiusKm: number;
+  // The free radius was removed on 2026-09-21 (DEN-349). Every kilometre of
+  // the trip is charged now, so the fare terms hold no radius at all. Orders
+  // priced before that date keep their own radius in `order.free_radius_km`,
+  // which `describeStoredFare` still reads: a stored fare must stay readable
+  // exactly as it was charged.
 }
 
 export interface PricingInput {
@@ -65,9 +59,11 @@ export interface PriceBreakdown {
   baseFeeCents: number;
   /** What the provider measured, one direction. */
   distanceKm: number;
-  /** The free radius that applied. 0 when every kilometre is charged. */
-  freeRadiusKm: number;
-  /** One direction, after the free radius: `max(0, distanceKm - freeRadiusKm)`. */
+  /**
+   * One direction, the quantity the per-km rate is applied to before the
+   * return trip. The same number as `distanceKm` since DEN-349 removed the
+   * free radius; kept because the invoice rows and the client read it.
+   */
   chargeableDistanceKm: number;
   /**
    * What the fare was actually charged on:
@@ -125,11 +121,11 @@ export function computePrice(input: PricingInput): PriceBreakdown {
   // nonsensical value into 1, which is the "the rate already includes the
   // return trip" case.
   const returnTripFactor = Math.max(1, safeMultiplier(tariff.returnTripFactor));
-  // The free radius comes off the MEASURED one-direction trip, before the
-  // return trip is applied: it is a statement about how far the vehicle is, so
-  // doubling it first would halve the radius an operator thought they set.
-  const freeRadiusKm = safeNonNegative(tariff.freeRadiusKm);
-  const chargeableDistanceKm = chargeableKm(distanceKm, freeRadiusKm);
+  // Every measured kilometre is chargeable (DEN-349). Rounded to the 0.1 km
+  // both routing paths report, so the quantity quoted on the invoice is the
+  // quantity the rate multiplied — 12.35 km must not print as 24.700000000000003
+  // once the return trip doubles it.
+  const chargeableDistanceKm = Math.round(distanceKm * 10) / 10;
   // Rounded to the same 0.1 km the routing provider reports, so the number
   // printed on the invoice is the number the fee was computed from.
   const billedDistanceKm = Math.round(chargeableDistanceKm * returnTripFactor * 10) / 10;
@@ -157,7 +153,6 @@ export function computePrice(input: PricingInput): PriceBreakdown {
   return {
     baseFeeCents,
     distanceKm,
-    freeRadiusKm,
     chargeableDistanceKm,
     billedDistanceKm,
     returnTripFactor,

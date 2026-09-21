@@ -9,8 +9,8 @@
  *   3. otherwise the global tariff from `PlatformSetting`.
  *
  * Field by field, and not row by row, is the whole design. A country that must
- * charge its own per-km rate should not have to restate the base fee, the
- * minimum fare and the free radius to say so — a restated value is a copy that
+ * charge its own per-km rate should not have to restate the base fee and
+ * the minimum fare to say so — a restated value is a copy that
  * stops tracking the original the day the original moves.
  *
  * **The global level never refuses.** It is a complete tariff, so an empty
@@ -28,8 +28,6 @@ export interface RegionalOverrides {
   ratePerMinuteCents?: number | null;
   minimumFareCents?: number | null;
   returnTripFactor?: number | null;
-  /** Kilometres inside which no travel charge applies. */
-  freeRadiusKm?: number | null;
   /** Refuse the quote beyond this distance. */
   capKm?: number | null;
 }
@@ -40,7 +38,6 @@ export interface RegionalOverrides {
  * pricing it.
  */
 export interface RegionalLimits {
-  freeRadiusKm: number;
   /** `null` means no cap — the shipped state, and never a refusal. */
   capKm: number | null;
 }
@@ -62,7 +59,6 @@ const OVERRIDABLE: Array<keyof RegionalOverrides> = [
   'ratePerMinuteCents',
   'minimumFareCents',
   'returnTripFactor',
-  'freeRadiusKm',
   'capKm',
 ];
 
@@ -85,7 +81,6 @@ function said(value: number | null | undefined): value is number {
  */
 export function resolveTariff(
   globalTariff: PricingTariff,
-  globalFreeRadiusKm: number,
   zone: RegionalOverrides | null,
   country: RegionalOverrides | null,
 ): ResolvedTariff {
@@ -98,7 +93,6 @@ export function resolveTariff(
     ratePerMinuteCents: globalTariff.ratePerMinuteCents,
     minimumFareCents: globalTariff.minimumFareCents,
     returnTripFactor: globalTariff.returnTripFactor,
-    freeRadiusKm: globalFreeRadiusKm,
     // No global cap: a cap refuses an order, and a refusal must be something an
     // operator switched on for a region, never a default nobody chose.
     capKm: null,
@@ -125,38 +119,12 @@ export function resolveTariff(
       ratePerMinuteCents: resolved.ratePerMinuteCents as number,
       minimumFareCents: resolved.minimumFareCents as number,
       returnTripFactor: resolved.returnTripFactor as number,
-      // The free radius is a FARE term and must travel on the tariff, not only
-      // in `limits`. `computePrice` reads `tariff.freeRadiusKm` and nothing
-      // else, so a resolved radius left out here is read from the global
-      // spread instead: the row is loaded, the override is resolved, and the
-      // price does not move. It shipped that way, and only the cap — which the
-      // caller reads out of `limits` by hand — ever did anything regionally.
-      freeRadiusKm: resolved.freeRadiusKm as number,
     },
     limits: {
-      // The same number as `tariff.freeRadiusKm`, kept because a caller that
-      // must EXPLAIN the fare (the order row, the contract) asks `limits` for
-      // both boundaries at once and should not have to know that one of them
-      // is priced and the other refuses.
-      freeRadiusKm: resolved.freeRadiusKm as number,
       capKm: resolved.capKm,
     },
     sources,
   };
-}
-
-/**
- * The kilometres a customer actually pays for, after the free radius.
- *
- * The radius is subtracted, not used as an on/off switch: a threshold that
- * flips the whole charge on at km 15.1 makes one extra kilometre cost fifteen,
- * and two neighbours on the same street get prices that differ by an order of
- * magnitude.
- */
-export function chargeableKm(distanceKm: number, freeRadiusKm: number): number {
-  if (!Number.isFinite(distanceKm) || distanceKm <= 0) return 0;
-  const free = Number.isFinite(freeRadiusKm) && freeRadiusKm > 0 ? freeRadiusKm : 0;
-  return Math.max(0, Math.round((distanceKm - free) * 10) / 10);
 }
 
 /**

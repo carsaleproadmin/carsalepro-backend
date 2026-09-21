@@ -31,7 +31,6 @@ export const SETTING_LIMITS: Record<SettingKey, SettingLimit> = {
   orderSurgeMultiplier: { min: 0.5, max: 5 },
   orderDetourFactor: { min: 1, max: 3 },
   orderReturnTripFactor: { min: 1, max: 3 },
-  orderFreeRadiusKm: { min: 0, max: 100 },
   orderCapKm: { min: 0, max: 1000 },
   orderRoutingCacheHours: { min: 0, max: 720 },
   platformFeePercent: { min: 0, max: 50 },
