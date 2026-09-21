@@ -627,11 +627,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
 
       const b = quote.body.breakdown;
       expect(b.returnTripFactor).toBe(2);
-      // The factor multiplies the CHARGEABLE distance: the free radius is a
-      // statement about how far the vehicle is, so it comes off once, before
-      // the return trip is applied.
+      // The factor multiplies the measured one-direction trip, every
+      // kilometre of which is chargeable (DEN-349).
       expect(b.billedDistanceKm).toBeCloseTo(b.chargeableDistanceKm * 2, 5);
-      expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm - b.freeRadiusKm, 1);
+      expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm, 1);
       expect(b.billedDurationMin).toBe(b.durationMin * 2);
       // The fee follows the BILLED quantity, so the arithmetic a customer can
       // do on the page reaches the amount we charge.
@@ -668,9 +667,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       // stored pair — a stored order and a fresh quote describe the same thing.
       expect(detail.body.money.billedDistanceKm).toBeCloseTo(b.billedDistanceKm, 5);
       expect(detail.body.money.chargeableDistanceKm).toBeCloseTo(b.chargeableDistanceKm, 5);
-      // The measured trip survives the round trip through the database only
-      // because the free radius is stored beside the factor.
-      expect(detail.body.money.freeRadiusKm).toBe(b.freeRadiusKm);
+      expect(detail.body.money.freeRadiusKm).toBe(0);
       expect(detail.body.money.distanceKm).toBeCloseTo(b.distanceKm, 1);
     } finally {
       await doubled.restore();
@@ -679,11 +676,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   // ============================================================
-  // 3d. The free radius and the distance cap
+  // 3d. The travel charge and the distance cap
   // ============================================================
-  it('3d. the free radius comes off the trip before the rate applies', async () => {
+  it('3d. every measured kilometre is charged, both ways', async () => {
     const customer = await makeCustomer();
-    // ~22 km north, comfortably outside the 10 km free radius.
+    // ~22 km north, far enough that the distance line is a real number.
     await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
 
     const res = await request(app.getHttpServer())
@@ -693,12 +690,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .expect(200);
 
     const b = res.body.breakdown;
-    // The literal 10 is the owner's decision of 2026-08-13, not an incidental
-    // default: asserting it against the constant it comes from would pass for
-    // any value, including 0.
-    expect(b.freeRadiusKm).toBe(10);
-    expect(PLATFORM_SETTING_DEFAULTS.orderFreeRadiusKm).toBe(10);
-    expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm - b.freeRadiusKm, 1);
+    // DEN-349: the quote no longer carries a radius at all, and the chargeable
+    // trip is the measured trip.
+    expect(b.freeRadiusKm).toBeUndefined();
+    expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm, 1);
     // The rate applies to the BILLED distance — chargeable, both ways.
     expect(b.billedDistanceKm).toBeCloseTo(b.chargeableDistanceKm * b.returnTripFactor, 5);
     expect(b.distanceFeeCents).toBe(
@@ -706,10 +701,9 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     );
   });
 
-  it('3d2. a trip inside the free radius carries no travel charge at all', async () => {
+  it('3d2. a short trip is charged for its kilometres too', async () => {
     const customer = await makeCustomer();
-    // ~5.5 km north: a real distance, and inside the 10 km radius. A co-located
-    // inspector would prove nothing — zero kilometres cost nothing anyway.
+    // ~5.5 km north: a real distance, and one that used to travel free.
     await makeInspector(ORDER_LAT + 0.05, ORDER_LNG);
 
     const res = await request(app.getHttpServer())
@@ -719,22 +713,22 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .expect(200);
 
     expect(res.body.breakdown.distanceKm).toBeGreaterThan(4);
-    expect(res.body.breakdown.chargeableDistanceKm).toBe(0);
-    expect(res.body.breakdown.distanceFeeCents).toBe(0);
+    expect(res.body.breakdown.chargeableDistanceKm).toBeCloseTo(
+      res.body.breakdown.distanceKm,
+      1,
+    );
+    expect(res.body.breakdown.distanceFeeCents).toBeGreaterThan(0);
   });
 
   /*
-   * The order page of a short job must not invent a distance.
-   *
-   * Inside the free radius the row bills zero kilometres whatever the trip was,
-   * so the measurement is not recoverable — and the detail used to add the
-   * radius back regardless. A customer who was quoted 1 km opened the order one
-   * minute later and read 10 km, on the page that itemises what they paid.
-   * Null is the only honest answer, and the billed figures carry the fee.
+   * A short order now has a distance to report, because it was charged for
+   * one. The old defect — the row billing zero kilometres inside the radius,
+   * and the page adding the radius back to print "10 km" for a car 1 km away —
+   * cannot occur for a new order: nothing is clamped away any more.
    */
-  it('3d4. a short order reports no measured distance rather than the free radius', async () => {
+  it('3d4. a short order reports the distance it was charged for', async () => {
     const customer = await makeCustomer();
-    // ~1.1 km north: well inside the 10 km radius, and not zero.
+    // ~1.1 km north: the shortest real trip, and not zero.
     await makeInspector(ORDER_LAT + 0.01, ORDER_LNG);
     const { orderId } = await createPaidOrder(customer);
 
@@ -744,10 +738,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .expect(200);
 
     const m = detail.body.money;
-    expect(m.freeRadiusKm).toBe(10);
-    expect(m.billedDistanceKm).toBe(0);
-    expect(m.distanceFeeCents).toBe(0);
-    expect(m.distanceKm).toBeNull();
+    expect(m.freeRadiusKm).toBe(0);
+    expect(m.billedDistanceKm).toBeGreaterThan(0);
+    expect(m.distanceFeeCents).toBeGreaterThan(0);
+    expect(m.distanceKm).toBeGreaterThan(0);
   });
 
   /*
@@ -759,7 +753,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
    */
   it('3d5. the detail reports the distance and the minutes on the same basis', async () => {
     const customer = await makeCustomer();
-    // ~22 km north — outside the free radius, so both measurements survive.
+    // ~22 km north — far enough that both measurements are real numbers.
     await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
     const { orderId } = await createPaidOrder(customer);
 
@@ -771,7 +765,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const m = detail.body.money;
     expect(m.returnTripFactor).toBe(2);
     // Measured beside measured, billed beside billed.
-    expect(m.billedDistanceKm).toBeCloseTo((m.distanceKm - m.freeRadiusKm) * 2, 1);
+    expect(m.billedDistanceKm).toBeCloseTo(m.distanceKm * 2, 1);
     expect(m.billedDurationMin).toBe(m.durationMin * 2);
     // And the fee is charged on the billed quantities, which is what the page
     // must put in the row labels for the column to add up.
@@ -1043,21 +1037,13 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   /*
-   * A regional free radius must reach the PRICE, not only the response.
-   *
-   * `resolveTariff` returned the resolved radius in `limits` and left the
-   * global value on the tariff — and the fare reads the tariff. So the row was
-   * loaded, `sources.freeRadiusKm` said 'zone', the quote echoed the global 10,
-   * and the fee did not move by a cent. The cap worked, because the caller
-   * reads THAT one out of `limits` by hand, which is exactly why nobody saw it.
-   *
-   * The test asserts the fee, never the echoed field: an assertion on
-   * `breakdown.freeRadiusKm` alone would have passed throughout.
+   * DEN-349 removed the free radius from the fare. The band column survives
+   * for the rows already written, so this pins that nothing reads it: an
+   * operator who fills it in must not change a cent.
    */
-  it('3e12. a band free radius changes what the customer pays', async () => {
+  it('3e12. a band free radius no longer changes what the customer pays', async () => {
     const customer = await makeCustomer();
-    // ~29 km of road north (22 km straight, times the detour factor): charged
-    // under the global 10 km radius, free under 40.
+    // ~29 km of road north (22 km straight, times the detour factor).
     await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
     const zone = await prisma.pricingZone.findUnique({ where: { key: 'pl_60_75' } });
     const previous = zone!.freeRadiusKm;
@@ -1083,11 +1069,9 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         data: { freeRadiusKm: 40 },
       });
 
-      const free = await quote();
-      expect(free.breakdown.freeRadiusKm).toBe(40);
-      expect(free.breakdown.chargeableDistanceKm).toBe(0);
-      expect(free.breakdown.distanceFeeCents).toBe(0);
-      expect(free.totalCents).toBeLessThan(charged.totalCents);
+      const after = await quote();
+      expect(after.breakdown.distanceFeeCents).toBe(charged.breakdown.distanceFeeCents);
+      expect(after.totalCents).toBe(charged.totalCents);
     } finally {
       await prisma.pricingZone.update({
         where: { key: 'pl_60_75' },

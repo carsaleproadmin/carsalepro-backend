@@ -1,6 +1,6 @@
 // Category: MONEY MATHS. Pure resolution, no DB, no network, no Nest container.
 import { PricingTariff } from './order-pricing';
-import { chargeableKm, exceedsCap, resolveTariff } from './tariff-resolution';
+import { exceedsCap, resolveTariff } from './tariff-resolution';
 
 /** The shipped global tariff, in cents — see platform-settings.constants.ts. */
 const GLOBAL: PricingTariff = {
@@ -11,22 +11,12 @@ const GLOBAL: PricingTariff = {
   platformFeePercent: 20,
   surgeMultiplier: 1,
   returnTripFactor: 1,
-  freeRadiusKm: 10,
 };
 
-/*
- * The same radius the global tariff carries, because the caller passes one
- * value into both: `OrdersService` reads `orderFreeRadiusKm` once and puts it
- * on `globalTariff` AND into this argument. A fixture where the two disagreed
- * hid the defect this file now pins — the resolved radius never reached the
- * tariff, so the two numbers were free to differ and no test minded.
- */
-const GLOBAL_FREE_RADIUS_KM = 10;
-
 const resolve = (
-  zone: Parameters<typeof resolveTariff>[2] = null,
-  country: Parameters<typeof resolveTariff>[3] = null,
-) => resolveTariff(GLOBAL, GLOBAL_FREE_RADIUS_KM, zone, country);
+  zone: Parameters<typeof resolveTariff>[1] = null,
+  country: Parameters<typeof resolveTariff>[2] = null,
+) => resolveTariff(GLOBAL, zone, country);
 
 describe('resolveTariff', () => {
   // The state this ships in. An empty database must price exactly as today.
@@ -34,7 +24,7 @@ describe('resolveTariff', () => {
     const r = resolve();
 
     expect(r.tariff).toEqual(GLOBAL);
-    expect(r.limits).toEqual({ freeRadiusKm: 10, capKm: null });
+    expect(r.limits).toEqual({ capKm: null });
     expect(new Set(Object.values(r.sources))).toEqual(new Set(['global']));
   });
 
@@ -107,60 +97,10 @@ describe('resolveTariff', () => {
     expect(r.tariff.surgeMultiplier).toBe(GLOBAL.surgeMultiplier);
   });
 
-  it('carries the free radius and the cap out as limits', () => {
-    const r = resolve({ freeRadiusKm: 15 }, { capKm: 150 });
+  it('carries the cap out as a limit', () => {
+    const r = resolve(null, { capKm: 150 });
 
-    expect(r.limits).toEqual({ freeRadiusKm: 15, capKm: 150 });
-  });
-
-  /*
-   * The one that matters: `computePrice` reads the radius off the TARIFF and
-   * never looks at `limits`. A resolved radius that reaches `limits` alone is
-   * a row an operator filled in, a source that reports 'zone', and a price
-   * that does not move — which is exactly what shipped. Asserting `limits`
-   * proves the resolution ran; only this asserts it is priced.
-   */
-  it('puts the resolved free radius on the tariff, where the fare reads it', () => {
-    const r = resolve({ freeRadiusKm: 25 });
-
-    expect(r.tariff.freeRadiusKm).toBe(25);
-    expect(r.tariff.freeRadiusKm).toBe(r.limits.freeRadiusKm);
-    expect(r.sources.freeRadiusKm).toBe('zone');
-  });
-
-  it('lets a country override its band free radius on the tariff too', () => {
-    const r = resolve({ freeRadiusKm: 25 }, { freeRadiusKm: 5 });
-
-    expect(r.tariff.freeRadiusKm).toBe(5);
-    expect(r.sources.freeRadiusKm).toBe('country');
-  });
-});
-
-describe('chargeableKm', () => {
-  // Subtracted, not a switch: at a threshold, km 15.1 would cost fifteen times
-  // km 15.0 and two neighbours would see prices an order of magnitude apart.
-  it('subtracts the free radius instead of switching the charge on', () => {
-    expect(chargeableKm(15.1, 15)).toBe(0.1);
-    expect(chargeableKm(20, 15)).toBe(5);
-  });
-
-  it('never goes below zero inside the radius', () => {
-    expect(chargeableKm(3, 15)).toBe(0);
-    expect(chargeableKm(15, 15)).toBe(0);
-  });
-
-  it('charges the whole trip when there is no radius', () => {
-    expect(chargeableKm(20, 0)).toBe(20);
-    expect(chargeableKm(20, Number.NaN)).toBe(20);
-  });
-
-  it('keeps the 0.1 km the routing providers report', () => {
-    expect(chargeableKm(20.35, 15)).toBe(5.4);
-  });
-
-  it('is zero for a degenerate distance', () => {
-    expect(chargeableKm(-5, 15)).toBe(0);
-    expect(chargeableKm(Number.NaN, 15)).toBe(0);
+    expect(r.limits).toEqual({ capKm: 150 });
   });
 });
 

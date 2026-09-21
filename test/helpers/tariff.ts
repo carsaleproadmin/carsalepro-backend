@@ -25,7 +25,6 @@ const TARIFF_KEYS: SettingKey[] = [
   'orderSurgeMultiplier',
   'orderDetourFactor',
   'orderReturnTripFactor',
-  'orderFreeRadiusKm',
   'orderCapKm',
   'platformFeePercent',
   'expertSearchRadiusKm',

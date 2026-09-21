@@ -93,9 +93,7 @@ export interface QuoteResult {
      */
     billedDistanceKm?: number;
     returnTripFactor?: number;
-    /** Kilometres that carried no travel charge. */
-    freeRadiusKm?: number;
-    /** One direction, after the free radius came off. */
+    /** One direction, the quantity the per-km rate multiplied. */
     chargeableDistanceKm?: number;
     /** 'road' when a routing provider answered, 'straight_line' when estimated. */
     distanceSource: 'road' | 'straight_line';
@@ -348,7 +346,6 @@ export class OrdersService {
       platformFeePercent,
       surgeMultiplier,
       returnTripFactor,
-      freeRadiusKm,
     ] = await Promise.all([
       this.settings.getCents('orderBaseFeeEur'),
       this.settings.getCents('orderRatePerKmEur'),
@@ -357,7 +354,6 @@ export class OrdersService {
       this.settings.getNumber('platformFeePercent'),
       this.settings.getNumber('orderSurgeMultiplier'),
       this.settings.getNumber('orderReturnTripFactor'),
-      this.settings.getNumber('orderFreeRadiusKm'),
     ]);
     return {
       baseFeeCents,
@@ -367,7 +363,6 @@ export class OrdersService {
       platformFeePercent,
       surgeMultiplier,
       returnTripFactor,
-      freeRadiusKm,
     };
   }
 
@@ -385,7 +380,6 @@ export class OrdersService {
       perKmCents: number | null;
       ratePerMinuteCents: number | null;
       minimumFareCents: number | null;
-      freeRadiusKm: Prisma.Decimal | null;
       capKm: Prisma.Decimal | null;
       returnTripFactor: Prisma.Decimal | null;
     }): RegionalOverrides => ({
@@ -393,7 +387,6 @@ export class OrdersService {
       perKmCents: r.perKmCents,
       ratePerMinuteCents: r.ratePerMinuteCents,
       minimumFareCents: r.minimumFareCents,
-      freeRadiusKm: r.freeRadiusKm === null ? null : Number(r.freeRadiusKm),
       capKm: r.capKm === null ? null : Number(r.capKm),
       returnTripFactor: r.returnTripFactor === null ? null : Number(r.returnTripFactor),
     });
@@ -434,7 +427,6 @@ export class OrdersService {
       surgeMultiplier,
       detourFactor,
       returnTripFactor,
-      freeRadiusKm,
       capKm,
       cacheHours,
     ] = await Promise.all([
@@ -447,7 +439,6 @@ export class OrdersService {
       this.settings.getNumber('orderSurgeMultiplier'),
       this.settings.getNumber('orderDetourFactor'),
       this.settings.getNumber('orderReturnTripFactor'),
-      this.settings.getNumber('orderFreeRadiusKm'),
       this.settings.getNumber('orderCapKm'),
       this.settings.getNumber('orderRoutingCacheHours'),
     ]);
@@ -460,7 +451,6 @@ export class OrdersService {
       platformFeePercent,
       surgeMultiplier,
       returnTripFactor,
-      freeRadiusKm,
     };
 
     // The region of the INSPECTION ADDRESS decides the tariff. Resolved here
@@ -470,7 +460,7 @@ export class OrdersService {
     // the cache key is a ~1 km cell held for 30 days.
     const countryCode = (await this.geocoding.countryCodeFor({ lat, lng })) ?? DEFAULT_COUNTRY_CODE;
     const region = await this.loadRegionalOverrides(countryCode);
-    const resolved = resolveTariff(globalTariff, freeRadiusKm, region.zone, region.country);
+    const resolved = resolveTariff(globalTariff, region.zone, region.country);
     const tariff = resolved.tariff;
     // A region may set its own cap; the global setting is the fallback.
     const effectiveCapKm = resolved.limits.capKm ?? (capKm > 0 ? capKm : null);
@@ -634,7 +624,6 @@ export class OrdersService {
         // applied to, so a customer checking our arithmetic reaches our number
         // and not half of it.
         distanceKm: p.distanceKm,
-        freeRadiusKm: p.freeRadiusKm,
         chargeableDistanceKm: p.chargeableDistanceKm,
         billedDistanceKm: p.billedDistanceKm,
         returnTripFactor: p.returnTripFactor,
@@ -955,13 +944,16 @@ export class OrdersService {
     // plain text PK, so any unique string works.
     const id = randomUUID();
     const p = priced.price;
+    // DEN-349: no order carries a free radius any more. The column stays, and
+    // stays NOT NULL, because orders priced before the change are read back
+    // through it; a new row states plainly that it had none.
+    const ZERO_FREE_RADIUS_KM = new Prisma.Decimal(0);
     // The BILLED distance, not the measured one: this column is what the
     // invoice and the contract quote, so it must be the quantity the per-km
     // rate multiplied. `return_trip_factor` beside it recovers the measured
     // distance for anyone who needs it.
     const distanceKm = new Prisma.Decimal(p.billedDistanceKm);
     const returnTripFactor = new Prisma.Decimal(p.returnTripFactor.toFixed(2));
-    const freeRadiusKm = new Prisma.Decimal(p.freeRadiusKm.toFixed(2));
     const surgeMultiplier = new Prisma.Decimal(p.surgeMultiplier.toFixed(2));
     // DEN-290: the customer no longer chooses a time, so a new order stores
     // NULL. A website deployed before that change still sends one, and it is
@@ -980,7 +972,7 @@ export class OrdersService {
         ${dto.listingUrl ?? null}, ${dto.address},
         ST_SetSRID(ST_MakePoint(${dto.lng}, ${dto.lat}), 4326)::geography,
         ${scheduledAt}, ${countryCode},
-        ${p.baseFeeCents}, ${distanceKm}, ${returnTripFactor}, ${freeRadiusKm}, ${p.distanceFeeCents}, ${p.billedDurationMin},
+        ${p.baseFeeCents}, ${distanceKm}, ${returnTripFactor}, ${ZERO_FREE_RADIUS_KM}, ${p.distanceFeeCents}, ${p.billedDurationMin},
         ${p.timeFeeCents}, ${surgeMultiplier}, ${p.minimumFareApplied}, ${priced.routingSource},
         ${p.totalCents}, ${p.platformFeeCents}, ${p.inspectorShareCents},
         'EUR', ${new Date()}
@@ -1256,12 +1248,7 @@ export class OrdersService {
   }): Promise<{ tariff: PricingTariff; distanceKm: number; durationMin: number }> {
     const globalTariff = await this.loadGlobalTariff();
     const region = await this.loadRegionalOverrides(order.countryCode);
-    const resolved = resolveTariff(
-      globalTariff,
-      Number(order.freeRadiusKm),
-      region.zone,
-      region.country,
-    );
+    const resolved = resolveTariff(globalTariff, region.zone, region.country);
 
     const fare = describeStoredFare({
       billedDistanceKm: Number(order.distanceKm),
