@@ -240,10 +240,15 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(Array.isArray(res.body.candidates)).toBe(true);
     expect(res.body.candidates.length).toBeGreaterThanOrEqual(1);
 
-    // Verify the 80/20 split is what the order would persist.
-    const platformFee = Math.round((res.body.totalCents * 20) / 100);
+    // Verify the split is what the order would persist: the commission is 20 %
+    // ON TOP of the fare (DEN-350), and the fare is the inspector's in full.
+    const platformFee = Math.round(
+      (res.body.breakdown.inspectorShareCents * 20) / 100,
+    );
     expect(platformFee).toBe(FARE.platformFeeCents);
-    expect(res.body.totalCents - platformFee).toBe(FARE.inspectorShareCents);
+    expect(res.body.breakdown.inspectorShareCents + platformFee).toBe(
+      FARE.totalCents,
+    );
 
     /*
      * The split is QUOTED, not only persisted. Both sides are shown the
@@ -850,7 +855,9 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       // The floor moves with the base fee. Left at 49 EUR it would bind first
       // and the whole band would have no effect on what anybody pays.
       expect(res.body.breakdown.minimumFareCents).toBe(3400);
-      expect(res.body.totalCents).toBe(3400);
+      // The floor binds the FARE; the customer's total adds the commission.
+      expect(res.body.breakdown.inspectorShareCents).toBe(3400);
+      expect(res.body.totalCents).toBe(4080);
     } finally {
       spy.mockRestore();
     }
@@ -1162,7 +1169,8 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       const order = await prisma.order.findUnique({ where: { id: res.body.orderId } });
       expect(order!.countryCode).toBe('PL');
       expect(order!.baseFeeCents).toBe(2700);
-      expect(order!.totalCents).toBe(3400);
+      expect(order!.inspectorShareCents).toBe(3400);
+      expect(order!.totalCents).toBe(4080);
     } finally {
       spy.mockRestore();
     }

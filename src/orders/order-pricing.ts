@@ -7,7 +7,15 @@
  *
  *   billed     = measured distance × returnTripFactor  (same for the minutes)
  *   subtotal   = base + billed km × ratePerKm + billed min × ratePerMinute
- *   total      = max(round(subtotal × surge), minimumFare)
+ *   fare       = max(round(subtotal × surge), minimumFare)
+ *   fee        = round(fare × platformFeePercent / 100)
+ *   total      = fare + fee
+ *
+ * **The customer pays the commission ON TOP of the fare** (DEN-350). The fare
+ * is what the inspector earns in full — their own base fee and the drive — and
+ * the platform fee is an added line, not a cut of it. Before this change the
+ * fee came OUT of the total, so raising an inspector's base fee gave them only
+ * 80 % of the raise.
  *
  * Every amount is integer cents. Rounding happens once per component and once
  * on the surged subtotal — never on a running float.
@@ -92,8 +100,11 @@ export interface PriceBreakdown {
   /** What the floor added. 0 when the fare already cleared it. */
   minimumFareTopUpCents: number;
   minimumFareApplied: boolean;
+  /** What the customer pays: the fare PLUS the platform commission. */
   totalCents: number;
+  /** The commission, charged on top of the fare and paid by the customer. */
   platformFeeCents: number;
+  /** The fare in full — base, distance, time, surge and minimum-fare floor. */
   inspectorShareCents: number;
 }
 
@@ -140,15 +151,18 @@ export function computePrice(input: PricingInput): PriceBreakdown {
   const surgedCents = Math.round(subtotalCents * surgeMultiplier);
   const surgeFeeCents = surgedCents - subtotalCents;
 
-  const totalCents = Math.max(surgedCents, minimumFareCents);
-  const minimumFareTopUpCents = totalCents - surgedCents;
+  // The fare — everything the inspector earns. The commission is added to it
+  // below rather than taken out of it, so the minimum fare is a floor on the
+  // INSPECTOR's side, which is the side it was ever meant to protect.
+  const inspectorShareCents = Math.max(surgedCents, minimumFareCents);
+  const minimumFareTopUpCents = inspectorShareCents - surgedCents;
 
-  // The split is derived from the FINAL total, so platformFee + inspectorShare
-  // always reconciles exactly — inspectorShare is the remainder, never a second
-  // rounded product.
+  // Rounded once, and the total is the sum of the two parts, so
+  // `platformFee + inspectorShare === total` still holds exactly — the
+  // inspector's promised amount is never the one a rounding cent comes out of.
   const platformFeePercent = Math.min(100, Math.max(0, safeNonNegative(tariff.platformFeePercent)));
-  const platformFeeCents = Math.round((totalCents * platformFeePercent) / 100);
-  const inspectorShareCents = totalCents - platformFeeCents;
+  const platformFeeCents = Math.round((inspectorShareCents * platformFeePercent) / 100);
+  const totalCents = inspectorShareCents + platformFeeCents;
 
   return {
     baseFeeCents,

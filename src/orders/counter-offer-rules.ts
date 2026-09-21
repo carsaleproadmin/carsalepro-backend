@@ -117,27 +117,28 @@ export function counterOfferCeilingCents(fairPriceCents: number, multiplier: num
  * other unit. So the arithmetic is inverted here, and the promise on the form
  * - "you receive exactly this" - is exact.
  *
- * The platform fee is the REMAINDER, `total - payout`, and not a second
- * rounding of the percentage. Rounding both ends independently loses or invents
- * a cent, and the cent it loses would come out of the number the inspector was
- * promised. The effective percentage therefore moves by up to a cent on a
- * single order, which is the correct thing to give up.
+ * The commission is ADDED to the payout (DEN-350), exactly as `computePrice`
+ * adds it to an ordinary order's fare: `total = payout + round(payout × pct)`.
+ * It used to be grossed up as a share OF the total (`payout / (1 - pct)`),
+ * which charged the customer 25 % over the payout where the ordinary order
+ * charges 20 % — two formulas for one commission.
  *
- * A percentage at or above 100 is refused by returning the payout unchanged
- * (a zero fee): it is a misconfiguration, and dividing by zero or a negative
- * would answer with an infinite or inverted price.
+ * The platform fee remains the REMAINDER, `total - payout`, at the call site:
+ * the cent a rounding invents must never come out of the number the inspector
+ * was promised.
+ *
+ * A negative or non-finite percentage is read as zero. There is no upper bound
+ * any more — a percentage above 100 now only makes an expensive order, never a
+ * division by zero or an inverted price.
  */
 export function counterOfferTotalFromPayout(
   payoutCents: number,
   platformFeePercent: number,
 ): number {
   const payout = Math.max(0, Math.round(payoutCents));
-  const pct =
-    Number.isFinite(platformFeePercent) && platformFeePercent > 0 && platformFeePercent < 100
-      ? platformFeePercent
-      : 0;
+  const pct = Number.isFinite(platformFeePercent) && platformFeePercent > 0 ? platformFeePercent : 0;
   if (pct === 0) return payout;
-  return Math.round(payout / (1 - pct / 100));
+  return payout + Math.round((payout * pct) / 100);
 }
 
 /**
@@ -154,11 +155,8 @@ export function counterOfferPayoutFromTotal(
   platformFeePercent: number,
 ): number {
   const total = Math.max(0, Math.round(totalCents));
-  const pct =
-    Number.isFinite(platformFeePercent) && platformFeePercent > 0 && platformFeePercent < 100
-      ? platformFeePercent
-      : 0;
-  return total - Math.round((total * pct) / 100);
+  const pct = Number.isFinite(platformFeePercent) && platformFeePercent > 0 ? platformFeePercent : 0;
+  return Math.round(total / (1 + pct / 100));
 }
 
 /**
