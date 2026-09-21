@@ -94,9 +94,10 @@ describe('counterOfferExpiry', () => {
  */
 describe('counterOfferTotalFromPayout', () => {
   it('derives a total whose remainder is exactly the payout', () => {
-    // 20 percent: 104.79 to the inspector needs 130.99 from the customer.
-    expect(counterOfferTotalFromPayout(10_479, 20)).toBe(13_099);
-    expect(13_099 - 10_479).toBe(2_620);
+    // 20 percent ON TOP (DEN-350): 104.79 to the inspector is 125.75 from the
+    // customer, the same formula an ordinary order's fare is charged under.
+    expect(counterOfferTotalFromPayout(10_479, 20)).toBe(12_575);
+    expect(12_575 - 10_479).toBe(2_096);
   });
 
   it('pays the inspector to the cent at every payout, whatever the rounding', () => {
@@ -110,18 +111,22 @@ describe('counterOfferTotalFromPayout', () => {
     }
   });
 
-  it('takes no fee at all on a percentage that cannot be honoured', () => {
-    // A misconfiguration must not answer with an infinite or inverted price.
+  it('takes no fee at all on a percentage that is not a percentage', () => {
     expect(counterOfferTotalFromPayout(5_000, 0)).toBe(5_000);
-    expect(counterOfferTotalFromPayout(5_000, 100)).toBe(5_000);
     expect(counterOfferTotalFromPayout(5_000, -10)).toBe(5_000);
     expect(counterOfferTotalFromPayout(5_000, Number.NaN)).toBe(5_000);
+  });
+
+  it('charges a 100 percent commission rather than refusing it', () => {
+    // Adding the fee makes this an expensive order, not a division by zero -
+    // the refusal the inverted formula needed no longer has anything to guard.
+    expect(counterOfferTotalFromPayout(5_000, 100)).toBe(10_000);
   });
 });
 
 describe('counterOfferPayoutFromTotal', () => {
   it('reports what a customer total leaves the inspector', () => {
-    expect(counterOfferPayoutFromTotal(13_099, 20)).toBe(10_479);
+    expect(counterOfferPayoutFromTotal(12_575, 20)).toBe(10_479);
   });
 
   /*

@@ -32,7 +32,10 @@ describe('computePrice', () => {
       expect(p.timeFeeCents).toBe(700);
       expect(p.subtotalCents).toBe(4900);
       expect(p.minimumFareApplied).toBe(false);
-      expect(p.totalCents).toBe(4900);
+      // The fare in full to the inspector, plus the 20 % the customer pays.
+      expect(p.inspectorShareCents).toBe(4900);
+      expect(p.platformFeeCents).toBe(980);
+      expect(p.totalCents).toBe(5880);
     });
 
     // The shortest trip there is still pays the floor, and it pays it on a
@@ -41,7 +44,8 @@ describe('computePrice', () => {
       const p = price(1, 3);
       expect(p.chargeableDistanceKm).toBe(1);
       expect(p.distanceFeeCents).toBe(60);
-      expect(p.totalCents).toBe(4900);
+      expect(p.inspectorShareCents).toBe(4900);
+      expect(p.totalCents).toBe(5880);
       expect(p.minimumFareApplied).toBe(true);
     });
 
@@ -50,20 +54,24 @@ describe('computePrice', () => {
       expect(p.chargeableDistanceKm).toBe(20);
       expect(p.billedDistanceKm).toBe(40);
       expect(p.subtotalCents).toBe(3900 + 1200 + 1750);
-      expect(p.totalCents).toBe(6850);
+      expect(p.inspectorShareCents).toBe(6850);
+      expect(p.totalCents).toBe(8220);
       expect(p.minimumFareApplied).toBe(false);
       expect(p.minimumFareTopUpCents).toBe(0);
     });
 
     it('50 km / 45 min bills all 50 km both ways', () => {
-      expect(price(50, 45).totalCents).toBe(10050);
+      expect(price(50, 45).inspectorShareCents).toBe(10050);
+      expect(price(50, 45).totalCents).toBe(12060);
     });
 
+    // Compared on the FARE, which is what the old flat tariff was: the
+    // commission is a separate line the customer pays on top of it now.
     it('undercuts the previous flat tariff (50 EUR + 1.50/km) on all three', () => {
       const oldFare = (km: number) => 5000 + Math.round(km * 150);
-      expect(price(5, 10).totalCents).toBeLessThan(oldFare(5));
-      expect(price(20, 25).totalCents).toBeLessThan(oldFare(20));
-      expect(price(50, 45).totalCents).toBeLessThan(oldFare(50));
+      expect(price(5, 10).inspectorShareCents).toBeLessThan(oldFare(5));
+      expect(price(20, 25).inspectorShareCents).toBeLessThan(oldFare(20));
+      expect(price(50, 45).inspectorShareCents).toBeLessThan(oldFare(50));
     });
   });
 
@@ -71,7 +79,7 @@ describe('computePrice', () => {
     it('does not engage when the fare exactly equals the floor', () => {
       // base 4900, no distance, no time → exactly the floor.
       const p = price(0, 0, { baseFeeCents: 4900 });
-      expect(p.totalCents).toBe(4900);
+      expect(p.inspectorShareCents).toBe(4900);
       expect(p.minimumFareApplied).toBe(false);
       expect(p.minimumFareTopUpCents).toBe(0);
     });
@@ -80,12 +88,15 @@ describe('computePrice', () => {
       const p = price(0, 0, { baseFeeCents: 4899 });
       expect(p.minimumFareApplied).toBe(true);
       expect(p.minimumFareTopUpCents).toBe(1);
-      expect(p.totalCents).toBe(4900);
+      expect(p.inspectorShareCents).toBe(4900);
     });
 
     it('is reported as its own line, never folded into another', () => {
       const p = price(1, 1);
-      expect(p.subtotalCents + p.surgeFeeCents + p.minimumFareTopUpCents).toBe(p.totalCents);
+      // The fare, not the customer's total: the commission sits outside it.
+      expect(p.subtotalCents + p.surgeFeeCents + p.minimumFareTopUpCents).toBe(
+        p.inspectorShareCents,
+      );
     });
   });
 
@@ -99,22 +110,23 @@ describe('computePrice', () => {
     it('applies the manual surge lever', () => {
       const p = price(20, 25, { surgeMultiplier: 1.5 });
       expect(p.subtotalCents).toBe(6850);
-      expect(p.totalCents).toBe(Math.round(6850 * 1.5));
-      expect(p.surgeFeeCents).toBe(p.totalCents - 6850);
+      expect(p.inspectorShareCents).toBe(Math.round(6850 * 1.5));
+      expect(p.surgeFeeCents).toBe(p.inspectorShareCents - 6850);
+      expect(p.totalCents).toBe(12330);
     });
 
     it('treats a nonsensical multiplier as off rather than free', () => {
       for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
         const p = price(20, 25, { surgeMultiplier: bad });
-        expect(p.totalCents).toBe(6850);
+        expect(p.inspectorShareCents).toBe(6850);
       }
     });
   });
 
   describe('the platform split', () => {
     it('always reconciles: platformFee + inspectorShare === total', () => {
-      // Fuzz across the whole plausible input space; the split is derived from
-      // the final total precisely so this can never drift by a cent.
+      // Fuzz across the whole plausible input space; the total is the SUM of
+      // the two parts precisely so this can never drift by a cent.
       let seed = 1;
       const rnd = () => {
         seed = (seed * 1103515245 + 12345) % 2147483648;
@@ -133,7 +145,12 @@ describe('computePrice', () => {
     });
 
     it('clamps a percentage outside 0–100', () => {
-      expect(price(20, 25, { platformFeePercent: 250 }).inspectorShareCents).toBe(0);
+      // 100 % is the ceiling: the commission may at most equal the fare, never
+      // multiply it. The inspector's own share is untouched by the clamp.
+      const capped = price(20, 25, { platformFeePercent: 250 });
+      expect(capped.inspectorShareCents).toBe(6850);
+      expect(capped.platformFeeCents).toBe(6850);
+      expect(capped.totalCents).toBe(13700);
       expect(price(20, 25, { platformFeePercent: -5 }).platformFeeCents).toBe(0);
     });
   });
