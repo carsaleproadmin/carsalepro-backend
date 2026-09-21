@@ -1740,6 +1740,51 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   // ============================================================
+  // 5a. A refusal keeps the order readable (DEN-348)
+  // ============================================================
+  //
+  // The inspector who declines stays on the order page they pressed the button
+  // on, and the job appears in their missed list marked as their own answer.
+  // Before this, `getDetail` admitted an inspector only through a live offer,
+  // so the refresh after a decline answered 403 and the cabinet showed a 404.
+  it('5a. after declining, the inspector still reads the order and sees it in the missed list', async () => {
+    const customer = await makeCustomer();
+    const near = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Near' });
+    await makeInspector(ORDER_LAT + 0.09, ORDER_LNG, { name: 'Far' });
+    const { orderId } = await createPaidOrder(customer);
+
+    const firstOffer = await pendingOfferFor(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${firstOffer!.id}/decline`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+    expect(detail.body.offer.status).toBe('DECLINED');
+    // Read-only: the flag the cabinet reads to draw no accept and no decline.
+    expect(detail.body.offer.active).toBe(false);
+    // Still not a party to the job: the seller's channel stays closed.
+    expect(detail.body.listingUrl).toBeNull();
+    // The refusal is in the order's own history.
+    expect(
+      (detail.body.events as Array<{ type: string }>).map((e) => e.type),
+    ).toContain('offer_declined');
+
+    const missed = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+    const row = (missed.body.items as Array<{ orderId: string; kind: string }>).find(
+      (i) => i.orderId === orderId,
+    );
+    expect(row).toBeTruthy();
+    expect(row!.kind).toBe('declined');
+  });
+
+  // ============================================================
   // 5c. Each offer records how far ITS inspector is
   // ============================================================
   //
@@ -2518,7 +2563,14 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(still).not.toBeNull();
   });
 
-  it('9n. a DECLINED offer is never a missed one', async () => {
+  /*
+   * Reversed by DEN-348. A `DECLINED` offer used to be kept out of this list
+   * as noise - work the inspector had already refused. The refusal took the
+   * order out of every list AND out of the detail page, so a job answered by
+   * mistake simply vanished. It is history now, marked `declined` so the row
+   * reads as the inspector's own answer and not as an expiry.
+   */
+  it('9n. a DECLINED offer stays in the list, marked as the inspector answer', async () => {
     const customer = await makeCustomer();
     const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
     const { orderId } = await createPaidOrder(customer);
@@ -2534,7 +2586,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .get('/api/v1/orders/me/missed')
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(res.body.items.find((i: { orderId: string }) => i.orderId === orderId)).toBeUndefined();
+    const row = (res.body.items as Array<{ orderId: string; kind: string }>).find(
+      (i) => i.orderId === orderId,
+    );
+    expect(row).toBeTruthy();
+    expect(row!.kind).toBe('declined');
   });
 
   it('10. dispute from SUBMITTED → DISPUTED + Dispute row', async () => {

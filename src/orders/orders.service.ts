@@ -1942,6 +1942,16 @@ export class OrdersService {
     }
     if (offer.status === 'PENDING') {
       await this.prisma.orderOffer.update({ where: { id: offerId }, data: { status: 'DECLINED' } });
+      /*
+       * The refusal in the order's own history (DEN-348). `offer_sent` was
+       * written for every dispatch and nothing recorded the answer, so a
+       * timeline read as a row of offers with no reason for any of them. The
+       * event is written only on the PENDING branch: a repeated call is
+       * idempotent and must not add a second line.
+       */
+      await this.writeEvent(offer.orderId, userId, 'offer_declined', null, null, {
+        offerId,
+      });
     }
     // Cascade to the next nearest inspector (or UNASSIGNED if none left).
     await this.dispatch(offer.orderId);
@@ -2756,8 +2766,13 @@ export class OrdersService {
    *
    * Three rules, each a decision:
    *
-   *  - **EXPIRED only.** A `DECLINED` offer was a deliberate answer, and a list
-   *    that reminds somebody of work they refused is noise.
+   *  - **EXPIRED and DECLINED.** The two are told apart by `kind` and the row
+   *    says which. `DECLINED` was left out at first, as noise — a list that
+   *    reminds somebody of work they refused. It came back with DEN-348: the
+   *    refusal took the order out of every list the inspector has AND out of
+   *    the detail page they were standing on, so a job answered by mistake
+   *    simply disappeared. It is history now, marked as the inspector's own
+   *    answer, and it is the entry that carries the link to the order.
    *  - **A window, not a purge.** Rows older than `days` fall out of this
    *    answer and stay in the database. Deleting them would re-admit a declined
    *    inspector to the same order (DEN-326) and tear events out of the order's
@@ -2782,10 +2797,10 @@ export class OrdersService {
   }> {
     const days = opts.days ?? 7;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const expired = await this.prisma.orderOffer.findMany({
+    const unanswered = await this.prisma.orderOffer.findMany({
       where: {
         inspectorId: userId,
-        status: 'EXPIRED',
+        status: { in: ['EXPIRED', 'DECLINED'] },
         expiresAt: { gte: since },
         // An order this inspector holds NOW is not a missed one, whatever an
         // earlier round says. After DEN-326 the same order can expire in round
@@ -2805,9 +2820,9 @@ export class OrdersService {
     });
 
     // Newest first, so the first row seen for an order is the latest one.
-    const latest = new Map<string, (typeof expired)[number]>();
+    const latest = new Map<string, (typeof unanswered)[number]>();
     const times = new Map<string, number>();
-    for (const offer of expired) {
+    for (const offer of unanswered) {
       if (!latest.has(offer.orderId)) latest.set(offer.orderId, offer);
       times.set(offer.orderId, (times.get(offer.orderId) ?? 0) + 1);
     }
@@ -2820,7 +2835,7 @@ export class OrdersService {
      * what the reader sees.
      *
      * It is safe to do in memory precisely because of the seven-day window:
-     * the set is one inspector's expired offers of one week, not a history.
+     * the set is one inspector's unanswered offers of one week, not a history.
      */
     const collapsed = [...latest.values()];
     if ((opts.sort ?? OrderSort.newest) === OrderSort.oldest) collapsed.reverse();
@@ -2844,18 +2859,29 @@ export class OrdersService {
 
   async getDetail(orderId: string, userId: string, role: Role): Promise<OrderDetail> {
     const order = await this.requireOrder(orderId);
+    /*
+     * The latest offer this order ever made to this reader, in ANY status.
+     *
+     * The query used to admit only an ACCEPTED offer or a live PENDING one, so
+     * the second the inspector pressed "decline" the page they were standing on
+     * answered 403 and the cabinet showed a 404 (DEN-348). A refusal is an
+     * ANSWER, not a loss of access: the job stays readable afterwards, the same
+     * way an expired offer does, and the reader is told what became of it.
+     *
+     * Read-only falls out of the existing gates rather than being enforced
+     * again here: `isInspector` is false for such a reader, so the seller's
+     * contact and both parties' channels stay closed. `viewerOffer` below is
+     * what tells the client not to draw accept and decline.
+     */
     const offer = await this.prisma.orderOffer.findFirst({
-      where: {
-        orderId,
-        inspectorId: userId,
-        OR: [
-          { status: 'ACCEPTED' },
-          { status: 'PENDING', expiresAt: { gt: new Date() } },
-        ],
-      },
+      where: { orderId, inspectorId: userId },
       orderBy: { createdAt: 'desc' },
-      select: { id: true, status: true },
+      select: { id: true, status: true, expiresAt: true },
     });
+    const offerActive =
+      !!offer &&
+      (offer.status === 'ACCEPTED' ||
+        (offer.status === 'PENDING' && offer.expiresAt.getTime() > Date.now()));
     const isCustomer = order.customerId === userId;
     const isInspector = order.inspectorId === userId;
     const hasInspectorOffer = !!offer;
@@ -3100,7 +3126,7 @@ export class OrdersService {
       autoApproveAt: order.autoApproveAt ? order.autoApproveAt.toISOString() : null,
       submittedAt: order.submittedAt ? order.submittedAt.toISOString() : null,
       createdAt: order.createdAt.toISOString(),
-      offer: offer ? { id: offer.id, status: offer.status } : null,
+      offer: offer ? { id: offer.id, status: offer.status, active: offerActive } : null,
       offerId: offer?.id ?? null,
       // An admin decision carries the admin's own reason, which only admins may
       // read (DEN-294). The admin detail gets it as a separate `decisions` list.
@@ -5197,7 +5223,7 @@ export class OrdersService {
    * order is not theirs and is not coming back.
    */
   private toMissedItem(
-    offer: { id: string; expiresAt: Date; inspectorShareCents: number | null },
+    offer: { id: string; status: string; expiresAt: Date; inspectorShareCents: number | null },
     o: Order,
     timesOffered: number,
   ) {
@@ -5219,6 +5245,15 @@ export class OrdersService {
       inspectorShareCents: offer.inspectorShareCents ?? o.inspectorShareCents,
       currency: o.currency,
       expiredAt: offer.expiresAt.toISOString(),
+      /*
+       * Why the offer ENDED, which is not the same question as `outcome` - that
+       * one says what became of the order. `declined` is the inspector's own
+       * answer and reads as such in the cabinet; `expired` is the hour running
+       * out. There is no `declinedAt`: nothing stamps the answer, and
+       * `expiresAt` still bounds the row, so the date is presented as the
+       * offer's own deadline for both kinds rather than invented for one.
+       */
+      kind: offer.status === 'DECLINED' ? ('declined' as const) : ('expired' as const),
       timesOffered,
       outcome,
     };
@@ -5369,8 +5404,17 @@ export interface OrderDetail {
   autoApproveAt: string | null;
   submittedAt: string | null;
   createdAt: string;
-  /** Present when the current inspector has a pending/accepted offer. */
-  offer?: { id: string; status: string } | null;
+  /**
+   * The latest offer this order made to the reader, when the reader is an
+   * inspector it was ever offered to. Any status: a DECLINED or EXPIRED offer
+   * is history the inspector may still read (DEN-348).
+   *
+   * `active` is the flag the cabinet acts on — true only for an ACCEPTED offer
+   * or a PENDING one that has not run out. Accept and decline answer 409 for
+   * every other status, so a client that draws them from the presence of
+   * `offer` alone draws controls that can only fail.
+   */
+  offer?: { id: string; status: string; active: boolean } | null;
   offerId?: string | null;
   events: Array<{
     type: string;
