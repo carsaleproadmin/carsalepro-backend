@@ -237,7 +237,7 @@ const PUBLIC_PAYMENT_STATE: Record<string, OrderPaymentState> = {
 const RECONCILE_MIN_AGE_MS = 5 * 60_000;
 
 /**
- * How many inspectors a quote looks at (DEN-352).
+ * How many inspectors a quote looks at (DEN-352), and how many dispatch walks.
  *
  * It was three, which was the size the "who is near you" list needs. The quote
  * now takes the lowest base fee of the set, and the lowest of three neighbours
@@ -245,8 +245,18 @@ const RECONCILE_MIN_AGE_MS = 5 * 60_000;
  * rather than one person. The query is a bounded PostGIS KNN scan on an index,
  * so the extra rows cost effectively nothing, and the customer-facing list is
  * sliced back to three where it is built.
+ *
+ * ONE number for both paths, and that is a correctness rule rather than tidying.
+ * The quote prices the order on the LOWEST base fee in its set and the order
+ * authorises exactly that total, so the total is a ceiling that dispatch then
+ * refuses to exceed. Dispatch looked at five while the quote looked at ten: an
+ * inspector who was seventh-nearest could therefore set the ceiling of an order
+ * they were never offered, and none of the five dispatch did see fitted under
+ * it. The order reached UNASSIGNED on its first round without one inspector
+ * declining anything. Whoever sets the ceiling must be inside the set that is
+ * asked to meet it - move this number and both sides move together.
  */
-const QUOTE_CANDIDATE_LIMIT = 10;
+const CANDIDATE_LIMIT = 10;
 
 /** Order statuses in which we are still looking for an inspector. */
 const PRE_ASSIGNMENT_STATUSES: OrderStatus[] = [
@@ -469,7 +479,7 @@ export class OrdersService {
       lat,
       lng,
       radiusKm,
-      limit: QUOTE_CANDIDATE_LIMIT,
+      limit: CANDIDATE_LIMIT,
       excludeCustomerId: customerId ?? null,
     });
 
@@ -1004,12 +1014,16 @@ export class OrdersService {
    * It used to ask for exactly one. With inspector-set base fees the nearest
    * candidate may cost more than the customer authorised, and stopping there
    * would mark the order UNASSIGNED while three affordable inspectors stood a
-   * few kilometres further away. Five, not fifty: each one costs a profile read,
-   * and an order that cannot be filled by the five nearest is an order the
-   * search window should be allowed to expire rather than one to grind through
-   * the whole country for.
+   * few kilometres further away.
+   *
+   * It is {@link CANDIDATE_LIMIT} - the quote's number - and it must stay equal
+   * to it. It was five against the quote's ten, and that gap is described in
+   * full there. Not fifty: each candidate costs a profile read, and an order
+   * that cannot be filled by the ten nearest is an order the search window
+   * should be allowed to expire rather than one to grind through the whole
+   * country for.
    */
-  private static readonly DISPATCH_CANDIDATE_LIMIT = 5;
+  private static readonly DISPATCH_CANDIDATE_LIMIT = CANDIDATE_LIMIT;
 
   /**
    * True while a customer is paying for a counter-offer on this order
