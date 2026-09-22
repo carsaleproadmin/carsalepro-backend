@@ -33,6 +33,7 @@ import {
   projectVehicleColumns,
   sanitizeVehicleData,
 } from './listing-vehicle-data';
+import { normalizeColour } from './vehicle-vocabulary';
 import {
   MAX_LISTING_PHOTOS,
   manifestPhotoRefs,
@@ -1165,7 +1166,14 @@ export class ListingsService {
       model: report.model,
       year: report.year,
       mileageKm: report.mileageKm,
-      color: report.color ?? fromJson.color,
+      /*
+       * `report.color` is a REPORT column and so has never passed through
+       * `projectVehicleColumns` - it is folded here instead. Without this the
+       * report-backed half of the showroom stored an inspector's own words
+       * ("Schwarz") in a column the colour filter compares against slugs, and
+       * the filter answered for manual listings only.
+       */
+      color: normalizeColour(report.color) ?? fromJson.color,
       bodyType: report.bodyType ?? fromJson.bodyType,
       driveType: report.driveType ?? fromJson.driveType,
       fuelType: fromJson.fuelType,
