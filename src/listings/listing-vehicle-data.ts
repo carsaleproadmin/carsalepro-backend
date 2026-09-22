@@ -1,4 +1,9 @@
 import { ListingVehicleV1Dto } from './dto/listing-vehicle-v1.dto';
+import {
+  normalizeColour,
+  normalizeFuelType,
+  normalizeTransmission,
+} from './vehicle-vocabulary';
 
 export type JsonObject = Record<string, unknown>;
 
@@ -131,15 +136,26 @@ export function projectVehicleColumns(data: JsonObject): ProjectedVehicleColumns
     model: str(vehicle.model, 64),
     year: int(vehicle.year),
     mileageKm: int(operational.mileageKm),
-    fuelType: str(vehicle.fuelType, 32),
-    transmission: str(vehicle.transmission, 32),
+    /*
+     * Folded onto a closed vocabulary before it is stored, because the showroom
+     * offers these three as dropdowns and the column is written by three
+     * writers that do not agree - the seller editor's zod enum, the VIN
+     * decoder's prose ("Gasoline", "Flexible Fuel Vehicle (FFV)") and an
+     * inspector's free text in their own language. See `vehicle-vocabulary.ts`.
+     *
+     * Folding on WRITE rather than on read is what lets the filter stay an
+     * indexed equality test. A value the fold does not recognise keeps its own
+     * words and is simply not returned by that filter.
+     */
+    fuelType: str(normalizeFuelType(vehicle.fuelType), 32),
+    transmission: str(normalizeTransmission(vehicle.transmission), 32),
     powerKw: int(vehicle.powerKw),
     firstRegistration:
       parsedFirstReg && !Number.isNaN(parsedFirstReg.getTime()) ? parsedFirstReg : null,
     // The mobile contract calls it `tuvDate` and treats it as free text
     // ("2027-06"), so it lands in a text column, not a date one.
     huValidUntil: str(vehicle.tuvDate, 16),
-    color: str(vehicle.colour, 64),
+    color: str(normalizeColour(vehicle.colour), 64),
     bodyType: str(vehicle.bodyType, 32),
     driveType: str(vehicle.driveType, 32),
   };
