@@ -528,6 +528,15 @@ export class OrdersService {
        * DEN-213. Priced on an inspector's own base fee - since DEN-352, on the
        * LOWEST base fee in the candidate set rather than the nearest one's.
        *
+       * Since DEN-358 it is the lowest TOTAL - the base fee AND that
+       * inspector's own drive - rather than the lowest base fee over the
+       * nearest inspector's drive. The old figure added up one person's rate
+       * and a different person's road, so it was a price NOBODY in the set
+       * would have accepted: the cheap inspector was further away than the
+       * route it was built on, and the near one charged more than the fee it
+       * was built on. Dispatch then looked for somebody at or under it and
+       * regularly found nobody at all. See {@link cheapestCandidatePrice}.
+       *
        * The customer is shown ONE price and is never charged more than it. The
        * order that follows authorises exactly this total, and dispatch will not
        * offer the job to anybody who costs more (`dispatch`), so the number on
@@ -538,48 +547,105 @@ export class OrdersService {
        * cheaper inspectors three streets further away were never offered the
        * work at all.
        *
-       * The route stays the nearest inspector's. Pricing each candidate would
-       * cost a routing request each to change a figure the base fee dominates,
-       * and the distance of the person who actually takes the job is not known
-       * at quote time anyway.
+       * Still ONE routing request. The nearest candidate's road route is
+       * measured, and every other candidate is priced on the straight line
+       * times `orderDetourFactor` - the same approximation `fairPriceForInspector`
+       * uses, and the same one the route itself falls back to when routing is
+       * unavailable. Routing ten candidates would cost ten provider calls to
+       * refine a figure that is about to be a ceiling, not an invoice.
        *
-       * The trade is deliberate: a quote can now land below what the inspector
-       * offering that base fee would accept for this drive. Then nobody takes
-       * it at the tariff and the order goes to the counter-offer queue
-       * (DEN-350/DEN-351), where the customer is asked a real price WITH a
-       * reason - which is the right place for that conversation, and a far
-       * better one than an order form nobody fills in.
+       * The trade is deliberate: a quote can still land below what the winning
+       * inspector would accept for this drive - the approximation may flatter a
+       * bend in the road. Then nobody takes it at the tariff and the order goes
+       * to the counter-offer queue (DEN-350/DEN-351), where the customer is
+       * asked a real price WITH a reason - which is the right place for that
+       * conversation, and a far better one than an order form nobody fills in.
        */
-      price: computePrice({
+      price: await this.cheapestCandidatePrice(tariff, candidates, {
         distanceKm: route.distanceKm,
         durationMin: route.durationMin,
-        tariff: await this.cheapestCandidateTariff(tariff, candidates),
+        detourFactor,
+        capKm: effectiveCapKm,
       }),
     };
   }
 
   /**
-   * The tariff for a quote: the LOWEST base fee among the candidates (DEN-352).
+   * The cheapest TOTAL among the candidates (DEN-358): each one's own base fee
+   * over each one's own drive, and the lowest of those is the quote.
    *
-   * One query for the whole set rather than one per candidate, and a candidate
-   * with no stated base fee counts as the platform base - the same fallback
+   * It replaces a "lowest base fee over the nearest drive" that mixed two
+   * people together and produced a price neither of them would take.
+   *
+   * One profile query for the whole set, and a candidate with no stated base
+   * fee counts as the platform base - the same fallback
    * {@link tariffForInspector} applies, so a pool that states nothing prices
    * exactly as it did before DEN-213.
+   *
+   * `trip` carries the MEASURED route to the nearest candidate. Every other
+   * candidate's drive is scaled from it, distance by the straight line and
+   * minutes by the ratio of the two distances - holding the minutes fixed would
+   * price a 40 km drive with the time of a 12 km one.
    */
-  private async cheapestCandidateTariff(
+  private async cheapestCandidatePrice(
     tariff: PricingTariff,
-    candidates: Array<{ userId: string }>,
-  ): Promise<PricingTariff> {
+    candidates: Array<{ userId: string; distanceKm: number }>,
+    trip: { distanceKm: number; durationMin: number; detourFactor: number; capKm: number | null },
+  ): Promise<PriceBreakdown> {
+    const nearestPrice = () =>
+      computePrice({ distanceKm: trip.distanceKm, durationMin: trip.durationMin, tariff });
+    if (candidates.length === 0) return nearestPrice();
+
     const profiles = await this.prisma.inspectorProfile.findMany({
       where: { userId: { in: candidates.map((c) => c.userId) } },
-      select: { baseFeeCents: true },
+      select: { userId: true, baseFeeCents: true },
     });
-    // NOT seeded with the platform base: that would floor the answer at it, and
-    // a pool where everybody charges more than the platform base would be
-    // quoted a price none of them accepts.
-    const stated = profiles.map((p) => effectiveBaseFeeCents(p.baseFeeCents, tariff.baseFeeCents));
-    const baseFeeCents = stated.length ? Math.min(...stated) : tariff.baseFeeCents;
-    return baseFeeCents === tariff.baseFeeCents ? tariff : { ...tariff, baseFeeCents };
+    const stated = new Map(profiles.map((p) => [p.userId, p.baseFeeCents]));
+
+    let best: PriceBreakdown | null = null;
+    for (const candidate of candidates) {
+      const trip_ = this.tripForCandidate(trip, candidate.distanceKm, candidates[0].distanceKm);
+      /*
+       * The cap is applied per candidate, not only to the nearest. Without it a
+       * cheap inspector far outside the operator's stated limit could win the
+       * quote, and the order would be sold on a drive the business has said it
+       * does not send anyone on. Measured one direction, like the check above.
+       */
+      if (exceedsCap(trip_.distanceKm, trip.capKm)) continue;
+      const baseFeeCents = effectiveBaseFeeCents(stated.get(candidate.userId), tariff.baseFeeCents);
+      const price = computePrice({
+        distanceKm: trip_.distanceKm,
+        durationMin: trip_.durationMin,
+        tariff: baseFeeCents === tariff.baseFeeCents ? tariff : { ...tariff, baseFeeCents },
+      });
+      if (!best || price.totalCents < best.totalCents) best = price;
+    }
+    // Everybody sat outside the cap except the nearest, who was cleared by the
+    // caller's own check. Their price is the honest answer, not a refusal.
+    return best ?? nearestPrice();
+  }
+
+  /**
+   * One candidate's drive, derived from the measured route to the nearest.
+   *
+   * The nearest candidate keeps the MEASURED route rather than an approximation
+   * of it, so a set of one - and the common case where the nearest is also the
+   * cheapest - prices exactly as it did before this existed.
+   */
+  private tripForCandidate(
+    trip: { distanceKm: number; durationMin: number; detourFactor: number },
+    straightLineKm: number,
+    nearestStraightLineKm: number,
+  ): { distanceKm: number; durationMin: number } {
+    if (straightLineKm <= nearestStraightLineKm) {
+      return { distanceKm: trip.distanceKm, durationMin: trip.durationMin };
+    }
+    const distanceKm = Math.max(0, straightLineKm) * Math.max(1, trip.detourFactor);
+    const durationMin =
+      trip.distanceKm > 0
+        ? Math.round(trip.durationMin * (distanceKm / trip.distanceKm))
+        : trip.durationMin;
+    return { distanceKm, durationMin };
   }
 
   /**
@@ -1119,16 +1185,16 @@ export class OrdersService {
       excludeCustomerId: order.customerId,
     });
 
-    const affordable = await this.firstAffordableCandidate(order, candidates);
+    const chosen = await this.bestPoolCandidate(order, candidates);
 
-    if (!affordable) {
+    if (!chosen) {
       if (order.status !== OrderStatus.UNASSIGNED) {
         await this.transition(orderId, OrderStatus.UNASSIGNED, 'system');
       }
       return false;
     }
 
-    const { candidate: nearest, price } = affordable;
+    const { candidate: nearest, price, ownPriceCents } = chosen;
     const timeoutMinutes = await this.settings.getNumber('offerTimeoutMinutes');
     const expiresAt = new Date(Date.now() + timeoutMinutes * 60_000);
     await this.prisma.orderOffer.create({
@@ -1156,6 +1222,12 @@ export class OrdersService {
       inspectorId: nearest.userId,
       expiresAt: expiresAt.toISOString(),
       round: order.dispatchRound,
+      // What the offer asks the inspector to give up, if anything (DEN-358).
+      // On the timeline because it is the answer to "why did they decline" and
+      // to "why was this one asked first", and neither is reconstructable from
+      // the offer row - the row holds the offered price only.
+      priceCents: price.totalCents,
+      ownPriceCents,
     });
     // E11: notify the inspector an offer was sent to them (non-throwing).
     await this.notifications.notify(nearest.userId, 'offer.received', {
@@ -1166,42 +1238,116 @@ export class OrdersService {
       // What THIS offer pays, which is not the order's figure once an
       // inspector prices themselves below the quote.
       inspectorShareCents: price.inspectorShareCents,
+      /*
+       * What the same job would have paid at this inspector's OWN rate
+       * (DEN-358). Equal to `priceCents` for the inspector who set the quote,
+       * and higher for everybody else, who is being asked to take the job at
+       * the authorised total instead. The app needs both to say so out loud;
+       * an offer that silently undercuts a rate the inspector set themselves
+       * reads as the platform ignoring it. Additive - an older build shows the
+       * offered figure alone, exactly as it does today.
+       */
+      priceCents: price.totalCents,
+      ownPriceCents,
       expiresAt: expiresAt.toISOString(),
     });
     return true;
   }
 
   /**
-   * The first candidate this order can actually pay for, with the price it
-   * would be offered at.
+   * The candidate to offer this order to next, with the price it is offered at
+   * and what that candidate's own price would have been (DEN-358).
    *
    * The ceiling is the order's own total: that is the sum authorised on the
    * customer's card, and Stripe can capture LESS than an authorisation but
-   * never more. An inspector who costs more is skipped rather than offered a
-   * job that could not be paid for - and rather than quietly paid the lower
-   * figure, which would be the platform pocketing the difference.
+   * never more.
    *
-   * A candidate priced BELOW the quote is offered at their own lower price and
-   * the customer is charged that, so the quote is a ceiling and not a target.
+   * It used to SKIP anybody above that ceiling, which emptied the pool. Since
+   * the quote is the cheapest candidate's own total, everybody else in the set
+   * is above it by construction - so the hard filter left exactly one eligible
+   * inspector, and one decline sent the order to UNASSIGNED with affordable
+   * people still standing in the radius.
+   *
+   * The filter is now a RANKING. Candidates are ordered by how far their own
+   * price sits from the authorised total, nearest first, and the job is offered
+   * AT the authorised total. So the inspector asked first is the one being
+   * asked to concede least.
+   *
+   * What bounds the concession is {@link CANDIDATE_LIMIT} and the search window,
+   * NOT this ranking. Dispatch offers to one inspector at a time and a decline
+   * excludes them, so each round re-ranks over whoever is left and the concession
+   * grows round by round until the window closes. A per-round "pool of five"
+   * would bound nothing: the sixth becomes the first the moment one drops out.
+   * If a hard limit on how far below a stated rate the platform may ask is
+   * wanted, it belongs here as an explicit floor, and it is a product decision.
+   *
+   * An inspector may therefore see a job priced below their stated rate, and
+   * they decline it like any other offer. The offer notification carries their
+   * own figure beside the offered one so the app can say WHY the two differ -
+   * an offer that silently undercuts a rate the inspector set themselves reads
+   * as the platform ignoring it.
+   *
+   * A candidate priced BELOW the authorised total is offered at their own lower
+   * price and the customer is charged that, so the quote is a ceiling and not a
+   * target.
    */
-  private async firstAffordableCandidate(
+  private async bestPoolCandidate(
     order: Order,
     candidates: Array<{ userId: string; distanceKm: number }>,
-  ): Promise<{ candidate: { userId: string; distanceKm: number }; price: PriceBreakdown } | null> {
+  ): Promise<{
+    candidate: { userId: string; distanceKm: number };
+    price: PriceBreakdown;
+    ownPriceCents: number;
+  } | null> {
     if (candidates.length === 0) return null;
 
     const base = await this.tariffForStoredOrder(order);
+    /*
+     * The breakdown the customer was actually quoted, and therefore the one to
+     * offer AT the ceiling - its platform fee and inspector share are the
+     * figures the order authorised.
+     *
+     * The base fee comes from the ORDER ROW, not from `base.tariff`.
+     * `tariffForStoredOrder` recovers the REGIONAL tariff, which still carries
+     * the platform base fee - the winning inspector's own fee is laid over it
+     * per candidate by `tariffForInspector`. Using the regional figure here
+     * priced the ceiling at the platform base and produced an offer ABOVE the
+     * authorised total, which is the one thing Stripe cannot capture.
+     */
+    const atCeiling = computePrice({
+      distanceKm: base.distanceKm,
+      durationMin: base.durationMin,
+      tariff: { ...base.tariff, baseFeeCents: order.baseFeeCents },
+    });
 
+    const priced: Array<{
+      candidate: { userId: string; distanceKm: number };
+      price: PriceBreakdown;
+      ownPriceCents: number;
+      concessionCents: number;
+    }> = [];
     for (const candidate of candidates) {
       const tariff = await this.tariffForInspector(base.tariff, candidate.userId);
-      const price = computePrice({
+      const own = computePrice({
         distanceKm: base.distanceKm,
         durationMin: base.durationMin,
         tariff,
       });
-      if (price.totalCents <= order.totalCents) return { candidate, price };
+      priced.push({
+        candidate,
+        price: own.totalCents <= order.totalCents ? own : atCeiling,
+        ownPriceCents: own.totalCents,
+        concessionCents: Math.abs(own.totalCents - order.totalCents),
+      });
     }
-    return null;
+
+    // Smallest concession first; the nearest breaks a tie, and ties are the
+    // common case because most inspectors sit on the platform base fee.
+    priced.sort(
+      (a, b) =>
+        a.concessionCents - b.concessionCents || a.candidate.distanceKm - b.candidate.distanceKm,
+    );
+    return priced[0] ?? null;
   }
 
   /**
