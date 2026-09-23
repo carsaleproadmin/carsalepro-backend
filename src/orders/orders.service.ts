@@ -830,6 +830,69 @@ export class OrdersService {
     return { orderId, paymentClientSecret: null, mock: true };
   }
 
+  /**
+   * The card form, reopened (DEN-363).
+   *
+   * `createOrder` hands the client secret back exactly once, and the order flow
+   * held it in browser memory alone. A language change, a back button or a
+   * closed tab therefore stranded a real order with a real PaymentIntent that
+   * nobody could confirm: the order sat CREATED, no search ever started, and
+   * the cabinet told the customer their bank was still answering — for a card
+   * they had never entered.
+   *
+   * The intent is RETRIEVED, never re-created. A second PaymentIntent for the
+   * same order would be a second hold on the same card, and the one row per
+   * order that `payment_active_order_unique` allows cannot describe two.
+   *
+   * `status` is Stripe's own and is passed through rather than interpreted
+   * here, because the caller needs the distinction this endpoint exists to
+   * make: `requires_payment_method` means the customer must still pay, while
+   * `processing` means the authorization is genuinely in flight.
+   */
+  async getOrderPaymentSession(
+    orderId: string,
+    userId: string,
+  ): Promise<{ clientSecret: string | null; status: string | null; mock: boolean } | null> {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) {
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Order not found' } });
+    }
+    if (order.customerId !== userId) {
+      throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
+    }
+
+    /*
+     * The order's OWN payment, and never a counter-offer one: that flow opens
+     * its own session through `counter-offers.service.ts` and hands the secret
+     * to a panel of its own. Answering with it here would put the price of a
+     * renegotiation behind copy about the original authorization.
+     *
+     * 'failed' is included with 'pending' for the reason `authorizeOrderPayment`
+     * states: a first card that was declined and a second that is not is one
+     * intent, still confirmable.
+     */
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        orderId,
+        purpose: 'order',
+        supersededAt: null,
+        status: { in: ['pending', 'failed'] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    // Nothing to pay: the hold is in place, the money was taken, or it was let
+    // go. All three are states the order page already has copy for.
+    if (!payment) return null;
+
+    // MOCK mode authorizes in our own ledger at creation, so a pending row can
+    // only be a race with that write. There is no card and no secret to give.
+    if (!this.stripe.configured) return { clientSecret: null, status: null, mock: true };
+    if (!payment.stripePaymentIntentId) return null;
+
+    const pi = await this.stripe.retrievePaymentIntent(payment.stripePaymentIntentId);
+    return { clientSecret: pi.client_secret ?? null, status: pi.status ?? null, mock: false };
+  }
+
   // ============================================================
   // Money state machine: authorize → capture → (release)
   // ============================================================

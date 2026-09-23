@@ -99,6 +99,24 @@ export class OrdersController {
     return this.orders.getDetail(id, userId, role);
   }
 
+  /**
+   * Reopen the card form for an order that was never authorized (DEN-363).
+   *
+   * `POST /orders` hands the client secret back once, and the website held it
+   * in browser memory alone - so a language change, a back button or a closed
+   * tab left a real order that nobody could pay for. This RETRIEVES that same
+   * PaymentIntent; it never opens a second one, which would be a second hold
+   * on the same card.
+   *
+   * Answers `null` when there is nothing to confirm - the hold is in place, the
+   * money was taken, or it was released.
+   */
+  @Get(':id/payment')
+  @ApiOperation({ summary: 'The open card authorization for my order, if one is still waiting' })
+  async getPayment(@CurrentUser('id') userId: string, @Param('id') id: string) {
+    return this.orders.getOrderPaymentSession(id, userId);
+  }
+
   @Get(':id/contract')
   @ApiOperation({
     summary: 'Get the per-order inspection brokerage contract (customer / inspector / admin)',

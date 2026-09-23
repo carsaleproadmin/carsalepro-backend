@@ -194,8 +194,8 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
     return u;
   }
 
-  async function makeCustomer(): Promise<Registered> {
-    return registerUser('cust');
+  async function makeCustomer(prefix = 'cust'): Promise<Registered> {
+    return registerUser(prefix);
   }
 
   async function makeInspector(offsetDeg = 0): Promise<Registered> {
@@ -623,6 +623,49 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
       .expect(200);
     expect(detail.body.search).toBeNull();
     expect(detail.body.payment.state).toBe('captured');
+  });
+
+  // ============================================================
+  // 5c. The card form, reopened (DEN-363)
+  // ============================================================
+  it('5c. hands the same intent back while the order is unpaid, and nothing after', async () => {
+    const customer = await makeCustomer();
+    const other = await makeCustomer('other');
+    await makeInspector();
+    const orderId = await createOrder(customer);
+    const piId = (await paymentFor(orderId)).stripePaymentIntentId as string;
+
+    // The website used to hand the client secret out exactly once, at creation,
+    // and hold it in browser memory. A language change or a back button left a
+    // real order with a real intent that nobody could confirm.
+    const open = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}/payment`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(open.body).toMatchObject({
+      clientSecret: `${piId}_secret_fake`,
+      status: 'requires_payment_method',
+      mock: false,
+    });
+    // RETRIEVED, never re-created: a second intent would be a second hold on
+    // the same card, and the one active payment row per order cannot describe
+    // two of them.
+    expect(stripe.countCalls('createOrderPaymentIntent')).toBe(1);
+
+    // Somebody else's order is not theirs to pay for.
+    await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}/payment`)
+      .set('Authorization', `Bearer ${other.token}`)
+      .expect(403);
+
+    // Once the hold is in place there is nothing left to confirm, and the
+    // website's awaiting panel must fall back to its waiting copy.
+    await authorize(orderId);
+    const closed = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}/payment`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(closed.body).toEqual({});
   });
 
   // ============================================================
