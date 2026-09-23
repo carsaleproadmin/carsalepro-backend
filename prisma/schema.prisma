@@ -305,14 +305,32 @@ enum KycStatus {
 }
 
 model KycApplication {
-  id           String    @id @default(cuid())
-  userId       String    @map("user_id")
-  status       KycStatus @default(DRAFT)
-  rejectReason String?   @map("reject_reason")
-  reviewedBy   String?   @map("reviewed_by")
-  reviewedAt   DateTime? @map("reviewed_at")
-  submittedAt  DateTime? @map("submitted_at")
-  createdAt    DateTime  @default(now())
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  status          KycStatus @default(DRAFT)
+  rejectReason    String?   @map("reject_reason")
+  reviewedBy      String?   @map("reviewed_by")
+  reviewedAt      DateTime? @map("reviewed_at")
+  submittedAt     DateTime? @map("submitted_at")
+  /// When the applicant confirmed the framework terms, and WHICH wording they
+  /// confirmed (DEN-364). Written by `submitApplication`, never by an admin.
+  ///
+  /// The platform disclaims liability for the inspection in the per-order
+  /// contract, and `OrderContract` freezes that text per order. Between the
+  /// registration and the first order nothing held a record that an inspector
+  /// had ever been shown the terms - so the confirmation is taken at the moment
+  /// a person becomes an inspector, which is this submit and not the signup.
+  ///
+  /// Both columns are nullable because every application written before this
+  /// shipped has no such confirmation, and a backfilled date would claim one
+  /// that nobody gave.
+  ///
+  /// The IP address of the confirmation is deliberately NOT stored. No table
+  /// here holds one, and a new class of personal data needs a privacy-policy
+  /// change and a retention rule of its own.
+  termsAcceptedAt DateTime? @map("terms_accepted_at")
+  termsVersion    String?   @map("terms_version")
+  createdAt       DateTime  @default(now())
 
   documents KycDocument[]
   user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
