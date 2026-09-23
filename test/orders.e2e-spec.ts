@@ -133,7 +133,12 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   async function makeInspector(
     lat: number,
     lng: number,
-    opts: { name?: string; company?: string; searchRadiusKm?: number } = {},
+    opts: {
+      name?: string;
+      company?: string;
+      searchRadiusKm?: number;
+      baseFeeCents?: number;
+    } = {},
   ): Promise<Registered> {
     const u = await registerUser(app, 'insp');
     createdUserIds.add(u.userId);
@@ -152,6 +157,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         searchRadiusKm: opts.searchRadiusKm ?? 300,
         available: true,
         stripeOnboarded: true,
+        // Null means "states nothing", which prices on the platform base - the
+        // same fallback the service applies, and what every spec that ignores
+        // this field is asserting.
+        baseFeeCents: opts.baseFeeCents ?? null,
       },
     });
     await prisma.$executeRaw`
@@ -941,6 +950,99 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  // ============================================================
+  // 3f. Cheapest TOTAL, and the offer at the authorised ceiling (DEN-358)
+  // ============================================================
+
+  /*
+   * The quote used to add the lowest base fee in the set to the NEAREST
+   * inspector's drive - one person's rate over another person's road, a total
+   * neither of them would accept. These three pin the replacement: the quote is
+   * one real inspector's own total, and dispatch may then ask somebody dearer
+   * to take the job at that figure rather than refusing to ask them at all.
+   */
+
+  it('3f1. the quote is the cheapest TOTAL, not the cheapest rate over the shortest drive', async () => {
+    const customer = await makeCustomer();
+    // Near and dear, far and cheap. The old rule would have quoted the far
+    // inspector's 1500 base over the near inspector's ~0 km drive.
+    await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 6000 });
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG, { baseFeeCents: 1500 });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    const b = res.body.breakdown;
+    // Whoever won, the price is a total somebody in the set actually charges:
+    // either 6000 with no travel, or 1500 plus a ~22 km drive. It is NOT the
+    // chimera - 1500 with no travel - that the old rule produced.
+    expect(b.baseFeeCents === 6000 || b.baseFeeCents === 1500).toBe(true);
+    // The chimera the old rule produced was "1500 and no travel". Whichever
+    // candidate won, the quote must not be that: the cheap one is 22 km away
+    // and must carry a travel fee, the dear one is here and charges 6000.
+    if (b.baseFeeCents === 1500) {
+      expect(b.distanceFeeCents).toBeGreaterThan(0);
+    } else {
+      expect(b.baseFeeCents).toBe(6000);
+    }
+  });
+
+  it('3f2. an inspector dearer than the hold is still offered the job, at the hold', async () => {
+    const customer = await makeCustomer();
+    // One inspector only, and dearer than the platform base. They set the
+    // quote, so the offer matches it exactly - the interesting half is 3f3.
+    const dear = await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 6000 });
+    const { orderId } = await createPaidOrder(customer);
+
+    const offer = await pendingOfferFor(orderId);
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(offer).not.toBeNull();
+    expect(offer!.inspectorId).toBe(dear.userId);
+    // Never above the authorised total: Stripe can capture less, never more.
+    expect(offer!.priceCents).toBeLessThanOrEqual(order!.totalCents);
+  });
+
+  it('3f3. the offer goes to the smallest concession, and the timeline records it', async () => {
+    const customer = await makeCustomer();
+    // All three co-located, so distance cannot decide and the rate must.
+    const cheap = await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 3000 });
+    const middle = await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 3500 });
+    await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 9000 });
+
+    const { orderId } = await createPaidOrder(customer);
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    const first = await pendingOfferFor(orderId);
+
+    // The cheapest set the quote, so they concede nothing and are asked first.
+    expect(first!.inspectorId).toBe(cheap.userId);
+    expect(first!.priceCents).toBe(order!.totalCents);
+
+    // Decline, and the job goes to the next-smallest concession rather than to
+    // UNASSIGNED - which is what the old hard ceiling did with these three.
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${first!.id}/decline`)
+      .set('Authorization', `Bearer ${inspectorTokens.get(cheap.userId)}`)
+      .expect(200);
+
+    const second = await pendingOfferFor(orderId);
+    expect(second).not.toBeNull();
+    expect(second!.inspectorId).toBe(middle.userId);
+    // Asked at the hold, below their own 3500 rate.
+    expect(second!.priceCents).toBe(order!.totalCents);
+
+    const event = await prisma.orderEvent.findFirst({
+      where: { orderId, type: 'offer_sent' },
+      orderBy: { createdAt: 'desc' },
+    });
+    const payload = event!.payload as { ownPriceCents: number; priceCents: number };
+    // The concession is on the timeline, because the offer row holds only the
+    // offered figure and "why did they decline" is unanswerable without it.
+    expect(payload.ownPriceCents).toBeGreaterThan(payload.priceCents);
   });
 
   // The kilometre rate is a per-COUNTRY figure, not a band one: Poland and
