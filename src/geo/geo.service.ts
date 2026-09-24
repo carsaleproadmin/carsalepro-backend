@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { inspectorProSql } from '../inspector/inspector-pro';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -129,6 +130,8 @@ export class GeoService {
         AND ip.stripe_onboarded = true
         AND ip.available = true
         AND ip.location IS NOT NULL
+        -- DEN-376: no mobile PRO, no new work.
+        AND ${inspectorProSql('ip')}
         ${exclusion}
         -- DEN-113. TWO radii, and the tighter one wins.
         --

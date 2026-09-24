@@ -111,9 +111,10 @@ async function main(): Promise<void> {
         searchRadiusKm: 300,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
         baseFeeCents,
       },
-      update: { available: true, stripeOnboarded: true, baseFeeCents, searchRadiusKm: 300 },
+      update: { available: true, stripeOnboarded: true, proGrantedAt: new Date(), baseFeeCents, searchRadiusKm: 300 },
     });
     await geo.setInspectorLocation(user.id, at.lat, at.lng);
     return user;

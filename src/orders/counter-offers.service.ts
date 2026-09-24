@@ -10,6 +10,7 @@ import { Order, OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { GeoService } from '../geo/geo.service';
+import { assertInspectorPro } from '../inspector/inspector-pro';
 import { NotificationsService } from '../notifications/notifications.service';
 import { StripeService } from '../payments/stripe.service';
 import { OrdersService } from './orders.service';
@@ -86,6 +87,7 @@ export class CounterOffersService {
         error: { code: 'forbidden', message: 'You are not an inspector' },
       });
     }
+    await assertInspectorPro(this.prisma, userId);
 
     const open = await this.prisma.order.findMany({
       where: {
@@ -478,6 +480,7 @@ export class CounterOffersService {
         },
       });
     }
+    await assertInspectorPro(this.prisma, userId);
     if (!profile.available) {
       throw new ConflictException({
         error: { code: 'inspector_unavailable', message: 'Switch yourself to available first' },

@@ -95,8 +95,9 @@ async function main(): Promise<void> {
       searchRadiusKm: 300,
       available: true,
       stripeOnboarded: true,
+      proGrantedAt: new Date(),
     },
-    update: { available: true, stripeOnboarded: true },
+    update: { available: true, stripeOnboarded: true, proGrantedAt: new Date() },
   });
   await geo.setInspectorLocation(inspectorUser.id, INSPECTOR.lat, INSPECTOR.lng);
   // The operational inspector pages require an APPROVED KYC application.

@@ -97,6 +97,7 @@ describe('Inspector base fee (e2e)', () => {
         searchRadiusKm: 300,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
         baseFeeCents: baseFeeCents ?? null,
       },
     });
