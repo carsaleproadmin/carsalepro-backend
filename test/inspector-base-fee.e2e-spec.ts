@@ -350,6 +350,47 @@ describe('Inspector base fee (e2e)', () => {
       expect(await prisma.orderOffer.count({ where: { orderId } })).toBe(2);
     });
 
+    it('offers the ceiling at the fee and share STORED on the order', async () => {
+      /*
+       * Review of DEN-358. The ceiling offer was recomputed from today's
+       * settings, so an order priced under other ones - here, one priced before
+       * DEN-350, when the commission was inside the total - was offered with a
+       * share above what the customer authorised. The offer must carry the
+       * order's own figures.
+       */
+      const { maxCents } = inspectorBaseFeeBounds();
+      const cheap = await makeInspector(undefined, LAT, LNG);
+      const customer = await register('cust');
+      const orderId = await createOrder(customer.token);
+
+      await orders.dispatch(orderId);
+      const first = await prisma.orderOffer.findFirstOrThrow({ where: { orderId } });
+      expect(first.inspectorId).toBe(cheap.userId);
+      await prisma.orderOffer.update({ where: { id: first.id }, data: { status: 'DECLINED' } });
+
+      // The old split: the same total, the commission taken out of it.
+      const before = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const platformFeeCents = Math.round(before.totalCents * 0.2);
+      await prisma.order.update({
+        where: { id: orderId },
+        data: {
+          platformFeeCents,
+          inspectorShareCents: before.totalCents - platformFeeCents,
+        },
+      });
+
+      await makeInspector(maxCents, LAT + 0.01, LNG);
+      await orders.dispatch(orderId);
+
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const second = await prisma.orderOffer.findFirstOrThrow({
+        where: { orderId, status: 'PENDING' },
+      });
+      expect(second.priceCents).toBe(order.totalCents);
+      expect(second.platformFeeCents).toBe(order.platformFeeCents);
+      expect(second.inspectorShareCents).toBe(order.inspectorShareCents);
+    });
+
     it('goes to UNASSIGNED only when the radius is actually empty', async () => {
       const cheap = await makeInspector(undefined, LAT, LNG);
       const customer = await register('cust');
