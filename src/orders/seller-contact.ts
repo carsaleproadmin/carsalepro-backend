@@ -32,7 +32,7 @@ const LISTING_SEGMENT = 'cars';
  */
 const LOCALE_SEGMENT = /^[a-z]{2,3}(-[A-Za-z]{2,8})?$/;
 
-const PHONE_SHAPE = /^\+?[\d\s()./-]+$/;
+const PHONE_SHAPE = /^\+\s*[1-9][\d\s()./-]*$/;
 const PHONE_MIN_DIGITS = 7;
 const PHONE_MAX_DIGITS = 15;
 
@@ -42,8 +42,11 @@ const PHONE_MAX_DIGITS = 15;
  * Loose about the shape and strict about the LENGTH, for the reason written
  * out in the website's copy: the number is read off a listing by a customer in
  * any European formatting habit, and rejecting a number written correctly is
- * worse than accepting one written oddly. The country code is optional, on the
- * client's instruction.
+ * worse than accepting one written oddly. The country code is REQUIRED, on the
+ * client's instruction (DEN-366): the inspector who dials the number can be in
+ * a different country from the seller, where a national number is unreachable.
+ * The test is the leading `+` and a first digit that is not zero - no country
+ * code starts with a zero, thus `0049...` and `030...` are national forms.
  */
 export function isSellerPhone(value: string): boolean {
   const trimmed = value.trim();

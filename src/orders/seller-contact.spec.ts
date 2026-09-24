@@ -11,8 +11,8 @@ describe('the order contact field', () => {
       '+4930123456',
       '+49 30 123 456',
       '+49 (30) 123-456',
-      '030 123456/7',
-      '0301234567',
+      '+380 44 123 45 67',
+      '+1 (202) 555-0142',
     ])('accepts %s', (value) => {
       expect(isSellerPhone(value)).toBe(true);
       expect(isValidSellerContact(value)).toBe(true);
@@ -22,9 +22,15 @@ describe('the order contact field', () => {
       ['a name', 'Peter'],
       ['an e-mail address', 'peter@example.com'],
       ['a sentence with a number', 'call Peter on 030 123456'],
-      ['too few digits', '12345'],
+      ['too few digits', '+12345'],
       ['more digits than E.164 allows', '+1234567890123456'],
       ['nothing at all', '   '],
+      // DEN-366. The country code is necessary, thus a national number and the
+      // international prefix written as digits are both refused.
+      ['a national number', '030 123456/7'],
+      ['a national number without spacing', '0301234567'],
+      ['the prefix written as 00', '004930123456'],
+      ['a plus followed by a zero', '+049 30 123456'],
     ])('refuses %s', (_case, value) => {
       expect(isValidSellerContact(value)).toBe(false);
     });
