@@ -189,6 +189,7 @@ describe('LegalSync / Order Contract (e2e)', () => {
         searchRadiusKm: 50,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
       },
     });
     await prisma.$executeRaw`

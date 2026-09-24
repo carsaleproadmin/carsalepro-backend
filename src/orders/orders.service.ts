@@ -15,6 +15,7 @@ import { GeoService, NearestInspector } from '../geo/geo.service';
 import { RouteEstimate, RoutingService } from '../geo/routing.service';
 import { DEFAULT_COUNTRY_CODE, GeocodingService } from '../geo/geocoding.service';
 import { resolveContact, type PartyContact } from '../inspector/inspector-contact';
+import { assertInspectorPro } from '../inspector/inspector-pro';
 import { LegalContractService } from '../legal/legal-contract.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
@@ -1523,6 +1524,9 @@ export class OrdersService {
         error: { code: 'offer_unavailable', message: 'Offer is not pending or has expired' },
       });
     }
+    // DEN-376. Dispatch already skips an inspector without PRO, but an offer
+    // made before an admin removed PRO can still be PENDING.
+    await assertInspectorPro(this.prisma, userId);
 
     const order = await this.prisma.order.findUnique({ where: { id: offer.orderId } });
     if (!order) {

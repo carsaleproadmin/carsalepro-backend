@@ -212,6 +212,7 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
         searchRadiusKm: 50,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
         stripeAccountId: `acct_seed_${u.userId}`,
       },
     });

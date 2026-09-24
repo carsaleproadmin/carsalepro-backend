@@ -120,6 +120,7 @@ describe('Counter-offers (e2e)', () => {
         searchRadiusKm: 300,
         available: opts.available ?? true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
         baseFeeCents: opts.baseFeeCents ?? null,
       },
     });
@@ -200,6 +201,7 @@ describe('Counter-offers (e2e)', () => {
           userId: customer.userId,
           baseAddress: 'Teststraße 2, Berlin',
           stripeOnboarded: true,
+          proGrantedAt: new Date(),
           available: true,
         },
       });

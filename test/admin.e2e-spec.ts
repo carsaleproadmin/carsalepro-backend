@@ -170,6 +170,7 @@ describe('Admin panel (E9) (e2e)', () => {
         searchRadiusKm: 50,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
         stripeAccountId: `acct_seed_${u.userId}`,
       },
     });

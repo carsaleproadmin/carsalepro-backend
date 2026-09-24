@@ -157,6 +157,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         searchRadiusKm: opts.searchRadiusKm ?? 300,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
         // Null means "states nothing", which prices on the platform base - the
         // same fallback the service applies, and what every spec that ignores
         // this field is asserting.
@@ -439,6 +440,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         baseAddress: 'Teststraße 1, Berlin',
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
       },
     });
     const forged = await prisma.orderOffer.create({

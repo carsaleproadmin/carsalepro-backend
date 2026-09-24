@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, Role, User } from '@prisma/client';
 import { ADMIN_ROLES, isAdminRole } from '../auth/roles';
+import { inspectorProStatus } from '../inspector/inspector-pro';
 import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { clampPage, clampPageSize } from './admin-audit.service';
@@ -151,7 +152,48 @@ export class AdminUsersService {
         ? { id: latestKyc.id, status: latestKyc.status, createdAt: latestKyc.createdAt.toISOString() }
         : null,
       counts: { orders: user._count.ordersAsCustomer, listings: user._count.listings },
+      inspectorPro: await this.inspectorProView(id),
     };
+  }
+
+  /** Null when the user has no inspector profile (DEN-376). */
+  private async inspectorProView(id: string) {
+    const profile = await this.prisma.inspectorProfile.findUnique({
+      where: { userId: id },
+      select: { userId: true },
+    });
+    if (!profile) return null;
+    const pro = await inspectorProStatus(this.prisma, id);
+    return {
+      hasPro: pro.hasPro,
+      fromDevice: pro.fromDevice,
+      grantedByAdmin: pro.grantedByAdmin,
+      grantedAt: pro.grantedAt ? pro.grantedAt.toISOString() : null,
+    };
+  }
+
+  /**
+   * Give or remove the manual PRO of an inspector (DEN-376). Removal touches
+   * only the manual grant: PRO from a linked device stays.
+   */
+  async setInspectorPro(id: string, granted: boolean, actorId: string) {
+    const profile = await this.prisma.inspectorProfile.findUnique({
+      where: { userId: id },
+      select: { proGrantedAt: true },
+    });
+    if (!profile) {
+      throw new NotFoundException({
+        error: { code: 'not_an_inspector', message: 'This user has no inspector profile' },
+      });
+    }
+    const before = profile.proGrantedAt;
+    await this.prisma.inspectorProfile.update({
+      where: { userId: id },
+      data: granted
+        ? { proGrantedAt: before ?? new Date(), proGrantedBy: actorId }
+        : { proGrantedAt: null, proGrantedBy: null },
+    });
+    return { before, after: await this.inspectorProView(id) };
   }
 
   /** Load a user by id, or throw 404. */

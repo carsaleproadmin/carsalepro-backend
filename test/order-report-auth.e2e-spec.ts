@@ -123,6 +123,7 @@ describe('Order report submitter authorisation (e2e)', () => {
         searchRadiusKm: 50,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
       },
     });
     await prisma.$executeRaw`
