@@ -669,6 +669,29 @@ describe('Manual capture: authorize → accept → capture (e2e, Stripe configur
     expect(closed.body).toEqual({});
   });
 
+  it('5d. hands no card form out for an order that is no longer waiting for one', async () => {
+    /*
+     * Review of DEN-363. A cancelled order can keep its 'pending' payment row
+     * until the release catches up, and the secret of that row let the
+     * customer put a real hold on the card for an order that no longer exists.
+     */
+    const customer = await makeCustomer();
+    await makeInspector();
+    const orderId = await createOrder(customer);
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: OrderStatus.CANCELLED },
+    });
+    expect((await paymentFor(orderId)).status).toBe('pending');
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}/payment`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(res.body).toEqual({});
+    expect(stripe.countCalls('retrievePaymentIntent')).toBe(0);
+  });
+
   // ============================================================
   // 6. The webhook that never came
   // ============================================================

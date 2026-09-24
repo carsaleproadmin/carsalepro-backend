@@ -1,5 +1,5 @@
 import { INestApplication } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { OrderStatus, Role } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -1878,6 +1878,63 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     );
     expect(row).toBeTruthy();
     expect(row!.kind).toBe('declined');
+  });
+
+  it('5a2. a past candidate never reads the report, and loses the order after the missed window', async () => {
+    /*
+     * Review of DEN-348. Any finished offer used to open the order for good,
+     * report included, so a candidate who once declined could read another
+     * inspector's work through its code.
+     */
+    const customer = await makeCustomer();
+    const near = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Near' });
+    await makeInspector(ORDER_LAT + 0.09, ORDER_LNG, { name: 'Far' });
+    const { orderId } = await createPaidOrder(customer);
+
+    const firstOffer = await pendingOfferFor(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${firstOffer!.id}/decline`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: OrderStatus.SUBMITTED },
+    });
+    await prisma.report.create({
+      data: {
+        deviceId: uniqueDeviceId('den348'),
+        code: `CSP-${Date.now().toString().slice(-6)}`,
+        s3Key: 'test/den348.pdf',
+        tier: 'free',
+        uploaded: true,
+        qualityScore: 95,
+        orderId,
+      },
+    });
+
+    const own = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(own.body.report).not.toBeNull();
+
+    const past = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+    expect(past.body.report).toBeNull();
+    expect(past.body.reportRequirement.currentQualityScore).toBeNull();
+
+    // Past the window the missed list links from, the order is closed to them.
+    await prisma.orderOffer.update({
+      where: { id: firstOffer!.id },
+      data: { expiresAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
+    });
+    await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(403);
   });
 
   // ============================================================
