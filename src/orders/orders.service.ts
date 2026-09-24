@@ -312,6 +312,13 @@ interface PricedQuote {
   routingSource: RouteEstimate['source'];
 }
 
+/**
+ * How long a finished offer (expired or declined) stays readable for the
+ * inspector it was made to: the missed-offers list and the order it links to
+ * share this window, so a row in the list never opens a 403.
+ */
+const MISSED_OFFER_WINDOW_DAYS = 7;
+
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
@@ -861,6 +868,13 @@ export class OrdersService {
     if (order.customerId !== userId) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
     }
+    /*
+     * Only an order still waiting for its card has a form to reopen. A
+     * cancelled or expired order can keep a 'pending' payment row until the
+     * release catches up, and handing its secret out let the customer put a
+     * real hold on the card for an order that no longer exists.
+     */
+    if (order.status !== OrderStatus.CREATED) return null;
 
     /*
      * The order's OWN payment, and never a counter-offer one: that flow opens
@@ -1378,11 +1392,26 @@ export class OrdersService {
      * priced the ceiling at the platform base and produced an offer ABOVE the
      * authorised total, which is the one thing Stripe cannot capture.
      */
-    const atCeiling = computePrice({
+    const recomputed = computePrice({
       distanceKm: base.distanceKm,
       durationMin: base.durationMin,
       tariff: { ...base.tariff, baseFeeCents: order.baseFeeCents },
     });
+    /*
+     * The money comes from the ORDER ROW, not from the recomputation. The
+     * recomputation reads today's commission, surge, minimum fare and rates,
+     * so after an admin changes one of them - and on every order priced before
+     * DEN-350, when the commission was inside the total - it came out above
+     * what the customer authorised. Capture is capped at `order.totalCents`, so
+     * the card was safe, but the offer and its notification promised the
+     * inspector a share that accept then did not pay.
+     */
+    const atCeiling: PriceBreakdown = {
+      ...recomputed,
+      totalCents: order.totalCents,
+      platformFeeCents: order.platformFeeCents,
+      inspectorShareCents: order.inspectorShareCents,
+    };
 
     const priced: Array<{
       candidate: { userId: string; distanceKm: number };
@@ -3009,7 +3038,7 @@ export class OrdersService {
     page: number;
     pageSize: number;
   }> {
-    const days = opts.days ?? 7;
+    const days = opts.days ?? MISSED_OFFER_WINDOW_DAYS;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     const unanswered = await this.prisma.orderOffer.findMany({
       where: {
@@ -3098,7 +3127,14 @@ export class OrdersService {
         (offer.status === 'PENDING' && offer.expiresAt.getTime() > Date.now()));
     const isCustomer = order.customerId === userId;
     const isInspector = order.inspectorId === userId;
-    const hasInspectorOffer = !!offer;
+    /*
+     * A finished offer admits its inspector only inside the missed-offers
+     * window, the page that links here. Without the limit, anybody who had
+     * ever been offered the job kept its exact address and history for good.
+     */
+    const windowStart = Date.now() - MISSED_OFFER_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    const hasInspectorOffer =
+      !!offer && (offerActive || offer.expiresAt.getTime() >= windowStart);
     const isAdmin = isAdminRole(role);
     if (!isCustomer && !isInspector && !hasInspectorOffer && !isAdmin) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
@@ -3200,8 +3236,11 @@ export class OrdersService {
       where: { orderId },
       select: { id: true, code: true, qualityScore: true },
     });
+    // Never to an inspector who only had an offer: the report is another
+    // inspector's work, and its code opens it through `/reports/:code`.
+    const holdsOrder = isCustomer || isInspector || isAdmin;
     const report =
-      submittedOrLater.includes(order.status) && reportRow
+      holdsOrder && submittedOrLater.includes(order.status) && reportRow
         ? { id: reportRow.id, code: reportRow.code, qualityScore: reportRow.qualityScore }
         : null;
 
@@ -3324,7 +3363,7 @@ export class OrdersService {
       // submission time is telling them too late.
       reportRequirement: {
         minQualityScore,
-        currentQualityScore: reportRow?.qualityScore ?? null,
+        currentQualityScore: holdsOrder ? (reportRow?.qualityScore ?? null) : null,
         // The counts the inspector actually has to satisfy. Data, not copy:
         // the frontend owns the wording of "photograph every exterior angle",
         // this owns how many angles that is, so growing the walk-around does
