@@ -1,7 +1,7 @@
 import { isSellerListingUrl, isSellerPhone, isValidSellerContact } from './seller-contact';
 
 /**
- * The API's half of DEN-361. The website has the same table in
+ * The API's half of DEN-361 and DEN-380. The website has the same table in
  * `lib/seller-contact.test.ts`; the two must agree, or the form accepts what
  * the endpoint refuses and the customer loses the order at the last step.
  */
@@ -13,6 +13,9 @@ describe('the order contact field', () => {
       '+49 (30) 123-456',
       '+380 44 123 45 67',
       '+1 (202) 555-0142',
+      '+380 67 123 4567',
+      '+49 176 1234567',
+      '+49 30 123456/7',
     ])('accepts %s', (value) => {
       expect(isSellerPhone(value)).toBe(true);
       expect(isValidSellerContact(value)).toBe(true);
@@ -24,6 +27,10 @@ describe('the order contact field', () => {
       ['a sentence with a number', 'call Peter on 030 123456'],
       ['too few digits', '+12345'],
       ['more digits than E.164 allows', '+1234567890123456'],
+      // DEN-380. The length is checked against the plan of the country.
+      ['a Ukrainian number that is too short', '+380 67 123 45'],
+      ['a Ukrainian number that is too long', '+380 67 123 45678'],
+      ['a US number that is too short', '+1 202 555 014'],
       ['nothing at all', '   '],
       // DEN-366. The country code is necessary, thus a national number and the
       // international prefix written as digits are both refused.
@@ -39,24 +46,27 @@ describe('the order contact field', () => {
   describe('a listing link', () => {
     it.each([
       'https://www.carsalepro.de/cars/abc123',
-      'https://carsalepro.de/cars/abc123',
       'https://carsalepro.net/ru/cars/abc123',
-      'https://carsalepro.us/zh-Hant/cars/abc123',
-      'https://www.carsalepro.de/cars/abc123?utm_source=x',
+      // DEN-380. Links to other marketplaces are accepted.
+      'https://www.mobile.de/listing/123',
+      'https://suchen.mobile.de/fahrzeuge/details.html?id=123',
+      'https://www.autoscout24.de/angebote/bmw-320-abc',
+      'https://auto.ria.com/uk/auto_bmw_x5_123.html',
+      'http://www.olx.ua/d/obyavlenie/abc',
+      'https://www.carsalepro.de/',
     ])('accepts %s', (value) => {
       expect(isSellerListingUrl(value)).toBe(true);
+      expect(isValidSellerContact(value)).toBe(true);
     });
 
     it.each([
-      ['another marketplace', 'https://www.mobile.de/listing/123'],
-      ['a look-alike domain', 'https://carsalepro.de.example.com/cars/abc123'],
-      ['a subdomain that is not www', 'https://img.carsalepro.de/cars/abc123'],
-      ['our start page', 'https://www.carsalepro.de/'],
-      ['another page of ours', 'https://www.carsalepro.de/faq'],
-      ['the catalogue without a car', 'https://www.carsalepro.de/cars'],
-      ['a deeper path under a car', 'https://www.carsalepro.de/cars/abc123/photos'],
       ['a scheme that is not http', 'javascript:alert(1)'],
+      ['an ftp link', 'ftp://example.com/car'],
       ['a bare host', 'carsalepro.de'],
+      ['a host without a dot', 'http://intranet/cars/1'],
+      ['an IPv4 address', 'http://192.168.0.1/cars/1'],
+      ['an IPv6 address', 'http://[2001:db8::1]/cars/1'],
+      ['a link with credentials', 'https://user:pass@example.com/car'],
     ])('refuses %s', (_case, value) => {
       expect(isValidSellerContact(value)).toBe(false);
     });

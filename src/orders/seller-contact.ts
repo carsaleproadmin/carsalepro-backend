@@ -1,68 +1,62 @@
 /**
- * What the order's contact field may hold — DEN-361.
+ * What the order's contact field may hold — DEN-361, DEN-380.
  *
  * The field takes ONE of two answers (DEN-116): a telephone number the
- * inspector can call, or a link to the listing. Until this rule it took any
- * text at all, so an order could reach an inspector carrying "ask Peter" or a
- * link to a marketplace this platform cannot open the photographs of.
+ * inspector can call, or a link to the listing. Until DEN-361 it took any
+ * text at all, so an order could reach an inspector carrying "ask Peter".
  *
- * A listing link must be a listing ON THIS SITE. The car is expected to be
- * published here, and the inspector opens that page before driving out.
+ * A listing link can point to ANY website (DEN-380). Customers find cars on
+ * other marketplaces too, and they must be able to paste those links. The
+ * link must still be a real web address that the inspector can open.
  *
  * The website enforces the SAME rule in `lib/seller-contact.ts`, which is
  * where a customer sees the message. This copy is what makes the rule true:
  * the website is one client of this endpoint, and a rule that lives only in a
  * form is a rule anyone can walk around with curl.
  */
-
-/** Our own hosts. `www.` is accepted on each; no other subdomain is. */
-const SITE_HOSTS = ['carsalepro.de', 'carsalepro.net', 'carsalepro.us'] as const;
+import { isValidPhoneNumber } from 'libphonenumber-js';
 
 /** Development hosts, accepted only outside production. */
 const DEV_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]'] as const;
 
-/** A car listing is `/cars/<id>`, optionally behind a locale prefix. */
-const LISTING_SEGMENT = 'cars';
-
-/**
- * A locale prefix as the website's router writes one: `ru`, `pt`, `zh-Hant`.
- * Matched by SHAPE rather than against the list of 35 tags, which lives in the
- * website and is not worth a second copy here — the segment after it still has
- * to be `cars`, so a wrong guess fails on the route and not on the language.
- */
-const LOCALE_SEGMENT = /^[a-z]{2,3}(-[A-Za-z]{2,8})?$/;
+/** The last label of a public host name: letters, or an IDN in `xn--` form. */
+const TOP_LEVEL_DOMAIN = /^([a-z]{2,63}|xn--[a-z0-9-]{1,59})$/;
 
 const PHONE_SHAPE = /^\+\s*[1-9][\d\s()./-]*$/;
-const PHONE_MIN_DIGITS = 7;
-const PHONE_MAX_DIGITS = 15;
 
 /**
  * A telephone number.
  *
- * Loose about the shape and strict about the LENGTH, for the reason written
- * out in the website's copy: the number is read off a listing by a customer in
- * any European formatting habit, and rejecting a number written correctly is
- * worse than accepting one written oddly. The country code is REQUIRED, on the
- * client's instruction (DEN-366): the inspector who dials the number can be in
- * a different country from the seller, where a national number is unreachable.
- * The test is the leading `+` and a first digit that is not zero - no country
- * code starts with a zero, thus `0049...` and `030...` are national forms.
+ * Loose about the shape and strict about the NUMBER. The customer reads the
+ * number off a listing in any European formatting habit, thus spaces,
+ * brackets, dashes, dots and the German slash are all accepted. The digits
+ * are then checked against the numbering plan of the country (DEN-380): a
+ * Ukrainian number must have 9 digits after `+380`, not "some" digits.
+ *
+ * The country code is REQUIRED, on the client's instruction (DEN-366): the
+ * inspector who dials the number can be in a different country from the
+ * seller, where a national number is unreachable. The test is the leading `+`
+ * and a first digit that is not zero - no country code starts with a zero,
+ * thus `0049...` and `030...` are national forms.
  */
 export function isSellerPhone(value: string): boolean {
   const trimmed = value.trim();
   if (!PHONE_SHAPE.test(trimmed)) return false;
-  const digits = trimmed.replace(/\D/g, '').length;
-  return digits >= PHONE_MIN_DIGITS && digits <= PHONE_MAX_DIGITS;
+  return isValidPhoneNumber(`+${trimmed.replace(/\D/g, '')}`);
 }
 
-function allowedHosts(): string[] {
-  const hosts = SITE_HOSTS.flatMap((host) => [host, `www.${host}`]);
-  return process.env.NODE_ENV === 'production' ? hosts : [...hosts, ...DEV_HOSTS];
+function isPublicHost(hostname: string): boolean {
+  const labels = hostname.split('.');
+  // A bare word (`intranet`) and an IP address are not a website that the
+  // inspector can open from a telephone. An IPv4 address ends in digits, so
+  // the top-level check refuses it; IPv6 has no dots at all.
+  if (labels.length < 2 || labels.some((label) => label === '')) return false;
+  return TOP_LEVEL_DOMAIN.test(labels[labels.length - 1]);
 }
 
 /**
- * A link to a car listing on this site. Host AND path: a link to the start
- * page is on our domain and still tells the inspector nothing about the car.
+ * A link to a listing on any website. Only the scheme and the host are
+ * checked: the path of a listing is different on each marketplace.
  */
 export function isSellerListingUrl(value: string): boolean {
   let url: URL;
@@ -72,14 +66,12 @@ export function isSellerListingUrl(value: string): boolean {
     return false;
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
-  if (!allowedHosts().includes(url.hostname)) return false;
-
-  const segments = url.pathname.split('/').filter(Boolean);
-  const rest =
-    segments.length > 0 && LOCALE_SEGMENT.test(segments[0]) && segments[0] !== LISTING_SEGMENT
-      ? segments.slice(1)
-      : segments;
-  return rest.length === 2 && rest[0] === LISTING_SEGMENT && rest[1].length > 0;
+  if (url.username !== '' || url.password !== '') return false;
+  if (isPublicHost(url.hostname)) return true;
+  return (
+    process.env.NODE_ENV !== 'production' &&
+    (DEV_HOSTS as readonly string[]).includes(url.hostname)
+  );
 }
 
 export function isValidSellerContact(value: unknown): boolean {
