@@ -18,6 +18,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import {
   ACTIVE_KYC_STATUSES,
+  INSPECTOR_TERMS_VERSION,
   KYC_AUTO_REVIEWER,
   KYC_MANUAL_REVIEW_AFTER_STATUSES,
   KYC_QUEUE_DEFAULT_LIMIT,
@@ -339,8 +340,35 @@ export class KycService {
    * stamped: they mean different things (when the applicant acted, when the
    * decision was taken) and a reader must not have to infer one from the other.
    */
-  async submitApplication(userId: string, applicationId: string): Promise<SubmitKycResultDto> {
+  async submitApplication(
+    userId: string,
+    applicationId: string,
+    termsAccepted: boolean,
+  ): Promise<SubmitKycResultDto> {
     const application = await this.requireOwnedApplication(userId, applicationId);
+
+    /*
+     * BEFORE ANYTHING IS WRITTEN (DEN-364).
+     *
+     * This submit is the moment a person becomes an inspector - approval is
+     * automatic on the usual path, and the next thing that happens is a
+     * dispatch to a stranger's vehicle. Until now nothing recorded that the
+     * applicant had ever been shown the terms under which they carry the
+     * liability for their own report. The per-order contract says so and is
+     * frozen per order in `OrderContract`, but the first order is the first
+     * time anyone reads it.
+     *
+     * Refused here rather than in the DTO, so the one refusal a client must
+     * tell apart from `incomplete_kyc` carries a code of its own.
+     */
+    if (!termsAccepted) {
+      throw new BadRequestException({
+        error: {
+          code: 'terms_not_accepted',
+          message: 'Confirm the framework terms before you send the application',
+        },
+      });
+    }
     // Guarded against SUBMITTED rather than APPROVED so a DRAFT is still the
     // only state that may be submitted; DRAFT→APPROVED is what actually gets
     // written, and the transition table allows both moves out of DRAFT.
@@ -425,7 +453,12 @@ export class KycService {
     if (priorRejections > 0 || reusedDocuments > 0 || reusedIdentity > 0) {
       const held = await this.prisma.kycApplication.update({
         where: { id: applicationId },
-        data: { status: KycStatus.SUBMITTED, submittedAt },
+        data: {
+          status: KycStatus.SUBMITTED,
+          submittedAt,
+          termsAcceptedAt: submittedAt,
+          termsVersion: INSPECTOR_TERMS_VERSION,
+        },
       });
       // `user.kycVerified` is deliberately NOT touched. `reject` cleared it,
       // and only an admin's `approve` may set it again on this path.
@@ -461,6 +494,10 @@ export class KycService {
         data: {
           status: KycStatus.APPROVED,
           submittedAt,
+          // The same instant as the submit, which is what it was: the
+          // acknowledgement travelled in the request that sent the application.
+          termsAcceptedAt: submittedAt,
+          termsVersion: INSPECTOR_TERMS_VERSION,
           reviewedBy: KYC_AUTO_REVIEWER,
           reviewedAt: submittedAt,
         },
@@ -679,6 +716,10 @@ export class KycService {
       reviewedBy: application.reviewedBy,
       reviewedAt: application.reviewedAt ? application.reviewedAt.toISOString() : null,
       submittedAt: application.submittedAt ? application.submittedAt.toISOString() : null,
+      termsAcceptedAt: application.termsAcceptedAt
+        ? application.termsAcceptedAt.toISOString()
+        : null,
+      termsVersion: application.termsVersion,
       createdAt: application.createdAt.toISOString(),
     };
   }

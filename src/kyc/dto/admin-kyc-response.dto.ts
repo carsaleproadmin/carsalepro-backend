@@ -112,6 +112,21 @@ export class AdminKycApplicationDto {
   @ApiProperty({ example: '2026-06-14T10:05:00.000Z', nullable: true })
   submittedAt!: string | null;
 
+  /**
+   * When the applicant confirmed the framework terms, and which wording they
+   * confirmed (DEN-364).
+   *
+   * Null on every application sent before the confirmation existed. That is the
+   * honest answer and the screen says so: a date invented for those rows would
+   * report a confirmation nobody gave, on the one screen an admin opens to find
+   * out whether there was one.
+   */
+  @ApiProperty({ example: '2026-06-14T10:05:00.000Z', nullable: true })
+  termsAcceptedAt!: string | null;
+
+  @ApiProperty({ example: '2026-09-23', nullable: true })
+  termsVersion!: string | null;
+
   @ApiProperty({ example: '2026-06-14T09:55:00.000Z' })
   createdAt!: string;
 }

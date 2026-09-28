@@ -26,6 +26,7 @@ import {
 import { UpdateInspectorProfileDto } from './dto/inspector-profile.dto';
 import { inspectorBaseFeeBounds } from '../orders/inspector-base-fee';
 import { SettingsService } from '../settings/settings.service';
+import { inspectorHasPro, inspectorProStatus } from './inspector-pro';
 import {
   normalizeTelegramUsername,
   resolveContact,
@@ -79,6 +80,8 @@ export interface InspectorProfileView {
    */
   lat: number | null;
   lng: number | null;
+  /** Mobile PRO on a linked device, or given by an admin (DEN-376). */
+  hasPro: boolean;
   eligibleForOffers: boolean;
   /**
    * The channels AS STORED — what belongs in the edit form's fields.
@@ -125,6 +128,8 @@ export interface StripeOnboardingResponse {
 export interface OnboardingStatusResponse {
   stripeOnboarded: boolean;
   hasAccount: boolean;
+  /** Mobile PRO on a linked device, or given by an admin (DEN-376). */
+  hasPro: boolean;
   eligibleForOffers: boolean;
   /**
    * Where the payout account lives and what legal form it declares. Both null
@@ -596,10 +601,12 @@ export class InspectorService {
     const stripeOnboarded = profile?.stripeOnboarded ?? false;
     const hasAccount = Boolean(profile?.stripeAccountId);
     const kycVerified = user?.kycVerified ?? false;
+    const hasPro = await inspectorHasPro(this.prisma, userId);
     return {
       stripeOnboarded,
       hasAccount,
-      eligibleForOffers: kycVerified && stripeOnboarded,
+      hasPro,
+      eligibleForOffers: kycVerified && stripeOnboarded && hasPro,
       stripeCountry: profile?.stripeCountry ?? null,
       stripeBusinessType: isStripeBusinessType(profile?.stripeBusinessType)
         ? profile.stripeBusinessType
@@ -728,6 +735,7 @@ export class InspectorService {
     const hasLocation = baseLocation !== null;
     const baseFeeBounds = await this.baseFeeBounds();
     const kycVerified = user?.kycVerified ?? false;
+    const pro = await inspectorProStatus(this.prisma, userId);
     return {
       exists: true,
       userId,
@@ -757,7 +765,10 @@ export class InspectorService {
       hasLocation,
       lat: baseLocation?.lat ?? null,
       lng: baseLocation?.lng ?? null,
-      eligibleForOffers: kycVerified && profile.stripeOnboarded && profile.available && hasLocation,
+      // DEN-376: mobile PRO is the fifth condition for new work.
+      hasPro: pro.hasPro,
+      eligibleForOffers:
+        kycVerified && profile.stripeOnboarded && profile.available && hasLocation && pro.hasPro,
       contactPhone: profile.contactPhone,
       contactEmail: profile.contactEmail,
       contactWhatsapp: profile.contactWhatsapp,

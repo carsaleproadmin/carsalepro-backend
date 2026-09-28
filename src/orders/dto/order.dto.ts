@@ -14,8 +14,29 @@ import {
   Max,
   MaxLength,
   Min,
+  Validate,
+  ValidatorConstraint,
+  type ValidatorConstraintInterface,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { isValidSellerContact } from '../seller-contact';
+
+/**
+ * The contact field takes a telephone number or a link to a listing on this
+ * site — DEN-361. The message is the API's last-resort copy: the website shows
+ * its own, localized, under the field, and only a client that walked around
+ * the form ever reads this one.
+ */
+@ValidatorConstraint({ name: 'sellerContact', async: false })
+export class SellerContactRule implements ValidatorConstraintInterface {
+  validate(value: unknown): boolean {
+    return isValidSellerContact(value);
+  }
+
+  defaultMessage(): string {
+    return 'listingUrl must be a phone number or a link to a car listing on this website';
+  }
+}
 
 export class QuoteOrderDto {
   @ApiProperty({ example: 52.52 })
@@ -61,11 +82,18 @@ export class CreateOrderDto {
    * before the trip, and this is the only channel the order carries. The name
    * stayed `listingUrl` so the wire contract did not change.
    */
-  @ApiProperty({ example: '+4930123456 or https://mobile.de/listing/123' })
+  @ApiProperty({ example: '+4930123456 or https://www.carsalepro.de/cars/abc123' })
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @IsNotEmpty()
   @MaxLength(2048)
+  /*
+   * DEN-361. Free text was too free: an inspector could be sent an order whose
+   * only channel to the owner was a sentence, or a link to a marketplace this
+   * platform cannot open. The rule is in `seller-contact.ts`, beside the same
+   * rule the website applies in the form.
+   */
+  @Validate(SellerContactRule)
   listingUrl!: string;
 
   @ApiProperty({ example: 'Musterstraße 1, 10115 Berlin' })

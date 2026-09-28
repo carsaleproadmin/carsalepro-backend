@@ -130,6 +130,7 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
         available: true,
         stripeOnboarded: onboarded,
         stripeAccountId: onboarded ? `acct_seed_${u.userId}` : null,
+        proGrantedAt: new Date(),
       },
     });
     await prisma.$executeRaw`
@@ -223,6 +224,18 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
       .set('Authorization', `Bearer ${u.token}`)
       .expect(200);
 
+    const before = await request(app.getHttpServer())
+      .get('/api/v1/inspector/onboarding-status')
+      .set('Authorization', `Bearer ${u.token}`)
+      .expect(200);
+    // DEN-376: without mobile PRO the inspector is not eligible.
+    expect(before.body.hasPro).toBe(false);
+    expect(before.body.eligibleForOffers).toBe(false);
+
+    await prisma.inspectorProfile.update({
+      where: { userId: u.userId },
+      data: { proGrantedAt: new Date() },
+    });
     const res = await request(app.getHttpServer())
       .get('/api/v1/inspector/onboarding-status')
       .set('Authorization', `Bearer ${u.token}`)
@@ -230,7 +243,8 @@ describe('Payouts / Stripe Connect / escrow release (e2e, mock mode)', () => {
 
     expect(res.body.stripeOnboarded).toBe(true);
     expect(res.body.hasAccount).toBe(true);
-    expect(res.body.eligibleForOffers).toBe(true); // kycVerified && stripeOnboarded
+    expect(res.body.hasPro).toBe(true);
+    expect(res.body.eligibleForOffers).toBe(true); // kycVerified && stripeOnboarded && hasPro
   });
 
   // ============================================================

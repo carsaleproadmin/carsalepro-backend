@@ -22,6 +22,7 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/auth.decorators';
 import { ErrorResponseDto } from '../common/dto/error-response.dto';
+import { SubmitKycApplicationDto } from './dto/submit-application.dto';
 import { UploadKycDocumentDto } from './dto/upload-document.dto';
 import {
   KycApplicationDto,
@@ -117,14 +118,27 @@ export class KycController {
   }
 
   @Post('applications/:id/submit')
-  @ApiOperation({ summary: 'Submit a complete DRAFT application for review' })
+  @ApiOperation({
+    summary: 'Submit a complete DRAFT application for review',
+    description:
+      'The applicant must confirm the framework terms in the same request — the inspector ' +
+      'works as an independent contractor and carries the liability for the inspection and ' +
+      'its report. The confirmation and the wording it applied to are stored on the ' +
+      'application (DEN-364).',
+  })
   @ApiParam({ name: 'id' })
   @ApiOkResponse({ type: SubmitKycResultDto })
+  @ApiResponse({
+    status: 400,
+    type: ErrorResponseDto,
+    description: 'terms_not_accepted / incomplete_kyc / invalid_kyc_transition',
+  })
   submit(
     @CurrentUser('id') userId: string,
     @Param('id') id: string,
+    @Body() dto: SubmitKycApplicationDto,
   ): Promise<SubmitKycResultDto> {
-    return this.kyc.submitApplication(userId, id);
+    return this.kyc.submitApplication(userId, id, dto.termsAccepted === true);
   }
 
   @Get('applications/me')

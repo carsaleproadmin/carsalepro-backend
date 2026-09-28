@@ -141,6 +141,7 @@ describe('Notifications (e2e)', () => {
         searchRadiusKm: 50,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
         stripeAccountId: `acct_test_${u.userId.slice(0, 8)}`,
       },
     });

@@ -129,3 +129,21 @@ export const KYC_TRANSITIONS: Record<KycStatus, KycStatus[]> = {
  * note on `KYC_MANUAL_REVIEW_AFTER_STATUSES`.
  */
 export const KYC_RETENTION_DAYS = 90;
+
+/**
+ * The wording of the framework terms an applicant confirms at submit (DEN-364).
+ *
+ * A date, not a counter: the terms are prose on the website and in
+ * `legal-contracts.content.ts`, and nothing versions them. What the record has
+ * to answer is "which text did this person see", and the day it last changed
+ * answers that without inventing a numbering scheme that no other file keeps.
+ *
+ * MOVE IT WHENEVER THE LIABILITY WORDING MOVES. A stored version that names a
+ * day the text did not change is worse than no version: it points a reader at
+ * the wrong paragraph with the confidence of a record.
+ *
+ * The current value is the day the Terms were aligned to the per-order
+ * contract - the platform accepts no liability for the content or accuracy of
+ * a report, in place of a cap at three times the report price.
+ */
+export const INSPECTOR_TERMS_VERSION = '2026-09-23';

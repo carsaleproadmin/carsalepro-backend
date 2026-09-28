@@ -1,5 +1,5 @@
 import { INestApplication } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { OrderStatus, Role } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -133,7 +133,12 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   async function makeInspector(
     lat: number,
     lng: number,
-    opts: { name?: string; company?: string; searchRadiusKm?: number } = {},
+    opts: {
+      name?: string;
+      company?: string;
+      searchRadiusKm?: number;
+      baseFeeCents?: number;
+    } = {},
   ): Promise<Registered> {
     const u = await registerUser(app, 'insp');
     createdUserIds.add(u.userId);
@@ -152,6 +157,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         searchRadiusKm: opts.searchRadiusKm ?? 300,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
+        // Null means "states nothing", which prices on the platform base - the
+        // same fallback the service applies, and what every spec that ignores
+        // this field is asserting.
+        baseFeeCents: opts.baseFeeCents ?? null,
       },
     });
     await prisma.$executeRaw`
@@ -240,10 +250,15 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(Array.isArray(res.body.candidates)).toBe(true);
     expect(res.body.candidates.length).toBeGreaterThanOrEqual(1);
 
-    // Verify the 80/20 split is what the order would persist.
-    const platformFee = Math.round((res.body.totalCents * 20) / 100);
+    // Verify the split is what the order would persist: the commission is 20 %
+    // ON TOP of the fare (DEN-350), and the fare is the inspector's in full.
+    const platformFee = Math.round(
+      (res.body.breakdown.inspectorShareCents * 20) / 100,
+    );
     expect(platformFee).toBe(FARE.platformFeeCents);
-    expect(res.body.totalCents - platformFee).toBe(FARE.inspectorShareCents);
+    expect(res.body.breakdown.inspectorShareCents + platformFee).toBe(
+      FARE.totalCents,
+    );
 
     /*
      * The split is QUOTED, not only persisted. Both sides are shown the
@@ -425,6 +440,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         baseAddress: 'Teststraße 1, Berlin',
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
       },
     });
     const forged = await prisma.orderOffer.create({
@@ -627,11 +643,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
 
       const b = quote.body.breakdown;
       expect(b.returnTripFactor).toBe(2);
-      // The factor multiplies the CHARGEABLE distance: the free radius is a
-      // statement about how far the vehicle is, so it comes off once, before
-      // the return trip is applied.
+      // The factor multiplies the measured one-direction trip, every
+      // kilometre of which is chargeable (DEN-349).
       expect(b.billedDistanceKm).toBeCloseTo(b.chargeableDistanceKm * 2, 5);
-      expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm - b.freeRadiusKm, 1);
+      expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm, 1);
       expect(b.billedDurationMin).toBe(b.durationMin * 2);
       // The fee follows the BILLED quantity, so the arithmetic a customer can
       // do on the page reaches the amount we charge.
@@ -668,9 +683,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       // stored pair — a stored order and a fresh quote describe the same thing.
       expect(detail.body.money.billedDistanceKm).toBeCloseTo(b.billedDistanceKm, 5);
       expect(detail.body.money.chargeableDistanceKm).toBeCloseTo(b.chargeableDistanceKm, 5);
-      // The measured trip survives the round trip through the database only
-      // because the free radius is stored beside the factor.
-      expect(detail.body.money.freeRadiusKm).toBe(b.freeRadiusKm);
+      expect(detail.body.money.freeRadiusKm).toBe(0);
       expect(detail.body.money.distanceKm).toBeCloseTo(b.distanceKm, 1);
     } finally {
       await doubled.restore();
@@ -679,11 +692,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   // ============================================================
-  // 3d. The free radius and the distance cap
+  // 3d. The travel charge and the distance cap
   // ============================================================
-  it('3d. the free radius comes off the trip before the rate applies', async () => {
+  it('3d. every measured kilometre is charged, both ways', async () => {
     const customer = await makeCustomer();
-    // ~22 km north, comfortably outside the 10 km free radius.
+    // ~22 km north, far enough that the distance line is a real number.
     await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
 
     const res = await request(app.getHttpServer())
@@ -693,12 +706,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .expect(200);
 
     const b = res.body.breakdown;
-    // The literal 10 is the owner's decision of 2026-08-13, not an incidental
-    // default: asserting it against the constant it comes from would pass for
-    // any value, including 0.
-    expect(b.freeRadiusKm).toBe(10);
-    expect(PLATFORM_SETTING_DEFAULTS.orderFreeRadiusKm).toBe(10);
-    expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm - b.freeRadiusKm, 1);
+    // DEN-349: the quote no longer carries a radius at all, and the chargeable
+    // trip is the measured trip.
+    expect(b.freeRadiusKm).toBeUndefined();
+    expect(b.chargeableDistanceKm).toBeCloseTo(b.distanceKm, 1);
     // The rate applies to the BILLED distance — chargeable, both ways.
     expect(b.billedDistanceKm).toBeCloseTo(b.chargeableDistanceKm * b.returnTripFactor, 5);
     expect(b.distanceFeeCents).toBe(
@@ -706,10 +717,9 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     );
   });
 
-  it('3d2. a trip inside the free radius carries no travel charge at all', async () => {
+  it('3d2. a short trip is charged for its kilometres too', async () => {
     const customer = await makeCustomer();
-    // ~5.5 km north: a real distance, and inside the 10 km radius. A co-located
-    // inspector would prove nothing — zero kilometres cost nothing anyway.
+    // ~5.5 km north: a real distance, and one that used to travel free.
     await makeInspector(ORDER_LAT + 0.05, ORDER_LNG);
 
     const res = await request(app.getHttpServer())
@@ -719,22 +729,22 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .expect(200);
 
     expect(res.body.breakdown.distanceKm).toBeGreaterThan(4);
-    expect(res.body.breakdown.chargeableDistanceKm).toBe(0);
-    expect(res.body.breakdown.distanceFeeCents).toBe(0);
+    expect(res.body.breakdown.chargeableDistanceKm).toBeCloseTo(
+      res.body.breakdown.distanceKm,
+      1,
+    );
+    expect(res.body.breakdown.distanceFeeCents).toBeGreaterThan(0);
   });
 
   /*
-   * The order page of a short job must not invent a distance.
-   *
-   * Inside the free radius the row bills zero kilometres whatever the trip was,
-   * so the measurement is not recoverable — and the detail used to add the
-   * radius back regardless. A customer who was quoted 1 km opened the order one
-   * minute later and read 10 km, on the page that itemises what they paid.
-   * Null is the only honest answer, and the billed figures carry the fee.
+   * A short order now has a distance to report, because it was charged for
+   * one. The old defect — the row billing zero kilometres inside the radius,
+   * and the page adding the radius back to print "10 km" for a car 1 km away —
+   * cannot occur for a new order: nothing is clamped away any more.
    */
-  it('3d4. a short order reports no measured distance rather than the free radius', async () => {
+  it('3d4. a short order reports the distance it was charged for', async () => {
     const customer = await makeCustomer();
-    // ~1.1 km north: well inside the 10 km radius, and not zero.
+    // ~1.1 km north: the shortest real trip, and not zero.
     await makeInspector(ORDER_LAT + 0.01, ORDER_LNG);
     const { orderId } = await createPaidOrder(customer);
 
@@ -744,10 +754,10 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .expect(200);
 
     const m = detail.body.money;
-    expect(m.freeRadiusKm).toBe(10);
-    expect(m.billedDistanceKm).toBe(0);
-    expect(m.distanceFeeCents).toBe(0);
-    expect(m.distanceKm).toBeNull();
+    expect(m.freeRadiusKm).toBe(0);
+    expect(m.billedDistanceKm).toBeGreaterThan(0);
+    expect(m.distanceFeeCents).toBeGreaterThan(0);
+    expect(m.distanceKm).toBeGreaterThan(0);
   });
 
   /*
@@ -759,7 +769,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
    */
   it('3d5. the detail reports the distance and the minutes on the same basis', async () => {
     const customer = await makeCustomer();
-    // ~22 km north — outside the free radius, so both measurements survive.
+    // ~22 km north — far enough that both measurements are real numbers.
     await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
     const { orderId } = await createPaidOrder(customer);
 
@@ -771,7 +781,7 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const m = detail.body.money;
     expect(m.returnTripFactor).toBe(2);
     // Measured beside measured, billed beside billed.
-    expect(m.billedDistanceKm).toBeCloseTo((m.distanceKm - m.freeRadiusKm) * 2, 1);
+    expect(m.billedDistanceKm).toBeCloseTo(m.distanceKm * 2, 1);
     expect(m.billedDurationMin).toBe(m.durationMin * 2);
     // And the fee is charged on the billed quantities, which is what the page
     // must put in the row labels for the column to add up.
@@ -856,7 +866,9 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       // The floor moves with the base fee. Left at 49 EUR it would bind first
       // and the whole band would have no effect on what anybody pays.
       expect(res.body.breakdown.minimumFareCents).toBe(3400);
-      expect(res.body.totalCents).toBe(3400);
+      // The floor binds the FARE; the customer's total adds the commission.
+      expect(res.body.breakdown.inspectorShareCents).toBe(3400);
+      expect(res.body.totalCents).toBe(4080);
     } finally {
       spy.mockRestore();
     }
@@ -940,6 +952,99 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  // ============================================================
+  // 3f. Cheapest TOTAL, and the offer at the authorised ceiling (DEN-358)
+  // ============================================================
+
+  /*
+   * The quote used to add the lowest base fee in the set to the NEAREST
+   * inspector's drive - one person's rate over another person's road, a total
+   * neither of them would accept. These three pin the replacement: the quote is
+   * one real inspector's own total, and dispatch may then ask somebody dearer
+   * to take the job at that figure rather than refusing to ask them at all.
+   */
+
+  it('3f1. the quote is the cheapest TOTAL, not the cheapest rate over the shortest drive', async () => {
+    const customer = await makeCustomer();
+    // Near and dear, far and cheap. The old rule would have quoted the far
+    // inspector's 1500 base over the near inspector's ~0 km drive.
+    await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 6000 });
+    await makeInspector(ORDER_LAT + 0.2, ORDER_LNG, { baseFeeCents: 1500 });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/orders/quote')
+      .set('Authorization', `Bearer ${customer.token}`)
+      .send({ lat: ORDER_LAT, lng: ORDER_LNG, scheduledAt: SCHEDULED_AT })
+      .expect(200);
+
+    const b = res.body.breakdown;
+    // Whoever won, the price is a total somebody in the set actually charges:
+    // either 6000 with no travel, or 1500 plus a ~22 km drive. It is NOT the
+    // chimera - 1500 with no travel - that the old rule produced.
+    expect(b.baseFeeCents === 6000 || b.baseFeeCents === 1500).toBe(true);
+    // The chimera the old rule produced was "1500 and no travel". Whichever
+    // candidate won, the quote must not be that: the cheap one is 22 km away
+    // and must carry a travel fee, the dear one is here and charges 6000.
+    if (b.baseFeeCents === 1500) {
+      expect(b.distanceFeeCents).toBeGreaterThan(0);
+    } else {
+      expect(b.baseFeeCents).toBe(6000);
+    }
+  });
+
+  it('3f2. an inspector dearer than the hold is still offered the job, at the hold', async () => {
+    const customer = await makeCustomer();
+    // One inspector only, and dearer than the platform base. They set the
+    // quote, so the offer matches it exactly - the interesting half is 3f3.
+    const dear = await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 6000 });
+    const { orderId } = await createPaidOrder(customer);
+
+    const offer = await pendingOfferFor(orderId);
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    expect(offer).not.toBeNull();
+    expect(offer!.inspectorId).toBe(dear.userId);
+    // Never above the authorised total: Stripe can capture less, never more.
+    expect(offer!.priceCents).toBeLessThanOrEqual(order!.totalCents);
+  });
+
+  it('3f3. the offer goes to the smallest concession, and the timeline records it', async () => {
+    const customer = await makeCustomer();
+    // All three co-located, so distance cannot decide and the rate must.
+    const cheap = await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 3000 });
+    const middle = await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 3500 });
+    await makeInspector(ORDER_LAT, ORDER_LNG, { baseFeeCents: 9000 });
+
+    const { orderId } = await createPaidOrder(customer);
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    const first = await pendingOfferFor(orderId);
+
+    // The cheapest set the quote, so they concede nothing and are asked first.
+    expect(first!.inspectorId).toBe(cheap.userId);
+    expect(first!.priceCents).toBe(order!.totalCents);
+
+    // Decline, and the job goes to the next-smallest concession rather than to
+    // UNASSIGNED - which is what the old hard ceiling did with these three.
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${first!.id}/decline`)
+      .set('Authorization', `Bearer ${inspectorTokens.get(cheap.userId)}`)
+      .expect(200);
+
+    const second = await pendingOfferFor(orderId);
+    expect(second).not.toBeNull();
+    expect(second!.inspectorId).toBe(middle.userId);
+    // Asked at the hold, below their own 3500 rate.
+    expect(second!.priceCents).toBe(order!.totalCents);
+
+    const event = await prisma.orderEvent.findFirst({
+      where: { orderId, type: 'offer_sent' },
+      orderBy: { createdAt: 'desc' },
+    });
+    const payload = event!.payload as { ownPriceCents: number; priceCents: number };
+    // The concession is on the timeline, because the offer row holds only the
+    // offered figure and "why did they decline" is unanswerable without it.
+    expect(payload.ownPriceCents).toBeGreaterThan(payload.priceCents);
   });
 
   // The kilometre rate is a per-COUNTRY figure, not a band one: Poland and
@@ -1043,21 +1148,13 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
   });
 
   /*
-   * A regional free radius must reach the PRICE, not only the response.
-   *
-   * `resolveTariff` returned the resolved radius in `limits` and left the
-   * global value on the tariff — and the fare reads the tariff. So the row was
-   * loaded, `sources.freeRadiusKm` said 'zone', the quote echoed the global 10,
-   * and the fee did not move by a cent. The cap worked, because the caller
-   * reads THAT one out of `limits` by hand, which is exactly why nobody saw it.
-   *
-   * The test asserts the fee, never the echoed field: an assertion on
-   * `breakdown.freeRadiusKm` alone would have passed throughout.
+   * DEN-349 removed the free radius from the fare. The band column survives
+   * for the rows already written, so this pins that nothing reads it: an
+   * operator who fills it in must not change a cent.
    */
-  it('3e12. a band free radius changes what the customer pays', async () => {
+  it('3e12. a band free radius no longer changes what the customer pays', async () => {
     const customer = await makeCustomer();
-    // ~29 km of road north (22 km straight, times the detour factor): charged
-    // under the global 10 km radius, free under 40.
+    // ~29 km of road north (22 km straight, times the detour factor).
     await makeInspector(ORDER_LAT + 0.2, ORDER_LNG);
     const zone = await prisma.pricingZone.findUnique({ where: { key: 'pl_60_75' } });
     const previous = zone!.freeRadiusKm;
@@ -1083,11 +1180,9 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
         data: { freeRadiusKm: 40 },
       });
 
-      const free = await quote();
-      expect(free.breakdown.freeRadiusKm).toBe(40);
-      expect(free.breakdown.chargeableDistanceKm).toBe(0);
-      expect(free.breakdown.distanceFeeCents).toBe(0);
-      expect(free.totalCents).toBeLessThan(charged.totalCents);
+      const after = await quote();
+      expect(after.breakdown.distanceFeeCents).toBe(charged.breakdown.distanceFeeCents);
+      expect(after.totalCents).toBe(charged.totalCents);
     } finally {
       await prisma.pricingZone.update({
         where: { key: 'pl_60_75' },
@@ -1178,7 +1273,8 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       const order = await prisma.order.findUnique({ where: { id: res.body.orderId } });
       expect(order!.countryCode).toBe('PL');
       expect(order!.baseFeeCents).toBe(2700);
-      expect(order!.totalCents).toBe(3400);
+      expect(order!.inspectorShareCents).toBe(3400);
+      expect(order!.totalCents).toBe(4080);
     } finally {
       spy.mockRestore();
     }
@@ -1737,6 +1833,108 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     const nextOffer = await pendingOfferFor(orderId);
     expect(nextOffer).toBeTruthy();
     expect(nextOffer!.inspectorId).toBe(far.userId);
+  });
+
+  // ============================================================
+  // 5a. A refusal keeps the order readable (DEN-348)
+  // ============================================================
+  //
+  // The inspector who declines stays on the order page they pressed the button
+  // on, and the job appears in their missed list marked as their own answer.
+  // Before this, `getDetail` admitted an inspector only through a live offer,
+  // so the refresh after a decline answered 403 and the cabinet showed a 404.
+  it('5a. after declining, the inspector still reads the order and sees it in the missed list', async () => {
+    const customer = await makeCustomer();
+    const near = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Near' });
+    await makeInspector(ORDER_LAT + 0.09, ORDER_LNG, { name: 'Far' });
+    const { orderId } = await createPaidOrder(customer);
+
+    const firstOffer = await pendingOfferFor(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${firstOffer!.id}/decline`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+    expect(detail.body.offer.status).toBe('DECLINED');
+    // Read-only: the flag the cabinet reads to draw no accept and no decline.
+    expect(detail.body.offer.active).toBe(false);
+    // Still not a party to the job: the seller's channel stays closed.
+    expect(detail.body.listingUrl).toBeNull();
+    // The refusal is in the order's own history.
+    expect(
+      (detail.body.events as Array<{ type: string }>).map((e) => e.type),
+    ).toContain('offer_declined');
+
+    const missed = await request(app.getHttpServer())
+      .get('/api/v1/orders/me/missed')
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+    const row = (missed.body.items as Array<{ orderId: string; kind: string }>).find(
+      (i) => i.orderId === orderId,
+    );
+    expect(row).toBeTruthy();
+    expect(row!.kind).toBe('declined');
+  });
+
+  it('5a2. a past candidate never reads the report, and loses the order after the missed window', async () => {
+    /*
+     * Review of DEN-348. Any finished offer used to open the order for good,
+     * report included, so a candidate who once declined could read another
+     * inspector's work through its code.
+     */
+    const customer = await makeCustomer();
+    const near = await makeInspector(ORDER_LAT, ORDER_LNG, { name: 'Near' });
+    await makeInspector(ORDER_LAT + 0.09, ORDER_LNG, { name: 'Far' });
+    const { orderId } = await createPaidOrder(customer);
+
+    const firstOffer = await pendingOfferFor(orderId);
+    await request(app.getHttpServer())
+      .post(`/api/v1/offers/${firstOffer!.id}/decline`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: OrderStatus.SUBMITTED },
+    });
+    await prisma.report.create({
+      data: {
+        deviceId: uniqueDeviceId('den348'),
+        code: `CSP-${Date.now().toString().slice(-6)}`,
+        s3Key: 'test/den348.pdf',
+        tier: 'free',
+        uploaded: true,
+        qualityScore: 95,
+        orderId,
+      },
+    });
+
+    const own = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .expect(200);
+    expect(own.body.report).not.toBeNull();
+
+    const past = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(200);
+    expect(past.body.report).toBeNull();
+    expect(past.body.reportRequirement.currentQualityScore).toBeNull();
+
+    // Past the window the missed list links from, the order is closed to them.
+    await prisma.orderOffer.update({
+      where: { id: firstOffer!.id },
+      data: { expiresAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
+    });
+    await request(app.getHttpServer())
+      .get(`/api/v1/orders/${orderId}`)
+      .set('Authorization', `Bearer ${near.token}`)
+      .expect(403);
   });
 
   // ============================================================
@@ -2518,7 +2716,14 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
     expect(still).not.toBeNull();
   });
 
-  it('9n. a DECLINED offer is never a missed one', async () => {
+  /*
+   * Reversed by DEN-348. A `DECLINED` offer used to be kept out of this list
+   * as noise - work the inspector had already refused. The refusal took the
+   * order out of every list AND out of the detail page, so a job answered by
+   * mistake simply vanished. It is history now, marked `declined` so the row
+   * reads as the inspector's own answer and not as an expiry.
+   */
+  it('9n. a DECLINED offer stays in the list, marked as the inspector answer', async () => {
     const customer = await makeCustomer();
     const inspector = await makeInspector(ORDER_LAT, ORDER_LNG);
     const { orderId } = await createPaidOrder(customer);
@@ -2534,7 +2739,11 @@ describe('Orders / Geo / Dispatch (e2e)', () => {
       .get('/api/v1/orders/me/missed')
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    expect(res.body.items.find((i: { orderId: string }) => i.orderId === orderId)).toBeUndefined();
+    const row = (res.body.items as Array<{ orderId: string; kind: string }>).find(
+      (i) => i.orderId === orderId,
+    );
+    expect(row).toBeTruthy();
+    expect(row!.kind).toBe('declined');
   });
 
   it('10. dispute from SUBMITTED → DISPUTED + Dispute row', async () => {
