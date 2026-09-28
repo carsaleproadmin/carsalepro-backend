@@ -25,7 +25,6 @@ const TARIFF_KEYS: SettingKey[] = [
   'orderSurgeMultiplier',
   'orderDetourFactor',
   'orderReturnTripFactor',
-  'orderFreeRadiusKm',
   'orderCapKm',
   'platformFeePercent',
   'expertSearchRadiusKm',
@@ -94,8 +93,11 @@ export function colocatedQuote(overrides: Partial<Record<SettingKey, number>> = 
     cents('orderRatePerMinuteEur') * Math.max(1, get('orderReturnTripFactor')),
   );
   const subtotalCents = baseFeeCents + timeFeeCents;
-  const totalCents = Math.max(subtotalCents, cents('orderMinimumFareEur'));
-  const platformFeeCents = Math.round((totalCents * get('platformFeePercent')) / 100);
+  // The fare — what the inspector earns in full. The commission is ADDED to it
+  // (DEN-350), so the customer's total is the larger of the two figures.
+  const inspectorShareCents = Math.max(subtotalCents, cents('orderMinimumFareEur'));
+  const platformFeeCents = Math.round((inspectorShareCents * get('platformFeePercent')) / 100);
+  const totalCents = inspectorShareCents + platformFeeCents;
 
   return {
     baseFeeCents,
@@ -104,7 +106,7 @@ export function colocatedQuote(overrides: Partial<Record<SettingKey, number>> = 
     subtotalCents,
     totalCents,
     platformFeeCents,
-    inspectorShareCents: totalCents - platformFeeCents,
+    inspectorShareCents,
     /*
      * Whether the FLOOR decided this fare, derived rather than assumed.
      *
@@ -114,7 +116,7 @@ export function colocatedQuote(overrides: Partial<Record<SettingKey, number>> = 
      * tests that are not about the floor at all. Derived here, the same
      * assertion states the rule instead of today's number.
      */
-    minimumFareApplied: totalCents > subtotalCents,
-    minimumFareTopUpCents: totalCents - subtotalCents,
+    minimumFareApplied: inspectorShareCents > subtotalCents,
+    minimumFareTopUpCents: inspectorShareCents - subtotalCents,
   };
 }

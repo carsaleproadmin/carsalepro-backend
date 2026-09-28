@@ -12,7 +12,6 @@ export const SETTING_KEYS = {
   orderSurgeMultiplier: 'orderSurgeMultiplier',
   orderDetourFactor: 'orderDetourFactor',
   orderReturnTripFactor: 'orderReturnTripFactor',
-  orderFreeRadiusKm: 'orderFreeRadiusKm',
   orderCapKm: 'orderCapKm',
   orderRoutingCacheHours: 'orderRoutingCacheHours',
   platformFeePercent: 'platformFeePercent',
@@ -34,6 +33,10 @@ export const SETTING_KEYS = {
   // with the TTL from the environment. An admin who set 5 minutes got links
   // that stayed valid for 15. The row can stay in the database: nothing reads
   // it, and `getAll` lists only the keys in this map.
+  // `orderFreeRadiusKm` was removed on 2026-09-21 (DEN-349). Travel is charged
+  // from the first kilometre, so no radius is configurable any more. The row
+  // can stay in the database: nothing reads it, and `getAll` lists only the
+  // keys in this map.
   // `goldPackagePriceEur` and `standardListingPriceEur` were removed on
   // 2026-09-14 (DEN-309). The platform does not sell Gold any more, and each
   // listing is free. Their rows can stay in the database for the same reason.
@@ -46,12 +49,12 @@ export type SettingKey = keyof typeof SETTING_KEYS;
  *
  * The order tariff is a ride-hailing-style model: base + per-km + per-minute,
  * scaled by surge, floored at a minimum fare. Two things shape the
- * distance before the rate touches it: the first 10 km carry no travel charge
- * (`orderFreeRadiusKm`), and what remains is charged BOTH WAYS
+ * distance before the rate touches it: every kilometre is charged (DEN-349
+ * removed the free radius), and each is charged BOTH WAYS
  * (`orderReturnTripFactor`). Worked examples, distances one direction:
- *   5 km / 10 min  → 39 + 0.00 + 7.00  = 46.00 → floored to 49.00
- *   20 km / 25 min → 39 + 6.00 + 17.50 = 62.50
- *   50 km / 45 min → 39 + 24.00 + 31.50 = 94.50
+ *   5 km / 10 min  → 39 + 3.00 + 7.00  = 49.00 → the minimum fare, 49.00
+ *   20 km / 25 min → 39 + 12.00 + 17.50 = 68.50
+ *   50 km / 45 min → 39 + 30.00 + 31.50 = 100.50
  * The kilometre charge is unchanged from the previous 0.60-one-way tariff; the
  * minutes are what rose, because travel time is now paid in both directions.
  */
@@ -121,20 +124,6 @@ export const PLATFORM_SETTING_DEFAULTS: Record<SettingKey, number> = {
    * 27 % on a 100 km one. See DEN-108.
    */
   orderReturnTripFactor: 2,
-  /**
-   * Kilometres of the trip to the vehicle that carry no travel charge.
-   *
-   * Ten costs almost no revenue: the 49 EUR minimum fare already floors every
-   * trip under roughly ten kilometres, so below that a customer pays 49 EUR
-   * whether or not the kilometres were charged. What it buys is a sentence a
-   * customer understands — travel inside the city is included — instead of a
-   * 1.80 EUR line that reads as noise.
-   *
-   * Subtracted, never a threshold: at a threshold, km 10.1 would cost ten times
-   * km 10.0 and two neighbours would be quoted prices an order of magnitude
-   * apart.
-   */
-  orderFreeRadiusKm: 10,
   /**
    * Refuse to quote beyond this ROUTED one-direction distance.
    *
@@ -332,9 +321,7 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = [
   // must arrive at the price we charge. It is a published tariff term, not an
   // operator lever.
   'orderReturnTripFactor',
-  // Both are published tariff terms: a visitor must be able to tell why a
-  // nearby inspection has no travel line, and how far we serve at all.
-  'orderFreeRadiusKm',
+  // A published tariff term: a visitor must be able to tell how far we serve.
   'orderCapKm',
 ];
 

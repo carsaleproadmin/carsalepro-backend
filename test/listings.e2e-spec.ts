@@ -94,8 +94,14 @@ describe('Listings (e2e)', () => {
       expect(res.body.city).toBe('');
       expect(res.body.reportId).toBe(report.id);
       expect(res.body.sellerId).toBe(owner.userId);
-      // denormalized from report
-      expect(res.body.color).toBe('Black');
+      /*
+       * Denormalized from the report - and FOLDED on the way (DEN-355). The
+       * fixture's report says "Black"; the showroom's colour filter compares
+       * the column against a slug, so a report-backed listing that kept the
+       * inspector's own capitalisation was unreachable from a filter that
+       * found the identical manual listing.
+       */
+      expect(res.body.color).toBe('black');
       expect(res.body.bodyType).toBe('sedan');
       expect(res.body.driveType).toBe('rwd');
       listingId = res.body.id;

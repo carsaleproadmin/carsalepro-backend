@@ -339,8 +339,16 @@ export class PublicService {
     const cityKeys = citySearchKeys(q.city);
     const makeKey = normalizeCompact(q.make);
     const modelKey = normalizeCompact(q.model);
-    const bodyType = normalizeSearchText(q.bodyType);
-    const driveType = normalizeSearchText(q.driveType);
+    /*
+     * DEN-355. The two open-vocabulary filters are lists now, and each member
+     * is folded the same way the single value used to be.
+     *
+     * An empty list after folding is treated as "not asked", not as "match
+     * nothing": `bodyType=,,` is a UI artefact and answering it with an empty
+     * showroom would read as a broken filter.
+     */
+    const bodyTypes = (q.bodyType ?? []).map(normalizeSearchText).filter(Boolean);
+    const driveTypes = (q.driveType ?? []).map(normalizeSearchText).filter(Boolean);
 
     const where: Prisma.ListingWhereInput = {
       status: 'ACTIVE',
@@ -381,8 +389,27 @@ export class PublicService {
        * nothing while "sedan" finds five reads as a broken filter rather than
        * as a typo.
        */
-      ...(bodyType ? { bodyType: { equals: bodyType, mode: 'insensitive' as const } } : {}),
-      ...(driveType ? { driveType: { equals: driveType, mode: 'insensitive' as const } } : {}),
+      ...(bodyTypes.length ? { bodyType: { in: bodyTypes, mode: 'insensitive' as const } } : {}),
+      ...(driveTypes.length
+        ? { driveType: { in: driveTypes, mode: 'insensitive' as const } }
+        : {}),
+      /*
+       * The three folded columns. `in` and not `equals`, because a buyer who
+       * will take petrol OR a hybrid is asking one question, and two searches
+       * cannot be ordered by price against each other.
+       *
+       * No folding is applied to the QUERY here: the DTO has already refused
+       * anything outside the vocabulary, so these are slugs by the time they
+       * arrive and can be compared to the column exactly.
+       *
+       * A row whose value the fold did not recognise, and a row with no value
+       * at all, are BOTH left out - the same rule `country` follows. NULL means
+       * "nobody said", and answering "petrol" with a car that never claimed a
+       * fuel is the defect, not the filter being strict.
+       */
+      ...(q.fuelType?.length ? { fuelType: { in: q.fuelType } } : {}),
+      ...(q.transmission?.length ? { transmission: { in: q.transmission } } : {}),
+      ...(q.color?.length ? { color: { in: q.color } } : {}),
       ...(q.priceFrom != null || q.priceTo != null
         ? { priceCents: { gte: q.priceFrom ?? undefined, lte: q.priceTo ?? undefined } }
         : {}),
@@ -401,7 +428,12 @@ export class PublicService {
       ...(q.yearFrom != null || q.yearTo != null
         ? { year: { gte: q.yearFrom ?? undefined, lte: q.yearTo ?? undefined } }
         : {}),
-      ...(q.mileageTo != null ? { mileageKm: { lte: q.mileageTo } } : {}),
+      ...(q.mileageFrom != null || q.mileageTo != null
+        ? { mileageKm: { gte: q.mileageFrom ?? undefined, lte: q.mileageTo ?? undefined } }
+        : {}),
+      ...(q.powerFrom != null || q.powerTo != null
+        ? { powerKw: { gte: q.powerFrom ?? undefined, lte: q.powerTo ?? undefined } }
+        : {}),
       // Opt-IN filter. Manual listings are shown by default and badged as
       // self-declared: hiding them would make the showroom look empty for the
       // exact seller segment BE-S2 exists to serve. A buyer who only wants

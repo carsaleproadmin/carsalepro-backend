@@ -15,6 +15,7 @@ import { GeoService, NearestInspector } from '../geo/geo.service';
 import { RouteEstimate, RoutingService } from '../geo/routing.service';
 import { DEFAULT_COUNTRY_CODE, GeocodingService } from '../geo/geocoding.service';
 import { resolveContact, type PartyContact } from '../inspector/inspector-contact';
+import { assertInspectorPro } from '../inspector/inspector-pro';
 import { LegalContractService } from '../legal/legal-contract.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
@@ -93,9 +94,7 @@ export interface QuoteResult {
      */
     billedDistanceKm?: number;
     returnTripFactor?: number;
-    /** Kilometres that carried no travel charge. */
-    freeRadiusKm?: number;
-    /** One direction, after the free radius came off. */
+    /** One direction, the quantity the per-km rate multiplied. */
     chargeableDistanceKm?: number;
     /** 'road' when a routing provider answered, 'straight_line' when estimated. */
     distanceSource: 'road' | 'straight_line';
@@ -239,7 +238,7 @@ const PUBLIC_PAYMENT_STATE: Record<string, OrderPaymentState> = {
 const RECONCILE_MIN_AGE_MS = 5 * 60_000;
 
 /**
- * How many inspectors a quote looks at (DEN-352).
+ * How many inspectors a quote looks at (DEN-352), and how many dispatch walks.
  *
  * It was three, which was the size the "who is near you" list needs. The quote
  * now takes the lowest base fee of the set, and the lowest of three neighbours
@@ -247,8 +246,18 @@ const RECONCILE_MIN_AGE_MS = 5 * 60_000;
  * rather than one person. The query is a bounded PostGIS KNN scan on an index,
  * so the extra rows cost effectively nothing, and the customer-facing list is
  * sliced back to three where it is built.
+ *
+ * ONE number for both paths, and that is a correctness rule rather than tidying.
+ * The quote prices the order on the LOWEST base fee in its set and the order
+ * authorises exactly that total, so the total is a ceiling that dispatch then
+ * refuses to exceed. Dispatch looked at five while the quote looked at ten: an
+ * inspector who was seventh-nearest could therefore set the ceiling of an order
+ * they were never offered, and none of the five dispatch did see fitted under
+ * it. The order reached UNASSIGNED on its first round without one inspector
+ * declining anything. Whoever sets the ceiling must be inside the set that is
+ * asked to meet it - move this number and both sides move together.
  */
-const QUOTE_CANDIDATE_LIMIT = 10;
+const CANDIDATE_LIMIT = 10;
 
 /** Order statuses in which we are still looking for an inspector. */
 const PRE_ASSIGNMENT_STATUSES: OrderStatus[] = [
@@ -303,6 +312,13 @@ interface PricedQuote {
   routingSource: RouteEstimate['source'];
 }
 
+/**
+ * How long a finished offer (expired or declined) stays readable for the
+ * inspector it was made to: the missed-offers list and the order it links to
+ * share this window, so a row in the list never opens a 403.
+ */
+const MISSED_OFFER_WINDOW_DAYS = 7;
+
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
@@ -348,7 +364,6 @@ export class OrdersService {
       platformFeePercent,
       surgeMultiplier,
       returnTripFactor,
-      freeRadiusKm,
     ] = await Promise.all([
       this.settings.getCents('orderBaseFeeEur'),
       this.settings.getCents('orderRatePerKmEur'),
@@ -357,7 +372,6 @@ export class OrdersService {
       this.settings.getNumber('platformFeePercent'),
       this.settings.getNumber('orderSurgeMultiplier'),
       this.settings.getNumber('orderReturnTripFactor'),
-      this.settings.getNumber('orderFreeRadiusKm'),
     ]);
     return {
       baseFeeCents,
@@ -367,7 +381,6 @@ export class OrdersService {
       platformFeePercent,
       surgeMultiplier,
       returnTripFactor,
-      freeRadiusKm,
     };
   }
 
@@ -385,7 +398,6 @@ export class OrdersService {
       perKmCents: number | null;
       ratePerMinuteCents: number | null;
       minimumFareCents: number | null;
-      freeRadiusKm: Prisma.Decimal | null;
       capKm: Prisma.Decimal | null;
       returnTripFactor: Prisma.Decimal | null;
     }): RegionalOverrides => ({
@@ -393,7 +405,6 @@ export class OrdersService {
       perKmCents: r.perKmCents,
       ratePerMinuteCents: r.ratePerMinuteCents,
       minimumFareCents: r.minimumFareCents,
-      freeRadiusKm: r.freeRadiusKm === null ? null : Number(r.freeRadiusKm),
       capKm: r.capKm === null ? null : Number(r.capKm),
       returnTripFactor: r.returnTripFactor === null ? null : Number(r.returnTripFactor),
     });
@@ -434,7 +445,6 @@ export class OrdersService {
       surgeMultiplier,
       detourFactor,
       returnTripFactor,
-      freeRadiusKm,
       capKm,
       cacheHours,
     ] = await Promise.all([
@@ -447,7 +457,6 @@ export class OrdersService {
       this.settings.getNumber('orderSurgeMultiplier'),
       this.settings.getNumber('orderDetourFactor'),
       this.settings.getNumber('orderReturnTripFactor'),
-      this.settings.getNumber('orderFreeRadiusKm'),
       this.settings.getNumber('orderCapKm'),
       this.settings.getNumber('orderRoutingCacheHours'),
     ]);
@@ -460,7 +469,6 @@ export class OrdersService {
       platformFeePercent,
       surgeMultiplier,
       returnTripFactor,
-      freeRadiusKm,
     };
 
     // The region of the INSPECTION ADDRESS decides the tariff. Resolved here
@@ -470,7 +478,7 @@ export class OrdersService {
     // the cache key is a ~1 km cell held for 30 days.
     const countryCode = (await this.geocoding.countryCodeFor({ lat, lng })) ?? DEFAULT_COUNTRY_CODE;
     const region = await this.loadRegionalOverrides(countryCode);
-    const resolved = resolveTariff(globalTariff, freeRadiusKm, region.zone, region.country);
+    const resolved = resolveTariff(globalTariff, region.zone, region.country);
     const tariff = resolved.tariff;
     // A region may set its own cap; the global setting is the fallback.
     const effectiveCapKm = resolved.limits.capKm ?? (capKm > 0 ? capKm : null);
@@ -479,7 +487,7 @@ export class OrdersService {
       lat,
       lng,
       radiusKm,
-      limit: QUOTE_CANDIDATE_LIMIT,
+      limit: CANDIDATE_LIMIT,
       excludeCustomerId: customerId ?? null,
     });
 
@@ -528,6 +536,15 @@ export class OrdersService {
        * DEN-213. Priced on an inspector's own base fee - since DEN-352, on the
        * LOWEST base fee in the candidate set rather than the nearest one's.
        *
+       * Since DEN-358 it is the lowest TOTAL - the base fee AND that
+       * inspector's own drive - rather than the lowest base fee over the
+       * nearest inspector's drive. The old figure added up one person's rate
+       * and a different person's road, so it was a price NOBODY in the set
+       * would have accepted: the cheap inspector was further away than the
+       * route it was built on, and the near one charged more than the fee it
+       * was built on. Dispatch then looked for somebody at or under it and
+       * regularly found nobody at all. See {@link cheapestCandidatePrice}.
+       *
        * The customer is shown ONE price and is never charged more than it. The
        * order that follows authorises exactly this total, and dispatch will not
        * offer the job to anybody who costs more (`dispatch`), so the number on
@@ -538,48 +555,105 @@ export class OrdersService {
        * cheaper inspectors three streets further away were never offered the
        * work at all.
        *
-       * The route stays the nearest inspector's. Pricing each candidate would
-       * cost a routing request each to change a figure the base fee dominates,
-       * and the distance of the person who actually takes the job is not known
-       * at quote time anyway.
+       * Still ONE routing request. The nearest candidate's road route is
+       * measured, and every other candidate is priced on the straight line
+       * times `orderDetourFactor` - the same approximation `fairPriceForInspector`
+       * uses, and the same one the route itself falls back to when routing is
+       * unavailable. Routing ten candidates would cost ten provider calls to
+       * refine a figure that is about to be a ceiling, not an invoice.
        *
-       * The trade is deliberate: a quote can now land below what the inspector
-       * offering that base fee would accept for this drive. Then nobody takes
-       * it at the tariff and the order goes to the counter-offer queue
-       * (DEN-350/DEN-351), where the customer is asked a real price WITH a
-       * reason - which is the right place for that conversation, and a far
-       * better one than an order form nobody fills in.
+       * The trade is deliberate: a quote can still land below what the winning
+       * inspector would accept for this drive - the approximation may flatter a
+       * bend in the road. Then nobody takes it at the tariff and the order goes
+       * to the counter-offer queue (DEN-350/DEN-351), where the customer is
+       * asked a real price WITH a reason - which is the right place for that
+       * conversation, and a far better one than an order form nobody fills in.
        */
-      price: computePrice({
+      price: await this.cheapestCandidatePrice(tariff, candidates, {
         distanceKm: route.distanceKm,
         durationMin: route.durationMin,
-        tariff: await this.cheapestCandidateTariff(tariff, candidates),
+        detourFactor,
+        capKm: effectiveCapKm,
       }),
     };
   }
 
   /**
-   * The tariff for a quote: the LOWEST base fee among the candidates (DEN-352).
+   * The cheapest TOTAL among the candidates (DEN-358): each one's own base fee
+   * over each one's own drive, and the lowest of those is the quote.
    *
-   * One query for the whole set rather than one per candidate, and a candidate
-   * with no stated base fee counts as the platform base - the same fallback
+   * It replaces a "lowest base fee over the nearest drive" that mixed two
+   * people together and produced a price neither of them would take.
+   *
+   * One profile query for the whole set, and a candidate with no stated base
+   * fee counts as the platform base - the same fallback
    * {@link tariffForInspector} applies, so a pool that states nothing prices
    * exactly as it did before DEN-213.
+   *
+   * `trip` carries the MEASURED route to the nearest candidate. Every other
+   * candidate's drive is scaled from it, distance by the straight line and
+   * minutes by the ratio of the two distances - holding the minutes fixed would
+   * price a 40 km drive with the time of a 12 km one.
    */
-  private async cheapestCandidateTariff(
+  private async cheapestCandidatePrice(
     tariff: PricingTariff,
-    candidates: Array<{ userId: string }>,
-  ): Promise<PricingTariff> {
+    candidates: Array<{ userId: string; distanceKm: number }>,
+    trip: { distanceKm: number; durationMin: number; detourFactor: number; capKm: number | null },
+  ): Promise<PriceBreakdown> {
+    const nearestPrice = () =>
+      computePrice({ distanceKm: trip.distanceKm, durationMin: trip.durationMin, tariff });
+    if (candidates.length === 0) return nearestPrice();
+
     const profiles = await this.prisma.inspectorProfile.findMany({
       where: { userId: { in: candidates.map((c) => c.userId) } },
-      select: { baseFeeCents: true },
+      select: { userId: true, baseFeeCents: true },
     });
-    // NOT seeded with the platform base: that would floor the answer at it, and
-    // a pool where everybody charges more than the platform base would be
-    // quoted a price none of them accepts.
-    const stated = profiles.map((p) => effectiveBaseFeeCents(p.baseFeeCents, tariff.baseFeeCents));
-    const baseFeeCents = stated.length ? Math.min(...stated) : tariff.baseFeeCents;
-    return baseFeeCents === tariff.baseFeeCents ? tariff : { ...tariff, baseFeeCents };
+    const stated = new Map(profiles.map((p) => [p.userId, p.baseFeeCents]));
+
+    let best: PriceBreakdown | null = null;
+    for (const candidate of candidates) {
+      const trip_ = this.tripForCandidate(trip, candidate.distanceKm, candidates[0].distanceKm);
+      /*
+       * The cap is applied per candidate, not only to the nearest. Without it a
+       * cheap inspector far outside the operator's stated limit could win the
+       * quote, and the order would be sold on a drive the business has said it
+       * does not send anyone on. Measured one direction, like the check above.
+       */
+      if (exceedsCap(trip_.distanceKm, trip.capKm)) continue;
+      const baseFeeCents = effectiveBaseFeeCents(stated.get(candidate.userId), tariff.baseFeeCents);
+      const price = computePrice({
+        distanceKm: trip_.distanceKm,
+        durationMin: trip_.durationMin,
+        tariff: baseFeeCents === tariff.baseFeeCents ? tariff : { ...tariff, baseFeeCents },
+      });
+      if (!best || price.totalCents < best.totalCents) best = price;
+    }
+    // Everybody sat outside the cap except the nearest, who was cleared by the
+    // caller's own check. Their price is the honest answer, not a refusal.
+    return best ?? nearestPrice();
+  }
+
+  /**
+   * One candidate's drive, derived from the measured route to the nearest.
+   *
+   * The nearest candidate keeps the MEASURED route rather than an approximation
+   * of it, so a set of one - and the common case where the nearest is also the
+   * cheapest - prices exactly as it did before this existed.
+   */
+  private tripForCandidate(
+    trip: { distanceKm: number; durationMin: number; detourFactor: number },
+    straightLineKm: number,
+    nearestStraightLineKm: number,
+  ): { distanceKm: number; durationMin: number } {
+    if (straightLineKm <= nearestStraightLineKm) {
+      return { distanceKm: trip.distanceKm, durationMin: trip.durationMin };
+    }
+    const distanceKm = Math.max(0, straightLineKm) * Math.max(1, trip.detourFactor);
+    const durationMin =
+      trip.distanceKm > 0
+        ? Math.round(trip.durationMin * (distanceKm / trip.distanceKm))
+        : trip.durationMin;
+    return { distanceKm, durationMin };
   }
 
   /**
@@ -634,7 +708,6 @@ export class OrdersService {
         // applied to, so a customer checking our arithmetic reaches our number
         // and not half of it.
         distanceKm: p.distanceKm,
-        freeRadiusKm: p.freeRadiusKm,
         chargeableDistanceKm: p.chargeableDistanceKm,
         billedDistanceKm: p.billedDistanceKm,
         returnTripFactor: p.returnTripFactor,
@@ -763,6 +836,76 @@ export class OrdersService {
     // the one suite that stands a fake Stripe up.
     await this.authorizeOrderPayment(payment.id, orderId);
     return { orderId, paymentClientSecret: null, mock: true };
+  }
+
+  /**
+   * The card form, reopened (DEN-363).
+   *
+   * `createOrder` hands the client secret back exactly once, and the order flow
+   * held it in browser memory alone. A language change, a back button or a
+   * closed tab therefore stranded a real order with a real PaymentIntent that
+   * nobody could confirm: the order sat CREATED, no search ever started, and
+   * the cabinet told the customer their bank was still answering — for a card
+   * they had never entered.
+   *
+   * The intent is RETRIEVED, never re-created. A second PaymentIntent for the
+   * same order would be a second hold on the same card, and the one row per
+   * order that `payment_active_order_unique` allows cannot describe two.
+   *
+   * `status` is Stripe's own and is passed through rather than interpreted
+   * here, because the caller needs the distinction this endpoint exists to
+   * make: `requires_payment_method` means the customer must still pay, while
+   * `processing` means the authorization is genuinely in flight.
+   */
+  async getOrderPaymentSession(
+    orderId: string,
+    userId: string,
+  ): Promise<{ clientSecret: string | null; status: string | null; mock: boolean } | null> {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) {
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Order not found' } });
+    }
+    if (order.customerId !== userId) {
+      throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
+    }
+    /*
+     * Only an order still waiting for its card has a form to reopen. A
+     * cancelled or expired order can keep a 'pending' payment row until the
+     * release catches up, and handing its secret out let the customer put a
+     * real hold on the card for an order that no longer exists.
+     */
+    if (order.status !== OrderStatus.CREATED) return null;
+
+    /*
+     * The order's OWN payment, and never a counter-offer one: that flow opens
+     * its own session through `counter-offers.service.ts` and hands the secret
+     * to a panel of its own. Answering with it here would put the price of a
+     * renegotiation behind copy about the original authorization.
+     *
+     * 'failed' is included with 'pending' for the reason `authorizeOrderPayment`
+     * states: a first card that was declined and a second that is not is one
+     * intent, still confirmable.
+     */
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        orderId,
+        purpose: 'order',
+        supersededAt: null,
+        status: { in: ['pending', 'failed'] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    // Nothing to pay: the hold is in place, the money was taken, or it was let
+    // go. All three are states the order page already has copy for.
+    if (!payment) return null;
+
+    // MOCK mode authorizes in our own ledger at creation, so a pending row can
+    // only be a race with that write. There is no card and no secret to give.
+    if (!this.stripe.configured) return { clientSecret: null, status: null, mock: true };
+    if (!payment.stripePaymentIntentId) return null;
+
+    const pi = await this.stripe.retrievePaymentIntent(payment.stripePaymentIntentId);
+    return { clientSecret: pi.client_secret ?? null, status: pi.status ?? null, mock: false };
   }
 
   // ============================================================
@@ -955,13 +1098,16 @@ export class OrdersService {
     // plain text PK, so any unique string works.
     const id = randomUUID();
     const p = priced.price;
+    // DEN-349: no order carries a free radius any more. The column stays, and
+    // stays NOT NULL, because orders priced before the change are read back
+    // through it; a new row states plainly that it had none.
+    const ZERO_FREE_RADIUS_KM = new Prisma.Decimal(0);
     // The BILLED distance, not the measured one: this column is what the
     // invoice and the contract quote, so it must be the quantity the per-km
     // rate multiplied. `return_trip_factor` beside it recovers the measured
     // distance for anyone who needs it.
     const distanceKm = new Prisma.Decimal(p.billedDistanceKm);
     const returnTripFactor = new Prisma.Decimal(p.returnTripFactor.toFixed(2));
-    const freeRadiusKm = new Prisma.Decimal(p.freeRadiusKm.toFixed(2));
     const surgeMultiplier = new Prisma.Decimal(p.surgeMultiplier.toFixed(2));
     // DEN-290: the customer no longer chooses a time, so a new order stores
     // NULL. A website deployed before that change still sends one, and it is
@@ -980,7 +1126,7 @@ export class OrdersService {
         ${dto.listingUrl ?? null}, ${dto.address},
         ST_SetSRID(ST_MakePoint(${dto.lng}, ${dto.lat}), 4326)::geography,
         ${scheduledAt}, ${countryCode},
-        ${p.baseFeeCents}, ${distanceKm}, ${returnTripFactor}, ${freeRadiusKm}, ${p.distanceFeeCents}, ${p.billedDurationMin},
+        ${p.baseFeeCents}, ${distanceKm}, ${returnTripFactor}, ${ZERO_FREE_RADIUS_KM}, ${p.distanceFeeCents}, ${p.billedDurationMin},
         ${p.timeFeeCents}, ${surgeMultiplier}, ${p.minimumFareApplied}, ${priced.routingSource},
         ${p.totalCents}, ${p.platformFeeCents}, ${p.inspectorShareCents},
         'EUR', ${new Date()}
@@ -1012,12 +1158,16 @@ export class OrdersService {
    * It used to ask for exactly one. With inspector-set base fees the nearest
    * candidate may cost more than the customer authorised, and stopping there
    * would mark the order UNASSIGNED while three affordable inspectors stood a
-   * few kilometres further away. Five, not fifty: each one costs a profile read,
-   * and an order that cannot be filled by the five nearest is an order the
-   * search window should be allowed to expire rather than one to grind through
-   * the whole country for.
+   * few kilometres further away.
+   *
+   * It is {@link CANDIDATE_LIMIT} - the quote's number - and it must stay equal
+   * to it. It was five against the quote's ten, and that gap is described in
+   * full there. Not fifty: each candidate costs a profile read, and an order
+   * that cannot be filled by the ten nearest is an order the search window
+   * should be allowed to expire rather than one to grind through the whole
+   * country for.
    */
-  private static readonly DISPATCH_CANDIDATE_LIMIT = 5;
+  private static readonly DISPATCH_CANDIDATE_LIMIT = CANDIDATE_LIMIT;
 
   /**
    * True while a customer is paying for a counter-offer on this order
@@ -1113,16 +1263,16 @@ export class OrdersService {
       excludeCustomerId: order.customerId,
     });
 
-    const affordable = await this.firstAffordableCandidate(order, candidates);
+    const chosen = await this.bestPoolCandidate(order, candidates);
 
-    if (!affordable) {
+    if (!chosen) {
       if (order.status !== OrderStatus.UNASSIGNED) {
         await this.transition(orderId, OrderStatus.UNASSIGNED, 'system');
       }
       return false;
     }
 
-    const { candidate: nearest, price } = affordable;
+    const { candidate: nearest, price, ownPriceCents } = chosen;
     const timeoutMinutes = await this.settings.getNumber('offerTimeoutMinutes');
     const expiresAt = new Date(Date.now() + timeoutMinutes * 60_000);
     await this.prisma.orderOffer.create({
@@ -1150,6 +1300,12 @@ export class OrdersService {
       inspectorId: nearest.userId,
       expiresAt: expiresAt.toISOString(),
       round: order.dispatchRound,
+      // What the offer asks the inspector to give up, if anything (DEN-358).
+      // On the timeline because it is the answer to "why did they decline" and
+      // to "why was this one asked first", and neither is reconstructable from
+      // the offer row - the row holds the offered price only.
+      priceCents: price.totalCents,
+      ownPriceCents,
     });
     // E11: notify the inspector an offer was sent to them (non-throwing).
     await this.notifications.notify(nearest.userId, 'offer.received', {
@@ -1160,42 +1316,131 @@ export class OrdersService {
       // What THIS offer pays, which is not the order's figure once an
       // inspector prices themselves below the quote.
       inspectorShareCents: price.inspectorShareCents,
+      /*
+       * What the same job would have paid at this inspector's OWN rate
+       * (DEN-358). Equal to `priceCents` for the inspector who set the quote,
+       * and higher for everybody else, who is being asked to take the job at
+       * the authorised total instead. The app needs both to say so out loud;
+       * an offer that silently undercuts a rate the inspector set themselves
+       * reads as the platform ignoring it. Additive - an older build shows the
+       * offered figure alone, exactly as it does today.
+       */
+      priceCents: price.totalCents,
+      ownPriceCents,
       expiresAt: expiresAt.toISOString(),
     });
     return true;
   }
 
   /**
-   * The first candidate this order can actually pay for, with the price it
-   * would be offered at.
+   * The candidate to offer this order to next, with the price it is offered at
+   * and what that candidate's own price would have been (DEN-358).
    *
    * The ceiling is the order's own total: that is the sum authorised on the
    * customer's card, and Stripe can capture LESS than an authorisation but
-   * never more. An inspector who costs more is skipped rather than offered a
-   * job that could not be paid for - and rather than quietly paid the lower
-   * figure, which would be the platform pocketing the difference.
+   * never more.
    *
-   * A candidate priced BELOW the quote is offered at their own lower price and
-   * the customer is charged that, so the quote is a ceiling and not a target.
+   * It used to SKIP anybody above that ceiling, which emptied the pool. Since
+   * the quote is the cheapest candidate's own total, everybody else in the set
+   * is above it by construction - so the hard filter left exactly one eligible
+   * inspector, and one decline sent the order to UNASSIGNED with affordable
+   * people still standing in the radius.
+   *
+   * The filter is now a RANKING. Candidates are ordered by how far their own
+   * price sits from the authorised total, nearest first, and the job is offered
+   * AT the authorised total. So the inspector asked first is the one being
+   * asked to concede least.
+   *
+   * What bounds the concession is {@link CANDIDATE_LIMIT} and the search window,
+   * NOT this ranking. Dispatch offers to one inspector at a time and a decline
+   * excludes them, so each round re-ranks over whoever is left and the concession
+   * grows round by round until the window closes. A per-round "pool of five"
+   * would bound nothing: the sixth becomes the first the moment one drops out.
+   * If a hard limit on how far below a stated rate the platform may ask is
+   * wanted, it belongs here as an explicit floor, and it is a product decision.
+   *
+   * An inspector may therefore see a job priced below their stated rate, and
+   * they decline it like any other offer. The offer notification carries their
+   * own figure beside the offered one so the app can say WHY the two differ -
+   * an offer that silently undercuts a rate the inspector set themselves reads
+   * as the platform ignoring it.
+   *
+   * A candidate priced BELOW the authorised total is offered at their own lower
+   * price and the customer is charged that, so the quote is a ceiling and not a
+   * target.
    */
-  private async firstAffordableCandidate(
+  private async bestPoolCandidate(
     order: Order,
     candidates: Array<{ userId: string; distanceKm: number }>,
-  ): Promise<{ candidate: { userId: string; distanceKm: number }; price: PriceBreakdown } | null> {
+  ): Promise<{
+    candidate: { userId: string; distanceKm: number };
+    price: PriceBreakdown;
+    ownPriceCents: number;
+  } | null> {
     if (candidates.length === 0) return null;
 
     const base = await this.tariffForStoredOrder(order);
+    /*
+     * The breakdown the customer was actually quoted, and therefore the one to
+     * offer AT the ceiling - its platform fee and inspector share are the
+     * figures the order authorised.
+     *
+     * The base fee comes from the ORDER ROW, not from `base.tariff`.
+     * `tariffForStoredOrder` recovers the REGIONAL tariff, which still carries
+     * the platform base fee - the winning inspector's own fee is laid over it
+     * per candidate by `tariffForInspector`. Using the regional figure here
+     * priced the ceiling at the platform base and produced an offer ABOVE the
+     * authorised total, which is the one thing Stripe cannot capture.
+     */
+    const recomputed = computePrice({
+      distanceKm: base.distanceKm,
+      durationMin: base.durationMin,
+      tariff: { ...base.tariff, baseFeeCents: order.baseFeeCents },
+    });
+    /*
+     * The money comes from the ORDER ROW, not from the recomputation. The
+     * recomputation reads today's commission, surge, minimum fare and rates,
+     * so after an admin changes one of them - and on every order priced before
+     * DEN-350, when the commission was inside the total - it came out above
+     * what the customer authorised. Capture is capped at `order.totalCents`, so
+     * the card was safe, but the offer and its notification promised the
+     * inspector a share that accept then did not pay.
+     */
+    const atCeiling: PriceBreakdown = {
+      ...recomputed,
+      totalCents: order.totalCents,
+      platformFeeCents: order.platformFeeCents,
+      inspectorShareCents: order.inspectorShareCents,
+    };
 
+    const priced: Array<{
+      candidate: { userId: string; distanceKm: number };
+      price: PriceBreakdown;
+      ownPriceCents: number;
+      concessionCents: number;
+    }> = [];
     for (const candidate of candidates) {
       const tariff = await this.tariffForInspector(base.tariff, candidate.userId);
-      const price = computePrice({
+      const own = computePrice({
         distanceKm: base.distanceKm,
         durationMin: base.durationMin,
         tariff,
       });
-      if (price.totalCents <= order.totalCents) return { candidate, price };
+      priced.push({
+        candidate,
+        price: own.totalCents <= order.totalCents ? own : atCeiling,
+        ownPriceCents: own.totalCents,
+        concessionCents: Math.abs(own.totalCents - order.totalCents),
+      });
     }
-    return null;
+
+    // Smallest concession first; the nearest breaks a tie, and ties are the
+    // common case because most inspectors sit on the platform base fee.
+    priced.sort(
+      (a, b) =>
+        a.concessionCents - b.concessionCents || a.candidate.distanceKm - b.candidate.distanceKm,
+    );
+    return priced[0] ?? null;
   }
 
   /**
@@ -1256,12 +1501,7 @@ export class OrdersService {
   }): Promise<{ tariff: PricingTariff; distanceKm: number; durationMin: number }> {
     const globalTariff = await this.loadGlobalTariff();
     const region = await this.loadRegionalOverrides(order.countryCode);
-    const resolved = resolveTariff(
-      globalTariff,
-      Number(order.freeRadiusKm),
-      region.zone,
-      region.country,
-    );
+    const resolved = resolveTariff(globalTariff, region.zone, region.country);
 
     const fare = describeStoredFare({
       billedDistanceKm: Number(order.distanceKm),
@@ -1313,6 +1553,9 @@ export class OrdersService {
         error: { code: 'offer_unavailable', message: 'Offer is not pending or has expired' },
       });
     }
+    // DEN-376. Dispatch already skips an inspector without PRO, but an offer
+    // made before an admin removed PRO can still be PENDING.
+    await assertInspectorPro(this.prisma, userId);
 
     const order = await this.prisma.order.findUnique({ where: { id: offer.orderId } });
     if (!order) {
@@ -1942,6 +2185,16 @@ export class OrdersService {
     }
     if (offer.status === 'PENDING') {
       await this.prisma.orderOffer.update({ where: { id: offerId }, data: { status: 'DECLINED' } });
+      /*
+       * The refusal in the order's own history (DEN-348). `offer_sent` was
+       * written for every dispatch and nothing recorded the answer, so a
+       * timeline read as a row of offers with no reason for any of them. The
+       * event is written only on the PENDING branch: a repeated call is
+       * idempotent and must not add a second line.
+       */
+      await this.writeEvent(offer.orderId, userId, 'offer_declined', null, null, {
+        offerId,
+      });
     }
     // Cascade to the next nearest inspector (or UNASSIGNED if none left).
     await this.dispatch(offer.orderId);
@@ -2756,8 +3009,13 @@ export class OrdersService {
    *
    * Three rules, each a decision:
    *
-   *  - **EXPIRED only.** A `DECLINED` offer was a deliberate answer, and a list
-   *    that reminds somebody of work they refused is noise.
+   *  - **EXPIRED and DECLINED.** The two are told apart by `kind` and the row
+   *    says which. `DECLINED` was left out at first, as noise — a list that
+   *    reminds somebody of work they refused. It came back with DEN-348: the
+   *    refusal took the order out of every list the inspector has AND out of
+   *    the detail page they were standing on, so a job answered by mistake
+   *    simply disappeared. It is history now, marked as the inspector's own
+   *    answer, and it is the entry that carries the link to the order.
    *  - **A window, not a purge.** Rows older than `days` fall out of this
    *    answer and stay in the database. Deleting them would re-admit a declined
    *    inspector to the same order (DEN-326) and tear events out of the order's
@@ -2780,12 +3038,12 @@ export class OrdersService {
     page: number;
     pageSize: number;
   }> {
-    const days = opts.days ?? 7;
+    const days = opts.days ?? MISSED_OFFER_WINDOW_DAYS;
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const expired = await this.prisma.orderOffer.findMany({
+    const unanswered = await this.prisma.orderOffer.findMany({
       where: {
         inspectorId: userId,
-        status: 'EXPIRED',
+        status: { in: ['EXPIRED', 'DECLINED'] },
         expiresAt: { gte: since },
         // An order this inspector holds NOW is not a missed one, whatever an
         // earlier round says. After DEN-326 the same order can expire in round
@@ -2805,9 +3063,9 @@ export class OrdersService {
     });
 
     // Newest first, so the first row seen for an order is the latest one.
-    const latest = new Map<string, (typeof expired)[number]>();
+    const latest = new Map<string, (typeof unanswered)[number]>();
     const times = new Map<string, number>();
-    for (const offer of expired) {
+    for (const offer of unanswered) {
       if (!latest.has(offer.orderId)) latest.set(offer.orderId, offer);
       times.set(offer.orderId, (times.get(offer.orderId) ?? 0) + 1);
     }
@@ -2820,7 +3078,7 @@ export class OrdersService {
      * what the reader sees.
      *
      * It is safe to do in memory precisely because of the seven-day window:
-     * the set is one inspector's expired offers of one week, not a history.
+     * the set is one inspector's unanswered offers of one week, not a history.
      */
     const collapsed = [...latest.values()];
     if ((opts.sort ?? OrderSort.newest) === OrderSort.oldest) collapsed.reverse();
@@ -2844,21 +3102,39 @@ export class OrdersService {
 
   async getDetail(orderId: string, userId: string, role: Role): Promise<OrderDetail> {
     const order = await this.requireOrder(orderId);
+    /*
+     * The latest offer this order ever made to this reader, in ANY status.
+     *
+     * The query used to admit only an ACCEPTED offer or a live PENDING one, so
+     * the second the inspector pressed "decline" the page they were standing on
+     * answered 403 and the cabinet showed a 404 (DEN-348). A refusal is an
+     * ANSWER, not a loss of access: the job stays readable afterwards, the same
+     * way an expired offer does, and the reader is told what became of it.
+     *
+     * Read-only falls out of the existing gates rather than being enforced
+     * again here: `isInspector` is false for such a reader, so the seller's
+     * contact and both parties' channels stay closed. `viewerOffer` below is
+     * what tells the client not to draw accept and decline.
+     */
     const offer = await this.prisma.orderOffer.findFirst({
-      where: {
-        orderId,
-        inspectorId: userId,
-        OR: [
-          { status: 'ACCEPTED' },
-          { status: 'PENDING', expiresAt: { gt: new Date() } },
-        ],
-      },
+      where: { orderId, inspectorId: userId },
       orderBy: { createdAt: 'desc' },
-      select: { id: true, status: true },
+      select: { id: true, status: true, expiresAt: true },
     });
+    const offerActive =
+      !!offer &&
+      (offer.status === 'ACCEPTED' ||
+        (offer.status === 'PENDING' && offer.expiresAt.getTime() > Date.now()));
     const isCustomer = order.customerId === userId;
     const isInspector = order.inspectorId === userId;
-    const hasInspectorOffer = !!offer;
+    /*
+     * A finished offer admits its inspector only inside the missed-offers
+     * window, the page that links here. Without the limit, anybody who had
+     * ever been offered the job kept its exact address and history for good.
+     */
+    const windowStart = Date.now() - MISSED_OFFER_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    const hasInspectorOffer =
+      !!offer && (offerActive || offer.expiresAt.getTime() >= windowStart);
     const isAdmin = isAdminRole(role);
     if (!isCustomer && !isInspector && !hasInspectorOffer && !isAdmin) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
@@ -2960,8 +3236,11 @@ export class OrdersService {
       where: { orderId },
       select: { id: true, code: true, qualityScore: true },
     });
+    // Never to an inspector who only had an offer: the report is another
+    // inspector's work, and its code opens it through `/reports/:code`.
+    const holdsOrder = isCustomer || isInspector || isAdmin;
     const report =
-      submittedOrLater.includes(order.status) && reportRow
+      holdsOrder && submittedOrLater.includes(order.status) && reportRow
         ? { id: reportRow.id, code: reportRow.code, qualityScore: reportRow.qualityScore }
         : null;
 
@@ -3084,7 +3363,7 @@ export class OrdersService {
       // submission time is telling them too late.
       reportRequirement: {
         minQualityScore,
-        currentQualityScore: reportRow?.qualityScore ?? null,
+        currentQualityScore: holdsOrder ? (reportRow?.qualityScore ?? null) : null,
         // The counts the inspector actually has to satisfy. Data, not copy:
         // the frontend owns the wording of "photograph every exterior angle",
         // this owns how many angles that is, so growing the walk-around does
@@ -3100,7 +3379,7 @@ export class OrdersService {
       autoApproveAt: order.autoApproveAt ? order.autoApproveAt.toISOString() : null,
       submittedAt: order.submittedAt ? order.submittedAt.toISOString() : null,
       createdAt: order.createdAt.toISOString(),
-      offer: offer ? { id: offer.id, status: offer.status } : null,
+      offer: offer ? { id: offer.id, status: offer.status, active: offerActive } : null,
       offerId: offer?.id ?? null,
       // An admin decision carries the admin's own reason, which only admins may
       // read (DEN-294). The admin detail gets it as a separate `decisions` list.
@@ -5197,7 +5476,7 @@ export class OrdersService {
    * order is not theirs and is not coming back.
    */
   private toMissedItem(
-    offer: { id: string; expiresAt: Date; inspectorShareCents: number | null },
+    offer: { id: string; status: string; expiresAt: Date; inspectorShareCents: number | null },
     o: Order,
     timesOffered: number,
   ) {
@@ -5219,6 +5498,15 @@ export class OrdersService {
       inspectorShareCents: offer.inspectorShareCents ?? o.inspectorShareCents,
       currency: o.currency,
       expiredAt: offer.expiresAt.toISOString(),
+      /*
+       * Why the offer ENDED, which is not the same question as `outcome` - that
+       * one says what became of the order. `declined` is the inspector's own
+       * answer and reads as such in the cabinet; `expired` is the hour running
+       * out. There is no `declinedAt`: nothing stamps the answer, and
+       * `expiresAt` still bounds the row, so the date is presented as the
+       * offer's own deadline for both kinds rather than invented for one.
+       */
+      kind: offer.status === 'DECLINED' ? ('declined' as const) : ('expired' as const),
       timesOffered,
       outcome,
     };
@@ -5369,8 +5657,17 @@ export interface OrderDetail {
   autoApproveAt: string | null;
   submittedAt: string | null;
   createdAt: string;
-  /** Present when the current inspector has a pending/accepted offer. */
-  offer?: { id: string; status: string } | null;
+  /**
+   * The latest offer this order made to the reader, when the reader is an
+   * inspector it was ever offered to. Any status: a DECLINED or EXPIRED offer
+   * is history the inspector may still read (DEN-348).
+   *
+   * `active` is the flag the cabinet acts on — true only for an ACCEPTED offer
+   * or a PENDING one that has not run out. Accept and decline answer 409 for
+   * every other status, so a client that draws them from the presence of
+   * `offer` alone draws controls that can only fail.
+   */
+  offer?: { id: string; status: string; active: boolean } | null;
   offerId?: string | null;
   events: Array<{
     type: string;

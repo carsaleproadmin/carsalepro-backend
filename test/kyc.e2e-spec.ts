@@ -3,6 +3,7 @@ import { KycStatus } from '@prisma/client';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import request from 'supertest';
+import { INSPECTOR_TERMS_VERSION } from '../src/kyc/kyc.constants';
 import { KycService } from '../src/kyc/kyc.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { R2Service } from '../src/r2/r2.service';
@@ -307,9 +308,49 @@ describe('KYC verification (e2e)', () => {
     const appId = await createWithDocs(user, ['id_front', 'selfie']); // missing id_back + gewerbeschein
     const res = await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${user.token}`)
       .expect(400);
     expect(res.body.error.code).toBe('incomplete_kyc');
+  });
+
+  /**
+   * DEN-364. The acknowledgement is a property of the REQUEST, not of the
+   * browser that usually sends it.
+   *
+   * The website holds its submit button disabled until the box is ticked, so
+   * this refusal is unreachable from the screen - which is the reason to assert
+   * it here. A plain POST is what the record has to survive: an application
+   * that became an approved inspector with no confirmation stored is exactly
+   * the gap the column exists to close.
+   *
+   * The first case sends no body at all, which is what an older website build
+   * does. It must be refused for the same named reason rather than as a
+   * malformed request.
+   */
+  it('3a. submit without the terms acknowledgement returns 400 terms_not_accepted', async () => {
+    const user = await makeUser();
+    const appId = await createWithDocs(user);
+
+    const noBody = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(400);
+    expect(noBody.body.error.code).toBe('terms_not_accepted');
+
+    const declined = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: false })
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(400);
+    expect(declined.body.error.code).toBe('terms_not_accepted');
+
+    // Refused BEFORE anything is written: the application is still a draft and
+    // its owner is still unverified.
+    const dbApp = await prisma.kycApplication.findUnique({ where: { id: appId } });
+    expect(dbApp!.status).toBe(KycStatus.DRAFT);
+    expect(dbApp!.termsAcceptedAt).toBeNull();
+    expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(false);
   });
 
   /**
@@ -326,6 +367,7 @@ describe('KYC verification (e2e)', () => {
     const appId = await createWithDocs(user);
     const res = await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
     expect(res.body.status).toBe('APPROVED');
@@ -334,6 +376,10 @@ describe('KYC verification (e2e)', () => {
     const dbApp = await prisma.kycApplication.findUnique({ where: { id: appId } });
     expect(dbApp!.status).toBe(KycStatus.APPROVED);
     expect(dbApp!.submittedAt).toBeTruthy();
+    // DEN-364: the acknowledgement is stored with the wording it applied to,
+    // stamped at the same instant as the submit that carried it.
+    expect(dbApp!.termsAcceptedAt).toEqual(dbApp!.submittedAt);
+    expect(dbApp!.termsVersion).toBe(INSPECTOR_TERMS_VERSION);
     // Both stamped, and by the platform rather than by a person. `reviewedBy`
     // is the only record of WHO decided; a null here would make an automatic
     // grant indistinguishable from an unreviewed one.
@@ -354,6 +400,7 @@ describe('KYC verification (e2e)', () => {
     const appId = await createWithDocs(user, ['id_front', 'selfie']);
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${user.token}`)
       .expect(400);
 
@@ -505,6 +552,7 @@ describe('KYC verification (e2e)', () => {
     const appId = await createWithDocs(user);
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
 
@@ -532,6 +580,7 @@ describe('KYC verification (e2e)', () => {
       const appId = await createWithDocs(user);
       await request(app.getHttpServer())
         .post(`/api/v1/kyc/applications/${appId}/submit`)
+        .send({ termsAccepted: true })
         .set('Authorization', `Bearer ${user.token}`)
         .expect(201);
     }
@@ -575,6 +624,7 @@ describe('KYC verification (e2e)', () => {
       const appId = await createWithDocs(user);
       await request(app.getHttpServer())
         .post(`/api/v1/kyc/applications/${appId}/submit`)
+        .send({ termsAccepted: true })
         .set('Authorization', `Bearer ${user.token}`)
         .expect(201);
       users.push(user);
@@ -620,6 +670,7 @@ describe('KYC verification (e2e)', () => {
 
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
     expect((await prisma.user.findUnique({ where: { id: user.userId } }))!.kycVerified).toBe(true);
@@ -657,6 +708,7 @@ describe('KYC verification (e2e)', () => {
 
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
     await request(app.getHttpServer())
@@ -670,6 +722,7 @@ describe('KYC verification (e2e)', () => {
     const secondId = await createWithDocs(user);
     const res = await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${secondId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
 
@@ -711,6 +764,7 @@ describe('KYC verification (e2e)', () => {
     const firstId = await createWithDocs(revoked, undefined, files);
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${revoked.token}`)
       .expect(201);
     await request(app.getHttpServer())
@@ -724,6 +778,7 @@ describe('KYC verification (e2e)', () => {
     const secondId = await createWithDocs(freshAccount, undefined, files);
     const res = await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${secondId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${freshAccount.token}`)
       .expect(201);
 
@@ -764,6 +819,7 @@ describe('KYC verification (e2e)', () => {
     const legacyId = await createWithDocs(rejected);
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${legacyId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${rejected.token}`)
       .expect(201);
     await request(app.getHttpServer())
@@ -782,6 +838,7 @@ describe('KYC verification (e2e)', () => {
     );
     const res = await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${ownId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${stranger.token}`)
       .expect(201);
 
@@ -810,6 +867,7 @@ describe('KYC verification (e2e)', () => {
     );
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${revoked.token}`)
       .expect(201);
     await request(app.getHttpServer())
@@ -829,6 +887,7 @@ describe('KYC verification (e2e)', () => {
     );
     const res = await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${secondId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${freshAccount.token}`)
       .expect(201);
 
@@ -870,6 +929,7 @@ describe('KYC verification (e2e)', () => {
     );
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${firstId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${rejected.token}`)
       .expect(201);
     await request(app.getHttpServer())
@@ -887,6 +947,7 @@ describe('KYC verification (e2e)', () => {
     );
     const res = await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${ownId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${other.token}`)
       .expect(201);
 
@@ -906,6 +967,7 @@ describe('KYC verification (e2e)', () => {
 
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${user.token}`)
       .expect(201);
     await request(app.getHttpServer())
@@ -937,6 +999,7 @@ describe('KYC verification (e2e)', () => {
     // submit again on a SUBMITTED application → 409
     const reSubmit = await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${user.token}`)
       .expect(409);
     expect(reSubmit.body.error.code).toBe('illegal_transition');
@@ -1004,6 +1067,7 @@ describe('KYC verification (e2e)', () => {
     await seedDocuments(owner, appId, ['id_back', 'selfie', 'gewerbeschein']);
     await request(app.getHttpServer())
       .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
       .set('Authorization', `Bearer ${owner.token}`)
       .expect(201);
 
@@ -1099,6 +1163,7 @@ describe('KYC verification (e2e)', () => {
       await seedDocuments(user, appId);
       await request(leaky.getHttpServer())
         .post(`/api/v1/kyc/applications/${appId}/submit`)
+        .send({ termsAccepted: true })
         .set('Authorization', `Bearer ${user.token}`)
         .expect(201);
 

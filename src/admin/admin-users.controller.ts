@@ -6,6 +6,7 @@ import {
   HttpCode,
   Param,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
@@ -136,6 +137,36 @@ export class AdminUsersController {
       { deletedAt, reason: dto.reason },
     );
     return { id: after.id, deletedAt };
+  }
+
+  /** Manual PRO for an inspector (DEN-376). PUT gives it, DELETE removes it. */
+  @Put(':id/inspector-pro')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Give mobile PRO to an inspector by hand (admin)' })
+  @ApiParam({ name: 'id' })
+  async grantInspectorPro(@CurrentUser('id') adminId: string, @Param('id') id: string) {
+    return this.setInspectorPro(adminId, id, true);
+  }
+
+  @Delete(':id/inspector-pro')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Remove the manual mobile PRO of an inspector (admin)' })
+  @ApiParam({ name: 'id' })
+  async revokeInspectorPro(@CurrentUser('id') adminId: string, @Param('id') id: string) {
+    return this.setInspectorPro(adminId, id, false);
+  }
+
+  private async setInspectorPro(adminId: string, id: string, granted: boolean) {
+    const { before, after } = await this.adminUsers.setInspectorPro(id, granted, adminId);
+    await this.audit.log(
+      adminId,
+      granted ? 'user.inspector_pro_grant' : 'user.inspector_pro_revoke',
+      'user',
+      id,
+      { proGrantedAt: before ? before.toISOString() : null },
+      { proGrantedAt: after?.grantedAt ?? null },
+    );
+    return after;
   }
 
   @Get(':id/device-links')

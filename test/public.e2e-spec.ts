@@ -521,6 +521,85 @@ describe('Public showroom + report check (e2e)', () => {
       expect(unfiltered.body.items.map((i: { id: string }) => i.id)).toContain(manualId);
     });
 
+    /*
+     * DEN-355. The filters added with the vocabulary fold.
+     *
+     * The fixture above is the one row every case here is aimed at: petrol,
+     * manual, 92 kW, 132 000 km. `city=Dresden` narrows each request to it, so
+     * a case asserts about a known row rather than about whatever else the
+     * suite has left in the table.
+     */
+    const dresden = (query: string) =>
+      request(app.getHttpServer())
+        .get(`/api/v1/public/listings?city=Dresden&${query}`)
+        .expect(200);
+
+    const hasManual = (res: { body: { items: { id: string }[] } }) =>
+      res.body.items.some((i) => i.id === manualId);
+
+    it('11g. a multi-value filter is an OR, and one value is still a filter', async () => {
+      // The reason the filter is multi-value at all: "petrol or hybrid" is ONE
+      // question, and two searches cannot be ordered by price against each
+      // other.
+      expect(hasManual(await dresden('fuelType=petrol,hybrid'))).toBe(true);
+      expect(hasManual(await dresden('fuelType=petrol'))).toBe(true);
+      expect(hasManual(await dresden('fuelType=diesel,electric'))).toBe(false);
+    });
+
+    it('11h. refuses a value outside the vocabulary rather than answering with nothing', async () => {
+      /*
+       * These columns are stored FOLDED, so a value outside the list can match
+       * no row that will ever exist. An empty showroom is a result the visitor
+       * has to explain to themselves; a 400 naming the value is not.
+       */
+      await request(app.getHttpServer())
+        .get('/api/v1/public/listings?fuelType=kerosene')
+        .expect(400);
+      await request(app.getHttpServer())
+        .get('/api/v1/public/listings?color=chartreuse')
+        .expect(400);
+    });
+
+    it('11i. a trailing separator is a UI artefact, not a bad request', async () => {
+      // What a chip list produces when the last value is removed. Answering it
+      // with an error panel instead of cars would be the worst of both.
+      expect(hasManual(await dresden('fuelType=petrol,'))).toBe(true);
+      expect(hasManual(await dresden('bodyType='))).toBe(true);
+    });
+
+    it('11j. the gearbox filter reads the folded column', async () => {
+      expect(hasManual(await dresden('transmission=manual'))).toBe(true);
+      expect(hasManual(await dresden('transmission=automatic'))).toBe(false);
+      expect(hasManual(await dresden('transmission=manual,automatic'))).toBe(true);
+    });
+
+    it('11k. power is bounded at both ends, in the kilowatts the column holds', async () => {
+      // 92 kW - about 125 PS. The website converts; the API never sees PS.
+      expect(hasManual(await dresden('powerFrom=90&powerTo=100'))).toBe(true);
+      expect(hasManual(await dresden('powerFrom=92&powerTo=92'))).toBe(true);
+      expect(hasManual(await dresden('powerFrom=100'))).toBe(false);
+      expect(hasManual(await dresden('powerTo=91'))).toBe(false);
+    });
+
+    it('11l. mileage has a LOWER bound now, and the two ends combine', async () => {
+      // The single `mileageTo` could not express "not a delivery-mileage car".
+      expect(hasManual(await dresden('mileageFrom=100000'))).toBe(true);
+      expect(hasManual(await dresden('mileageFrom=140000'))).toBe(false);
+      expect(hasManual(await dresden('mileageFrom=100000&mileageTo=140000'))).toBe(true);
+      // Both ends applied, not the last one written: a row outside either is out.
+      expect(hasManual(await dresden('mileageFrom=100000&mileageTo=120000'))).toBe(false);
+    });
+
+    it('11m. a row with no value is left out of that filter, as `country` already was', async () => {
+      /*
+       * NULL means "nobody said". Answering "black" with a car that never
+       * claimed a colour is the defect; the filter being strict is not. The
+       * fixture has no colour at all, which is what makes it the right row to
+       * ask with.
+       */
+      expect(hasManual(await dresden('color=black'))).toBe(false);
+    });
+
     it('11f. ?country filters on the exact code, and never returns a listing with none', async () => {
       // Two rows in two countries, plus the fixture above, which has no country
       // at all: that third row is the point of the test. `country_code` is

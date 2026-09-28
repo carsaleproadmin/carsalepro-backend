@@ -97,6 +97,7 @@ describe('Inspector base fee (e2e)', () => {
         searchRadiusKm: 300,
         available: true,
         stripeOnboarded: true,
+        proGrantedAt: new Date(),
         baseFeeCents: baseFeeCents ?? null,
       },
     });
@@ -220,7 +221,9 @@ describe('Inspector base fee (e2e)', () => {
       const dear = platformBaseCents + 2_000;
       const cheap = platformBaseCents + 200;
       await makeInspector(dear); // at the car
-      await makeInspector(cheap, LAT + 0.2, LNG + 0.2); // a little further out
+      // Close enough that the 200 cent difference survives the drive. The
+      // distance matters since DEN-358 - see the case below.
+      await makeInspector(cheap, LAT + 0.01, LNG);
       const customer = await register('cust');
 
       const res = await request(app.getHttpServer())
@@ -230,6 +233,35 @@ describe('Inspector base fee (e2e)', () => {
         .expect(200);
 
       expect(res.body.breakdown.baseFeeCents).toBe(cheap);
+    });
+
+    /*
+     * DEN-358. The quote is the cheapest TOTAL, not the cheapest RATE.
+     *
+     * It used to add the lowest base fee in the set to the NEAREST inspector's
+     * drive, which is one person's rate over another person's road - a number
+     * nobody in the set would accept. Dispatch then looked for somebody at or
+     * under it and regularly found nobody, so the order reached UNASSIGNED with
+     * affordable inspectors standing in the radius.
+     */
+    it('prefers a dearer neighbour to a cheaper inspector whose drive costs more', async () => {
+      const dear = platformBaseCents + 2_000;
+      const cheap = platformBaseCents + 200;
+      await makeInspector(dear); // at the car
+      // ~26 km out: the travel fee is far more than the 1 800 cents saved.
+      await makeInspector(cheap, LAT + 0.2, LNG + 0.2);
+      const customer = await register('cust');
+
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/orders/quote')
+        .set('Authorization', `Bearer ${customer.token}`)
+        .send({ lat: LAT, lng: LNG, scheduledAt: SCHEDULED_AT })
+        .expect(200);
+
+      // The near expensive one wins on the total, and the quote carries no
+      // travel fee because they are standing at the car.
+      expect(res.body.breakdown.baseFeeCents).toBe(dear);
+      expect(res.body.breakdown.distanceFeeCents).toBe(0);
     });
 
     /*
@@ -281,28 +313,99 @@ describe('Inspector base fee (e2e)', () => {
       expect(again.priceCents).toBe(offer.priceCents);
     });
 
-    it('skips an inspector who costs more than the customer authorised', async () => {
+    it('offers the job to a dearer inspector AT the authorised total', async () => {
       /*
-       * The order was quoted and authorised on the nearest inspector. A dearer
-       * one further out cannot be offered the job: Stripe can capture less than
-       * an authorisation and never more, and there is no second card to ask.
+       * DEN-358, and it reverses this case. It used to assert that a dearer
+       * inspector is SKIPPED, which emptied the pool: the quote is the cheapest
+       * candidate's own total, so everybody else is above it by construction
+       * and one decline ended the search.
+       *
+       * They are asked instead - at the authorised total, never above it, which
+       * is the figure Stripe can actually capture. Conceding is their decision
+       * and they decline like any other offer.
        */
       const { maxCents } = inspectorBaseFeeBounds();
       const cheap = await makeInspector(undefined, LAT, LNG);
       const customer = await register('cust');
       const orderId = await createOrder(customer.token);
 
-      // The cheap one declines, leaving only somebody dearer.
       await orders.dispatch(orderId);
       const first = await prisma.orderOffer.findFirstOrThrow({ where: { orderId } });
       expect(first.inspectorId).toBe(cheap.userId);
       await prisma.orderOffer.update({ where: { id: first.id }, data: { status: 'DECLINED' } });
 
+      const dear = await makeInspector(maxCents, LAT + 0.01, LNG);
+      await orders.dispatch(orderId);
+
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const second = await prisma.orderOffer.findFirstOrThrow({
+        where: { orderId, status: 'PENDING' },
+      });
+      expect(second.inspectorId).toBe(dear.userId);
+      expect(second.priceCents).toBe(order.totalCents);
+      // Two offers, where the old rule made exactly one and stopped. The order
+      // STATUS is not asserted: dispatch sends from PAID and from UNASSIGNED
+      // alike and moves neither, so a live offer on an UNASSIGNED order is
+      // ordinary and always was.
+      expect(await prisma.orderOffer.count({ where: { orderId } })).toBe(2);
+    });
+
+    it('offers the ceiling at the fee and share STORED on the order', async () => {
+      /*
+       * Review of DEN-358. The ceiling offer was recomputed from today's
+       * settings, so an order priced under other ones - here, one priced before
+       * DEN-350, when the commission was inside the total - was offered with a
+       * share above what the customer authorised. The offer must carry the
+       * order's own figures.
+       */
+      const { maxCents } = inspectorBaseFeeBounds();
+      const cheap = await makeInspector(undefined, LAT, LNG);
+      const customer = await register('cust');
+      const orderId = await createOrder(customer.token);
+
+      await orders.dispatch(orderId);
+      const first = await prisma.orderOffer.findFirstOrThrow({ where: { orderId } });
+      expect(first.inspectorId).toBe(cheap.userId);
+      await prisma.orderOffer.update({ where: { id: first.id }, data: { status: 'DECLINED' } });
+
+      // The old split: the same total, the commission taken out of it.
+      const before = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const platformFeeCents = Math.round(before.totalCents * 0.2);
+      await prisma.order.update({
+        where: { id: orderId },
+        data: {
+          platformFeeCents,
+          inspectorShareCents: before.totalCents - platformFeeCents,
+        },
+      });
+
       await makeInspector(maxCents, LAT + 0.01, LNG);
       await orders.dispatch(orderId);
 
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+      const second = await prisma.orderOffer.findFirstOrThrow({
+        where: { orderId, status: 'PENDING' },
+      });
+      expect(second.priceCents).toBe(order.totalCents);
+      expect(second.platformFeeCents).toBe(order.platformFeeCents);
+      expect(second.inspectorShareCents).toBe(order.inspectorShareCents);
+    });
+
+    it('goes to UNASSIGNED only when the radius is actually empty', async () => {
+      const cheap = await makeInspector(undefined, LAT, LNG);
+      const customer = await register('cust');
+      const orderId = await createOrder(customer.token);
+
+      await orders.dispatch(orderId);
+      const first = await prisma.orderOffer.findFirstOrThrow({ where: { orderId } });
+      expect(first.inspectorId).toBe(cheap.userId);
+      await prisma.orderOffer.update({ where: { id: first.id }, data: { status: 'DECLINED' } });
+
+      // Nobody else exists, so there is nobody left to concede anything.
+      await orders.dispatch(orderId);
+
       const offers = await prisma.orderOffer.findMany({ where: { orderId } });
-      expect(offers).toHaveLength(1); // no second offer was made
+      expect(offers).toHaveLength(1);
       const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
       expect(order.status).toBe('UNASSIGNED');
     });
