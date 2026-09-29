@@ -761,7 +761,9 @@ export class PublicService {
   private async toCard(listing: ListingWithReport) {
     const inspection = this.inspectionOf(listing);
     const inspected = inspection.status === 'inspected';
-    const [thumb] = await this.listingPhotos(listing, 1);
+    // Three, for the hover gallery on the card (DEN-399). The first is the cover.
+    const cardPhotos = await this.listingPhotos(listing, 3);
+    const thumb = cardPhotos[0];
     return {
       id: listing.id,
       priceCents: listing.priceCents,
@@ -776,6 +778,7 @@ export class PublicService {
       /** Seller-declared engine displacement in litres (DEN-397), for the card. */
       engineVolumeL: this.declaredSpecsOf(listing)?.engineVolumeL ?? null,
       thumbnailUrl: thumb?.url ?? null,
+      photoUrls: cardPhotos.map((photo) => photo.url),
     };
   }
 
