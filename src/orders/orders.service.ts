@@ -36,12 +36,7 @@ import {
   QuoteOrderDto,
 } from './dto/order.dto';
 import { ATTACHABLE_REPORT_ORDER_STATUSES, canTransition } from './order-state-machine';
-import {
-  PriceBreakdown,
-  PricingTariff,
-  computePrice,
-  describeStoredFare,
-} from './order-pricing';
+import { PriceBreakdown, PricingTariff, computePrice, describeStoredFare } from './order-pricing';
 import { effectiveBaseFeeCents } from './inspector-base-fee';
 import { RegionalOverrides, exceedsCap, resolveTariff } from './tariff-resolution';
 import { ADMIN_DECISION_EVENT, AdminDecision } from './admin-decision';
@@ -319,6 +314,16 @@ interface PricedQuote {
  */
 const MISSED_OFFER_WINDOW_DAYS = 7;
 
+/**
+ * The timeline event for a hold release (DEN-400). A failed release is its own
+ * type, so the customer timeline can hide it: before this, a failure was an
+ * `authorization_released` event with `released: false` in its payload, and
+ * the page, which does not get the payload, showed it as a release.
+ */
+function releaseEventType(released: boolean): string {
+  return released ? 'authorization_released' : 'authorization_release_failed';
+}
+
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
@@ -430,11 +435,7 @@ export class OrdersService {
    * excluded from the candidate set: an account that is both a customer and an
    * inspector must never be quoted — or later dispatched — its own job (F-13).
    */
-  private async priceQuote(
-    lat: number,
-    lng: number,
-    customerId?: string,
-  ): Promise<PricedQuote> {
+  private async priceQuote(lat: number, lng: number, customerId?: string): Promise<PricedQuote> {
     const [
       baseFeeCents,
       ratePerKmCents,
@@ -1540,7 +1541,10 @@ export class OrdersService {
    * an unpayable order in the pool only sends the next inspector to the same
    * dead end.
    */
-  async acceptOffer(offerId: string, userId: string): Promise<{ orderId: string; status: OrderStatus }> {
+  async acceptOffer(
+    offerId: string,
+    userId: string,
+  ): Promise<{ orderId: string; status: OrderStatus }> {
     const offer = await this.prisma.orderOffer.findUnique({ where: { id: offerId } });
     if (!offer) {
       throw new NotFoundException({ error: { code: 'not_found', message: 'Offer not found' } });
@@ -1584,7 +1588,8 @@ export class OrdersService {
       throw new ConflictException({
         error: {
           code: 'order_locked_by_counter_offer',
-          message: 'The customer is paying for another expert\u2019s price. Try again in a few minutes.',
+          message:
+            'The customer is paying for another expert\u2019s price. Try again in a few minutes.',
         },
       });
     }
@@ -1847,10 +1852,17 @@ export class OrdersService {
       // is already released, and a row left 'authorized' holds a customer's
       // money for the seven days Stripe takes to expire an authorization.
       await this.releaseSupersededHold(paymentId, orderId, 'counter_offer_capture_failed');
-      await this.writeEvent(orderId, counter.inspectorId, 'counter_offer_capture_failed', null, null, {
-        counterOfferId: counter.id,
-        detail: capture.detail ?? null,
-      });
+      await this.writeEvent(
+        orderId,
+        counter.inspectorId,
+        'counter_offer_capture_failed',
+        null,
+        null,
+        {
+          counterOfferId: counter.id,
+          detail: capture.detail ?? null,
+        },
+      );
       return;
     }
 
@@ -1973,11 +1985,18 @@ export class OrdersService {
       data: { status: 'failed', supersededAt: now },
     });
 
-    await this.writeEvent(orderId, counter.inspectorId, 'counter_offer_payment_abandoned', null, null, {
-      counterOfferId: counter.id,
-      detail,
-      returnedToCustomer: stillOpen,
-    });
+    await this.writeEvent(
+      orderId,
+      counter.inspectorId,
+      'counter_offer_payment_abandoned',
+      null,
+      null,
+      {
+        counterOfferId: counter.id,
+        detail,
+        returnedToCustomer: stillOpen,
+      },
+    );
 
     if (!stillOpen) {
       await this.notifyCounterOfferExpired(counter.id);
@@ -2029,7 +2048,7 @@ export class OrdersService {
           ...(released ? { status: 'cancelled', canceledAt: new Date() } : {}),
         },
       });
-      await this.writeEvent(orderId, 'system', 'authorization_released', null, null, {
+      await this.writeEvent(orderId, 'system', releaseEventType(released), null, null, {
         reason: 'counter_offer_replaced',
         released,
         paymentId: payment.id,
@@ -2067,7 +2086,7 @@ export class OrdersService {
         ...(released ? { status: 'cancelled', canceledAt: new Date() } : {}),
       },
     });
-    await this.writeEvent(orderId, 'system', 'authorization_released', null, null, {
+    await this.writeEvent(orderId, 'system', releaseEventType(released), null, null, {
       reason,
       released,
       paymentId,
@@ -2216,7 +2235,8 @@ export class OrdersService {
         error: { code: 'forbidden', message: 'You are not the assigned inspector' },
       });
     }
-    const target = status === InspectorStatusUpdate.EN_ROUTE ? OrderStatus.EN_ROUTE : OrderStatus.IN_PROGRESS;
+    const target =
+      status === InspectorStatusUpdate.EN_ROUTE ? OrderStatus.EN_ROUTE : OrderStatus.IN_PROGRESS;
     // DEN-291: no trip before the inspector has reached the car owner.
     if (
       target === OrderStatus.EN_ROUTE &&
@@ -2329,10 +2349,17 @@ export class OrdersService {
     // stays open. It cannot leave the order uncancelled now in any case — the
     // claim above already wrote that.
     const outcome = await this.settleRefund(order, order.totalCents, 'inspector_declined');
-    await this.writeEvent(orderId, userId, 'inspector_declined', order.status, OrderStatus.CANCELLED, {
-      reason: trimmed,
-      refundCents: outcome.amountCents,
-    });
+    await this.writeEvent(
+      orderId,
+      userId,
+      'inspector_declined',
+      order.status,
+      OrderStatus.CANCELLED,
+      {
+        reason: trimmed,
+        refundCents: outcome.amountCents,
+      },
+    );
     /*
      * The claim wrote the status, so `transition` would find CANCELLED and
      * return early — taking the `status_change` event and the customer's
@@ -2340,7 +2367,14 @@ export class OrdersService {
      * it. `notifyStatusChange` is reused rather than copied so the hand-back
      * letter stays one mapping.
      */
-    await this.writeEvent(orderId, userId, 'status_change', order.status, OrderStatus.CANCELLED, null);
+    await this.writeEvent(
+      orderId,
+      userId,
+      'status_change',
+      order.status,
+      OrderStatus.CANCELLED,
+      null,
+    );
     try {
       await this.notifyStatusChange({ ...order, status: OrderStatus.CANCELLED }, order.status, {
         declinedByInspector: { reason: trimmed, refundCents: outcome.amountCents },
@@ -2445,12 +2479,26 @@ export class OrdersService {
     if (claimed.count === 0) throw notPending();
 
     const outcome = await this.settleRefund(order, order.totalCents, 'owner_unreachable');
-    await this.writeEvent(orderId, userId, 'owner_unreachable', order.status, OrderStatus.CANCELLED, {
-      refundCents: outcome.amountCents,
-    });
+    await this.writeEvent(
+      orderId,
+      userId,
+      'owner_unreachable',
+      order.status,
+      OrderStatus.CANCELLED,
+      {
+        refundCents: outcome.amountCents,
+      },
+    );
     // The claim wrote the status, so `transition` is not called and its
     // `status_change` event is written here, as the hand-back does it.
-    await this.writeEvent(orderId, userId, 'status_change', order.status, OrderStatus.CANCELLED, null);
+    await this.writeEvent(
+      orderId,
+      userId,
+      'status_change',
+      order.status,
+      OrderStatus.CANCELLED,
+      null,
+    );
     try {
       await this.notifications.notify(order.customerId, 'order.owner_unreachable', {
         ...payload,
@@ -2517,7 +2565,11 @@ export class OrdersService {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
     }
 
-    const beforeAssign: OrderStatus[] = [OrderStatus.CREATED, OrderStatus.PAID, OrderStatus.UNASSIGNED];
+    const beforeAssign: OrderStatus[] = [
+      OrderStatus.CREATED,
+      OrderStatus.PAID,
+      OrderStatus.UNASSIGNED,
+    ];
     const afterAssign: OrderStatus[] = [OrderStatus.ASSIGNED, OrderStatus.EN_ROUTE];
 
     let refundPercent: number;
@@ -2531,7 +2583,10 @@ export class OrdersService {
     } else {
       // IN_PROGRESS | SUBMITTED | ... → must dispute, not cancel.
       throw new ConflictException({
-        error: { code: 'not_cancellable', message: 'Order cannot be cancelled; open a dispute instead' },
+        error: {
+          code: 'not_cancellable',
+          message: 'Order cannot be cancelled; open a dispute instead',
+        },
       });
     }
 
@@ -2553,7 +2608,10 @@ export class OrdersService {
     };
   }
 
-  async approve(orderId: string, userId: string): Promise<{ orderId: string; status: OrderStatus }> {
+  async approve(
+    orderId: string,
+    userId: string,
+  ): Promise<{ orderId: string; status: OrderStatus }> {
     const order = await this.requireOrder(orderId);
     if (order.customerId !== userId) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
@@ -2614,7 +2672,10 @@ export class OrdersService {
     });
     if (!profile || !profile.user.kycVerified) {
       throw new BadRequestException({
-        error: { code: 'inspector_not_eligible', message: 'Inspector is not eligible for assignment' },
+        error: {
+          code: 'inspector_not_eligible',
+          message: 'Inspector is not eligible for assignment',
+        },
       });
     }
 
@@ -2689,7 +2750,10 @@ export class OrdersService {
     await this.expirePendingOffers(orderId, order, inspectorId);
     const chosen = await this.prisma.orderOffer.findFirst({ where: { orderId, inspectorId } });
     if (chosen) {
-      await this.prisma.orderOffer.update({ where: { id: chosen.id }, data: { status: 'ACCEPTED' } });
+      await this.prisma.orderOffer.update({
+        where: { id: chosen.id },
+        data: { status: 'ACCEPTED' },
+      });
     } else {
       await this.prisma.orderOffer.create({
         data: {
@@ -3053,10 +3117,7 @@ export class OrdersService {
         // The null branch is not decoration: `not` compiles to `<> $1`, which
         // is UNKNOWN for a NULL column, so an order still looking for anybody
         // would be dropped from the list this endpoint exists for.
-        OR: [
-          { order: { inspectorId: null } },
-          { order: { inspectorId: { not: userId } } },
-        ],
+        OR: [{ order: { inspectorId: null } }, { order: { inspectorId: { not: userId } } }],
       },
       orderBy: { expiresAt: 'desc' },
       include: { order: true },
@@ -3133,8 +3194,7 @@ export class OrdersService {
      * ever been offered the job kept its exact address and history for good.
      */
     const windowStart = Date.now() - MISSED_OFFER_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-    const hasInspectorOffer =
-      !!offer && (offerActive || offer.expiresAt.getTime() >= windowStart);
+    const hasInspectorOffer = !!offer && (offerActive || offer.expiresAt.getTime() >= windowStart);
     const isAdmin = isAdminRole(role);
     if (!isCustomer && !isInspector && !hasInspectorOffer && !isAdmin) {
       throw new ForbiddenException({ error: { code: 'forbidden', message: 'Not your order' } });
@@ -3386,12 +3446,12 @@ export class OrdersService {
       events: events
         .filter((e) => e.type !== ADMIN_DECISION_EVENT)
         .map((e) => ({
-        type: e.type,
-        fromStatus: e.fromStatus,
-        toStatus: e.toStatus,
-        actor: e.actor,
-        createdAt: e.createdAt.toISOString(),
-      })),
+          type: e.type,
+          fromStatus: e.fromStatus,
+          toStatus: e.toStatus,
+          actor: e.actor,
+          createdAt: e.createdAt.toISOString(),
+        })),
     };
   }
 
@@ -3441,11 +3501,7 @@ export class OrdersService {
         make: order.make,
         model: order.model,
       });
-      await this.notifications.markSupersededRead(
-        offer.inspectorId,
-        'offer.received',
-        orderId,
-      );
+      await this.notifications.markSupersededRead(offer.inspectorId, 'offer.received', orderId);
     }
   }
 
@@ -3874,9 +3930,7 @@ export class OrdersService {
         const outcome = await this.captureOrderPayment(orderId);
         if (outcome.status === 'captured') {
           advanced += 1;
-          this.logger.warn(
-            `reconcile: captured the late payment on assigned order ${orderId}`,
-          );
+          this.logger.warn(`reconcile: captured the late payment on assigned order ${orderId}`);
         } else if (outcome.status === 'fatal') {
           // Deliberately NOT cancelled here. The inspection may already be done;
           // unwinding it is a decision for an operator, not a cron.
@@ -3893,9 +3947,7 @@ export class OrdersService {
       try {
         if (await this.reconcileWaitingPayment(payment)) advanced += 1;
       } catch (err) {
-        this.logger.error(
-          `reconcile: payment ${payment.id} threw: ${(err as Error).message}`,
-        );
+        this.logger.error(`reconcile: payment ${payment.id} threw: ${(err as Error).message}`);
       }
     }
 
@@ -4537,7 +4589,9 @@ export class OrdersService {
     // charged and refunded for an inspection that is going ahead.
     if (reason === 'search_expired') {
       const detail = `payment is ${paymentStatus} — the order was accepted after the search window closed`;
-      this.logger.warn(`settleRefund: refusing search_expired refund on order ${order.id}: ${detail}`);
+      this.logger.warn(
+        `settleRefund: refusing search_expired refund on order ${order.id}: ${detail}`,
+      );
       await this.skipRefund(order, amountCents, reason, paymentStatus, detail);
       return this.skippedRefund(reason, detail);
     }
@@ -4615,6 +4669,7 @@ export class OrdersService {
   ): Promise<RefundOutcome> {
     let released = true;
     let detail: string | null = null;
+    let repeatFailure = false;
 
     if (this.stripe.configured && payment.stripePaymentIntentId) {
       if (canCancelAuthorization(this.stripe)) {
@@ -4632,7 +4687,12 @@ export class OrdersService {
           // hold is gone, and their funds stay frozen until Stripe expires the
           // authorization on its own. `reconcileStuckOrderPayments` retries it;
           // this is what makes it visible in the meantime.
-          await this.notifyAdminsOfStrandedHold(order, detail);
+          // DEN-400. `reconcileStuckOrderPayments` retries a failed release
+          // every few minutes. Tell the admins and write the timeline event on
+          // the FIRST failure only: one order once collected 178 identical
+          // events and 178 admin notifications during a two-day Stripe outage.
+          repeatFailure = await this.hasUnresolvedReleaseFailure(order.id);
+          if (!repeatFailure) await this.notifyAdminsOfStrandedHold(order, detail);
         }
       } else {
         detail = 'provider cannot release holds — released locally only';
@@ -4649,11 +4709,13 @@ export class OrdersService {
         .catch(() => undefined);
     }
 
-    await this.writeEvent(order.id, 'system', 'authorization_released', null, null, {
-      reason,
-      released,
-      error: detail,
-    });
+    if (!repeatFailure) {
+      await this.writeEvent(order.id, 'system', releaseEventType(released), null, null, {
+        reason,
+        released,
+        error: detail,
+      });
+    }
 
     return {
       status: released ? 'released' : 'error',
@@ -4768,10 +4830,23 @@ export class OrdersService {
    * be without — and the payload says which it is. `amountCents: 0` is the
    * honest figure, because nothing was ever taken; what is stuck is the hold.
    */
-  private async notifyAdminsOfStrandedHold(
-    order: RefundableOrder,
-    error: string,
-  ): Promise<void> {
+  /**
+   * True when the order already has a failed hold release with no successful
+   * release after it (DEN-400). Used to write a repeated failure only once.
+   */
+  private async hasUnresolvedReleaseFailure(orderId: string): Promise<boolean> {
+    const last = await this.prisma.orderEvent.findFirst({
+      where: {
+        orderId,
+        type: { in: ['authorization_released', 'authorization_release_failed'] },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { type: true },
+    });
+    return last?.type === 'authorization_release_failed';
+  }
+
+  private async notifyAdminsOfStrandedHold(order: RefundableOrder, error: string): Promise<void> {
     const admins = await this.prisma.user.findMany({
       where: { role: { in: [...ADMIN_ROLES] }, deletedAt: null, bannedAt: null },
       select: { id: true },
@@ -5044,7 +5119,10 @@ export class OrdersService {
     }
     if (report.orderId && report.orderId !== orderId) {
       throw new ConflictException({
-        error: { code: 'report_already_used', message: 'This report is already linked to another order' },
+        error: {
+          code: 'report_already_used',
+          message: 'This report is already linked to another order',
+        },
       });
     }
     if (report.userId && report.userId !== inspectorId) {
