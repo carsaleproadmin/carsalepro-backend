@@ -16,6 +16,7 @@ import {
   FUEL_TYPES,
   TRANSMISSIONS,
 } from '../../listings/vehicle-vocabulary';
+import { LISTING_VEHICLE_TYPES } from '../../listings/dto/listing-vehicle-v1.dto';
 
 const toInt = ({ value }: { value: unknown }) =>
   value === undefined || value === '' ? undefined : Number(value);
@@ -130,6 +131,14 @@ export class ListingQueryDto {
   @ArrayMaxSize(COLOURS.length)
   @IsIn([...COLOURS], { each: true })
   color?: string[];
+
+  /*
+   * DEN-401. The vehicle category from the seller editor. One value, not a
+   * list: a buyer looks for a car OR a motorbike, not both in one search.
+   */
+  @IsOptional()
+  @IsIn([...LISTING_VEHICLE_TYPES])
+  vehicleType?: string;
 
   @IsOptional() @Transform(toInt) @IsInt() @Min(1900) @Max(2100) yearFrom?: number;
   @IsOptional() @Transform(toInt) @IsInt() @Min(1900) @Max(2100) yearTo?: number;
