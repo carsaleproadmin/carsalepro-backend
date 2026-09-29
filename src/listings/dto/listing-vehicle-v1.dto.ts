@@ -6,6 +6,7 @@ import {
   IsArray,
   IsBoolean,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
@@ -66,6 +67,160 @@ export const LISTING_VEHICLE_TYPES = [
   'motorhome',
 ] as const;
 
+/**
+ * Optional equipment, as on the auto.ria add form. Each key takes one value
+ * from its list. The website form offers the same lists.
+ */
+export const LISTING_EQUIPMENT_OPTIONS = {
+  climate: ['ac', 'climate1', 'climate2', 'climateMulti'],
+  powerWindows: ['front', 'frontRear'],
+  interiorMaterial: ['fabric', 'leather', 'velour', 'combined', 'fauxLeather', 'alcantara'],
+  interiorColour: ['light', 'dark', 'brown'],
+  powerSteering: ['hydraulic', 'electric'],
+  steeringAdjust: ['height', 'heightReach'],
+  spareWheel: ['fullSize', 'compact'],
+  headlights: ['xenon', 'laser', 'led', 'matrix', 'halogen'],
+  seatAdjust: ['manualDriver', 'manualFront', 'electricDriver', 'electricFront', 'electricAll'],
+  seatMemory: ['driver', 'front', 'all'],
+  seatHeating: ['front', 'all'],
+  seatVentilation: ['front', 'all'],
+} as const;
+
+/** Technical condition scale, as on the auto.ria add form. */
+export const LISTING_TECHNICAL_CONDITIONS = [
+  'undamaged',
+  'repaired',
+  'unrepaired',
+  'notRunning',
+] as const;
+
+/**
+ * Equipment checkboxes, as on the auto.ria add form. The website groups them;
+ * the payload is a flat list of slugs.
+ */
+export const LISTING_FEATURES = [
+  // comfort
+  'tripComputer',
+  'heatedMirrors',
+  'cruiseControl',
+  'powerMirrors',
+  'tintedWindows',
+  'rainSensor',
+  'multifunctionWheel',
+  'frontArmrest',
+  'socket12v',
+  'leatherWheel',
+  'lighterAshtray',
+  'foldingRearSeat',
+  'powerFoldingMirrors',
+  'leatherGearKnob',
+  'cooledGlovebox',
+  'pushButtonStart',
+  'adaptiveCruise',
+  'ambientLighting',
+  'thirdRearHeadrest',
+  'heatedWindscreen',
+  'startStop',
+  'driveModes',
+  'keylessEntry',
+  'sunroof',
+  'digitalCluster',
+  'powerTailgate',
+  'heatedWheel',
+  'powerWheelAdjust',
+  'paddleShifters',
+  'panoramicRoof',
+  'handsFreeTailgate',
+  'pedalCovers',
+  'foldingPassengerSeat',
+  'wheelMemory',
+  'blackHeadliner',
+  'thirdSeatRow',
+  'wirelessCharging',
+  'remoteStart',
+  'rearDoorSunblinds',
+  'socket220v',
+  'rearWindowSunblind',
+  'headUpDisplay',
+  'seatbackTables',
+  'softCloseDoors',
+  'fridge',
+  'massageSeats',
+  'adjustablePedals',
+  // lights
+  'fogLights',
+  'lightSensor',
+  'drl',
+  'headlightWashers',
+  'adaptiveLights',
+  'highBeamAssist',
+  // body
+  'sumpGuard',
+  'gearboxGuard',
+  'sillCovers',
+  'longWheelbase',
+  'maxiBody',
+  'armoured',
+  // parking
+  'rearParkingSensors',
+  'rearCamera',
+  'frontParkingSensors',
+  'frontCamera',
+  'camera360',
+  'autoParking',
+  // safety
+  'abs',
+  'centralLocking',
+  'childLocks',
+  'asr',
+  'esp',
+  'immobiliser',
+  'alarm',
+  'tpms',
+  'isofix',
+  'brakeAssist',
+  'hillStartAssist',
+  'hillDescent',
+  'vsm',
+  'intrusionSensor',
+  'collisionAvoidance',
+  'blindSpot',
+  'fatigueSensor',
+  'laneKeeping',
+  'signRecognition',
+  'nightVision',
+  // airbags
+  'airbagDriver',
+  'airbagPassenger',
+  'airbagSideFront',
+  'airbagSideRear',
+  'airbagCurtain',
+  'airbagKnee',
+  // multimedia
+  'aux',
+  'usb',
+  'bluetooth',
+  'speakers',
+  'navigation',
+  'lcdMultimedia',
+  'voiceControl',
+  'audioPrep',
+  'androidAuto',
+  'carPlay',
+  'rearEntertainment',
+  // status
+  'garageKept',
+  'firstRegistration',
+  'onCredit',
+  // extras
+  'lpg',
+  'webasto',
+  'adaptiveSuspension',
+  'airSuspension',
+  'handControls',
+  'wheelchairRamp',
+] as const;
+
 /** ReportVehicleDto plus the attributes an inspection never records. */
 export class ListingVehicleDeclaredDto extends ReportVehicleDto {
   /** Engine power in kW (Leistung) — a listing filter, not an inspection value. */
@@ -81,6 +236,133 @@ export class ListingVehicleDeclaredDto extends ReportVehicleDto {
   @IsOptional()
   @IsIn(LISTING_VEHICLE_TYPES)
   vehicleType?: string;
+
+  /** Ticked equipment checkboxes. The array replaces the stored one. */
+  @ApiPropertyOptional({ enum: LISTING_FEATURES, isArray: true })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(LISTING_FEATURES.length)
+  @IsIn(LISTING_FEATURES, { each: true })
+  features?: string[];
+
+  /** Fuel consumption in the city, l/100 km. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0.1)
+  @Max(50)
+  fuelCityL?: number;
+
+  /** Fuel consumption on the highway, l/100 km. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0.1)
+  @Max(50)
+  fuelHighwayL?: number;
+
+  /** Combined fuel consumption, l/100 km. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0.1)
+  @Max(50)
+  fuelCombinedL?: number;
+
+  /** Engine displacement in litres. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0.1)
+  @Max(10)
+  engineVolumeL?: number;
+
+  /** Number of doors. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  @Max(5)
+  doors?: number;
+
+  /** Number of seats. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(60)
+  seats?: number;
+
+  @ApiPropertyOptional({ enum: LISTING_TECHNICAL_CONDITIONS })
+  @IsOptional()
+  @IsIn(LISTING_TECHNICAL_CONDITIONS)
+  technicalCondition?: string;
+
+  /** The seller agrees to a check of the car at a service station. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  serviceCheckReady?: boolean;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.climate })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.climate)
+  climate?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.powerWindows })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.powerWindows)
+  powerWindows?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.interiorMaterial })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.interiorMaterial)
+  interiorMaterial?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.interiorColour })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.interiorColour)
+  interiorColour?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.powerSteering })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.powerSteering)
+  powerSteering?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.steeringAdjust })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.steeringAdjust)
+  steeringAdjust?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.spareWheel })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.spareWheel)
+  spareWheel?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.headlights })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.headlights)
+  headlights?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.seatAdjust })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.seatAdjust)
+  seatAdjust?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.seatMemory })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.seatMemory)
+  seatMemory?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.seatHeating })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.seatHeating)
+  seatHeating?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EQUIPMENT_OPTIONS.seatVentilation })
+  @IsOptional()
+  @IsIn(LISTING_EQUIPMENT_OPTIONS.seatVentilation)
+  seatVentilation?: string;
 }
 
 /** On-board-diagnostics self-check. */
@@ -184,7 +466,10 @@ export class ListingVehicleV1Dto {
    * buyer can see; 200 entries is a hail-damage inspection, which is exactly
    * the case that needs a real inspector.
    */
-  @ApiPropertyOptional({ type: [ReportDamageDto], description: 'Max 50. Cost fields are stripped.' })
+  @ApiPropertyOptional({
+    type: [ReportDamageDto],
+    description: 'Max 50. Cost fields are stripped.',
+  })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(50)
