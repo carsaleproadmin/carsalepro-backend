@@ -3,7 +3,12 @@ import { Listing, Prisma, Report } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import { SettingsService } from '../settings/settings.service';
-import { ListingQueryDto, ListingSort, PAGE_SIZES } from './dto/listing-query.dto';
+import {
+  EQUIPMENT_FILTER_KEYS,
+  ListingQueryDto,
+  ListingSort,
+  PAGE_SIZES,
+} from './dto/listing-query.dto';
 import {
   MAX_LISTING_PHOTOS,
   manifestPhotoRefs,
@@ -387,6 +392,7 @@ export class PublicService {
         ...(cityKeys.length
           ? [{ OR: cityKeys.map((key) => ({ citySearch: { contains: key } })) }]
           : []),
+        ...declaredVehicleFilters(q),
       ],
       /*
        * The country is an EXACT code, never a `contains`. A city is free text a
@@ -923,4 +929,58 @@ export class PublicService {
   private maskVin(vin: string): string {
     return vin.length === 17 ? `${vin.slice(0, 3)}**********${vin.slice(-4)}` : vin;
   }
+}
+
+/*
+ * DEN-402. The advanced-search filters over the declared vehicle JSON.
+ *
+ * Each condition is its own element of the AND list, because two conditions
+ * on `vehicleData` in one object literal would overwrite each other. A JSON
+ * path match is false for a row without the key, so a listing that does not
+ * state a value is left out - the same rule as the fuel and gearbox columns.
+ */
+function declaredVehicleFilters(q: ListingQueryDto): Prisma.ListingWhereInput[] {
+  const out: Prisma.ListingWhereInput[] = [];
+  const at = (...path: string[]) => ['vehicle', ...path];
+
+  const range = (key: string, from?: number, to?: number) => {
+    if (from != null) out.push({ vehicleData: { path: at(key), gte: from } });
+    if (to != null) out.push({ vehicleData: { path: at(key), lte: to } });
+  };
+  range('engineVolumeL', q.engineVolumeFrom, q.engineVolumeTo);
+  range('fuelCityL', q.fuelCityFrom, q.fuelCityTo);
+  range('fuelHighwayL', q.fuelHighwayFrom, q.fuelHighwayTo);
+  range('fuelCombinedL', q.fuelCombinedFrom, q.fuelCombinedTo);
+  range('seats', q.seatsFrom, q.seatsTo);
+
+  const anyOf = (path: string[], values: (string | number)[] | undefined) => {
+    if (!values?.length) return;
+    out.push({ OR: values.map((value) => ({ vehicleData: { path, equals: value } })) });
+  };
+  anyOf(at('doors'), q.doors?.map(Number));
+  anyOf(at('technicalCondition'), q.technicalCondition);
+  for (const key of EQUIPMENT_FILTER_KEYS) anyOf(at(key), q[key]);
+
+  if (q.owners?.length) {
+    const path = ['selfDeclaration', 'ownersCount'];
+    out.push({
+      OR: q.owners.map((bucket) =>
+        bucket === '4plus'
+          ? { vehicleData: { path, gte: 4 } }
+          : { vehicleData: { path, equals: Number(bucket) } },
+      ),
+    });
+  }
+
+  const flag = (path: string[], on?: boolean) => {
+    if (on) out.push({ vehicleData: { path, equals: true } });
+  };
+  flag(['selfDeclaration', 'accidentFreeClaimed'], q.accidentFree);
+  flag(['selfDeclaration', 'serviceHistoryComplete'], q.serviceHistory);
+  flag(at('serviceCheckReady'), q.serviceCheckReady);
+
+  if (q.features?.length) {
+    out.push({ vehicleData: { path: at('features'), array_contains: q.features } });
+  }
+  return out;
 }
