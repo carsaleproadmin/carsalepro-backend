@@ -424,6 +424,14 @@ export class PublicService {
       ...(q.fuelType?.length ? { fuelType: { in: q.fuelType } } : {}),
       ...(q.transmission?.length ? { transmission: { in: q.transmission } } : {}),
       ...(q.color?.length ? { color: { in: q.color } } : {}),
+      /*
+       * DEN-401. The category is not a column. It lives in the declared vehicle
+       * JSON, so this is a JSON path match. A listing with no category is left
+       * out, by the same rule as the fuel and the gearbox above.
+       */
+      ...(q.vehicleType
+        ? { vehicleData: { path: ['vehicle', 'vehicleType'], equals: q.vehicleType } }
+        : {}),
       ...(q.priceFrom != null || q.priceTo != null
         ? { priceCents: { gte: q.priceFrom ?? undefined, lte: q.priceTo ?? undefined } }
         : {}),
