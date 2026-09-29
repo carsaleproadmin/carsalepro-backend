@@ -10,6 +10,7 @@ import {
   mirroredPhotoKey,
   photoLocation,
 } from '../listings/listing-photo-urls';
+import { LISTING_EQUIPMENT_OPTIONS } from '../listings/dto/listing-vehicle-v1.dto';
 import { citySearchKeys, normalizeCompact, normalizeSearchText } from '../common/search-text';
 
 /*
@@ -310,6 +311,21 @@ function publicReportData(value: unknown, dropTopLevel: string[] = []): unknown 
   return value ?? null;
 }
 
+/** The `vehicleData.vehicle` keys that the public listing page can show. */
+const DECLARED_SPEC_KEYS = [
+  'vehicleType',
+  'engineVolumeL',
+  'fuelCityL',
+  'fuelHighwayL',
+  'fuelCombinedL',
+  'doors',
+  'seats',
+  'technicalCondition',
+  'serviceCheckReady',
+  ...Object.keys(LISTING_EQUIPMENT_OPTIONS),
+  'features',
+] as const;
+
 @Injectable()
 export class PublicService {
   constructor(
@@ -390,9 +406,7 @@ export class PublicService {
        * as a typo.
        */
       ...(bodyTypes.length ? { bodyType: { in: bodyTypes, mode: 'insensitive' as const } } : {}),
-      ...(driveTypes.length
-        ? { driveType: { in: driveTypes, mode: 'insensitive' as const } }
-        : {}),
+      ...(driveTypes.length ? { driveType: { in: driveTypes, mode: 'insensitive' as const } } : {}),
       /*
        * The three folded columns. `in` and not `equals`, because a buyer who
        * will take petrol OR a hybrid is asking one question, and two searches
@@ -477,7 +491,8 @@ export class PublicService {
       },
       include: { report: true },
     });
-    if (!listing) throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
+    if (!listing)
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
     await this.prisma.listing.update({ where: { id }, data: { viewsCount: { increment: 1 } } });
 
     const inspection = this.inspectionOf(listing);
@@ -509,6 +524,8 @@ export class PublicService {
       inspection,
       /** Seller's own claims. Never merged into `vehicle` — provenance matters. */
       selfDeclaration: this.selfDeclarationOf(listing),
+      /** Seller's extended specs and equipment (DEN-397). Whitelisted keys only. */
+      declaredSpecs: this.declaredSpecsOf(listing),
       photos,
       views: listing.viewsCount + 1,
       // `reportUnlockPriceCents` was removed (DEN-292): the full report is free
@@ -545,7 +562,8 @@ export class PublicService {
       where: { code, deletedAt: null },
       orderBy: { createdAt: 'desc' },
     });
-    if (!report) throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
+    if (!report)
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
 
     const data = (report.reportData ?? {}) as Record<string, unknown>;
     const damages = Array.isArray((data as { damages?: unknown[] }).damages)
@@ -713,6 +731,24 @@ export class PublicService {
     return { status: 'self_declared', reportCode: null };
   }
 
+  /**
+   * The seller's extended specs and equipment from `vehicleData.vehicle`
+   * (DEN-397). Only the keys in `DECLARED_SPEC_KEYS` go out: the same block
+   * also holds the VIN, which the public page must not show.
+   */
+  private declaredSpecsOf(l: Listing): Record<string, unknown> | null {
+    if (l.source !== 'manual') return null;
+    const data = (l.vehicleData ?? null) as Record<string, unknown> | null;
+    const vehicle = data?.vehicle;
+    if (!vehicle || typeof vehicle !== 'object' || Array.isArray(vehicle)) return null;
+    const source = vehicle as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of DECLARED_SPEC_KEYS) {
+      if (source[key] !== undefined && source[key] !== null) out[key] = source[key];
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
   private selfDeclarationOf(l: Listing): Record<string, unknown> | null {
     if (l.source !== 'manual') return null;
     const data = (l.vehicleData ?? null) as Record<string, unknown> | null;
@@ -737,6 +773,8 @@ export class PublicService {
       verified: inspected,
       inspection,
       vehicle: this.listingVehicle(listing),
+      /** Seller-declared engine displacement in litres (DEN-397), for the card. */
+      engineVolumeL: this.declaredSpecsOf(listing)?.engineVolumeL ?? null,
       thumbnailUrl: thumb?.url ?? null,
     };
   }
@@ -866,8 +904,8 @@ export class PublicService {
         }
       }),
     );
-    return signed.filter((photo): photo is { url: string; kind?: string; angle?: string } =>
-      photo !== null,
+    return signed.filter(
+      (photo): photo is { url: string; kind?: string; angle?: string } => photo !== null,
     );
   }
 
