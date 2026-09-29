@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
+  IsIn,
   Equals,
   IsArray,
   IsBoolean,
@@ -51,6 +52,20 @@ import {
  * publish time, where it can produce an actionable `missing[]`.
  */
 
+/** Vehicle categories. The website form offers the same list. */
+export const LISTING_VEHICLE_TYPES = [
+  'passenger',
+  'moto',
+  'truck',
+  'trailer',
+  'special',
+  'agricultural',
+  'bus',
+  'water',
+  'air',
+  'motorhome',
+] as const;
+
 /** ReportVehicleDto plus the attributes an inspection never records. */
 export class ListingVehicleDeclaredDto extends ReportVehicleDto {
   /** Engine power in kW (Leistung) — a listing filter, not an inspection value. */
@@ -60,6 +75,12 @@ export class ListingVehicleDeclaredDto extends ReportVehicleDto {
   @Min(1)
   @Max(2000)
   powerKw?: number;
+
+  /** Vehicle category (car, moto, truck ...). Stored in `vehicleData` only. */
+  @ApiPropertyOptional({ enum: LISTING_VEHICLE_TYPES, example: 'passenger' })
+  @IsOptional()
+  @IsIn(LISTING_VEHICLE_TYPES)
+  vehicleType?: string;
 }
 
 /** On-board-diagnostics self-check. */
