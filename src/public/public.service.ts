@@ -503,6 +503,23 @@ export class PublicService {
     return { items, total, page, pageSize, pages: Math.ceil(total / pageSize) };
   }
 
+  /**
+   * DEN-411. The seller contacts of an active listing. The controller limits
+   * how often one IP can call this.
+   */
+  async getListingContact(id: string) {
+    const listing = await this.prisma.listing.findFirst({
+      where: { id, status: 'ACTIVE' },
+      select: { contactPhone: true, contactEmail: true },
+    });
+    if (!listing)
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
+    return {
+      phone: listing.contactPhone?.trim() || null,
+      email: listing.contactEmail?.trim() || null,
+    };
+  }
+
   async getListing(id: string) {
     const listing = await this.prisma.listing.findFirst({
       where: {
@@ -530,8 +547,14 @@ export class PublicService {
       countryCode: listing.countryCode,
       plz: listing.plz,
       description: listing.description,
-      contactPhone: listing.contactPhone,
-      contactEmail: listing.contactEmail,
+      /*
+       * DEN-411. Only flags. The seller phone and email are personal data of a
+       * private person, and a bot that reads this response or the page HTML
+       * must not get them. The page asks `getListingContact` when the buyer
+       * clicks "Show number".
+       */
+      hasPhone: Boolean(listing.contactPhone?.trim()),
+      hasEmail: Boolean(listing.contactEmail?.trim()),
       package: listing.package,
       source: listing.source,
       vehicle: this.listingVehicle(listing),
