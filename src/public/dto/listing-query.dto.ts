@@ -9,11 +9,13 @@ import {
   IsOptional,
   IsString,
   Length,
+  Matches,
   Max,
   Min,
 } from 'class-validator';
 import { COLOURS, FUEL_TYPES, TRANSMISSIONS } from '../../listings/vehicle-vocabulary';
 import {
+  LISTING_EMISSION_STANDARDS,
   LISTING_EQUIPMENT_OPTIONS,
   LISTING_FEATURES,
   LISTING_TECHNICAL_CONDITIONS,
@@ -194,6 +196,21 @@ export class ListingQueryDto {
   @IsArray()
   @IsIn([...LISTING_TECHNICAL_CONDITIONS], { each: true })
   technicalCondition?: string[];
+
+  /** DEN-405. Emission standards, any of them. */
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EMISSION_STANDARDS], { each: true })
+  emissionStandard?: string[];
+
+  /** DEN-405. Countries the car was imported from (ISO alpha-2), any of them. */
+  @IsOptional()
+  @Transform(({ value }) => toList({ value })?.map((code) => code.toUpperCase()))
+  @IsArray()
+  @ArrayMaxSize(20)
+  @Matches(/^[A-Z]{2}$/, { each: true })
+  importedFrom?: string[];
 
   @IsOptional()
   @Transform(toList)
