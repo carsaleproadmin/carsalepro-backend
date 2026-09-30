@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  Matches,
   ArrayMaxSize,
   IsIn,
   Equals,
@@ -85,6 +86,16 @@ export const LISTING_EQUIPMENT_OPTIONS = {
   seatHeating: ['front', 'all'],
   seatVentilation: ['front', 'all'],
 } as const;
+
+/** Emission standard, as on the auto.ria add form (DEN-405). */
+export const LISTING_EMISSION_STANDARDS = [
+  'euro1',
+  'euro2',
+  'euro3',
+  'euro4',
+  'euro5',
+  'euro6',
+] as const;
 
 /** Technical condition scale, as on the auto.ria add form. */
 export const LISTING_TECHNICAL_CONDITIONS = [
@@ -297,6 +308,20 @@ export class ListingVehicleDeclaredDto extends ReportVehicleDto {
   @IsOptional()
   @IsIn(LISTING_TECHNICAL_CONDITIONS)
   technicalCondition?: string;
+
+  @ApiPropertyOptional({ enum: LISTING_EMISSION_STANDARDS })
+  @IsOptional()
+  @IsIn(LISTING_EMISSION_STANDARDS)
+  emissionStandard?: string;
+
+  /**
+   * DEN-405. The country the car was imported from, ISO 3166-1 alpha-2 in
+   * upper case. Not set when the car was not imported.
+   */
+  @ApiPropertyOptional({ example: 'DE' })
+  @IsOptional()
+  @Matches(/^[A-Z]{2}$/)
+  importedFrom?: string;
 
   /** The seller agrees to a check of the car at a service station. */
   @ApiPropertyOptional()

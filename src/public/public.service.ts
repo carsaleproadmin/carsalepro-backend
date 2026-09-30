@@ -326,6 +326,8 @@ const DECLARED_SPEC_KEYS = [
   'doors',
   'seats',
   'technicalCondition',
+  'emissionStandard',
+  'importedFrom',
   'serviceCheckReady',
   ...Object.keys(LISTING_EQUIPMENT_OPTIONS),
   'features',
@@ -959,6 +961,8 @@ function declaredVehicleFilters(q: ListingQueryDto): Prisma.ListingWhereInput[] 
   };
   anyOf(at('doors'), q.doors?.map(Number));
   anyOf(at('technicalCondition'), q.technicalCondition);
+  anyOf(at('emissionStandard'), q.emissionStandard);
+  anyOf(at('importedFrom'), q.importedFrom);
   for (const key of EQUIPMENT_FILTER_KEYS) anyOf(at(key), q[key]);
 
   if (q.owners?.length) {
