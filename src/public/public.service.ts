@@ -8,6 +8,7 @@ import {
   ListingQueryDto,
   ListingSort,
   PAGE_SIZES,
+  PublishedPeriod,
 } from './dto/listing-query.dto';
 import {
   MAX_LISTING_PHOTOS,
@@ -395,6 +396,9 @@ export class PublicService {
           ? [{ OR: cityKeys.map((key) => ({ citySearch: { contains: key } })) }]
           : []),
         ...declaredVehicleFilters(q),
+        ...(q.publishedPeriod
+          ? [{ publishedAt: { gte: publishedSince(q.publishedPeriod, new Date()) } }]
+          : []),
       ],
       /*
        * The country is an EXACT code, never a `contains`. A city is free text a
@@ -941,6 +945,41 @@ export class PublicService {
  * path match is false for a row without the key, so a listing that does not
  * state a value is left out - the same rule as the fuel and gearbox columns.
  */
+const PERIOD_HOURS: Record<Exclude<PublishedPeriod, 'today'>, number> = {
+  '1h': 1,
+  '3h': 3,
+  '6h': 6,
+  '12h': 12,
+  '24h': 24,
+  '2d': 48,
+  '3d': 72,
+  '7d': 7 * 24,
+  '30d': 30 * 24,
+  '90d': 90 * 24,
+};
+
+/**
+ * DEN-406. The earliest publication time for the period. `today` is the
+ * start of the current day in Berlin, so the result does not depend on the
+ * time zone of the server.
+ */
+export function publishedSince(period: PublishedPeriod, now: Date): Date {
+  if (period !== 'today') return new Date(now.getTime() - PERIOD_HOURS[period] * 3_600_000);
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Berlin',
+      hourCycle: 'h23',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    })
+      .formatToParts(now)
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  const sinceMidnightMs = ((parts.hour * 60 + parts.minute) * 60 + parts.second) * 1000;
+  return new Date(now.getTime() - sinceMidnightMs - now.getMilliseconds());
+}
+
 function declaredVehicleFilters(q: ListingQueryDto): Prisma.ListingWhereInput[] {
   const out: Prisma.ListingWhereInput[] = [];
   const at = (...path: string[]) => ['vehicle', ...path];

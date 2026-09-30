@@ -68,6 +68,25 @@ const toNumber = ({ value }: { value: unknown }) =>
 /** Owner-count buckets. `4plus` is four or more. */
 export const OWNER_BUCKETS = ['1', '2', '3', '4plus'] as const;
 
+/**
+ * DEN-406. How recently the listing was published. `today` starts at 00:00
+ * Berlin time; all other values are a window that ends now.
+ */
+export const PUBLISHED_PERIODS = [
+  '1h',
+  '3h',
+  '6h',
+  '12h',
+  'today',
+  '24h',
+  '2d',
+  '3d',
+  '7d',
+  '30d',
+  '90d',
+] as const;
+export type PublishedPeriod = (typeof PUBLISHED_PERIODS)[number];
+
 /** The 12 equipment selects, in the order of the seller editor. */
 export const EQUIPMENT_FILTER_KEYS = Object.keys(
   LISTING_EQUIPMENT_OPTIONS,
@@ -224,6 +243,12 @@ export class ListingQueryDto {
   @IsOptional() @Transform(toBool) @IsBoolean() serviceHistory?: boolean;
   /** The seller agrees to a check at a service station. */
   @IsOptional() @Transform(toBool) @IsBoolean() serviceCheckReady?: boolean;
+
+  /** DEN-406. Only listings published in this period. */
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsIn([...PUBLISHED_PERIODS])
+  publishedPeriod?: PublishedPeriod;
 
   @IsOptional()
   @Transform(toList)
