@@ -678,6 +678,28 @@ describe('Public showroom + report check (e2e)', () => {
       expect(res.body.vehicle.powerKw).toBe(92);
       expect(res.body.vehicle.fuelType).toBe('petrol');
     });
+
+    it('11n. DEN-406: the published period keeps new listings and drops old ones', async () => {
+      // The fixture was published a moment ago.
+      expect(hasManual(await dresden('publishedPeriod=1h'))).toBe(true);
+      expect(hasManual(await dresden('publishedPeriod=90d'))).toBe(true);
+      expect(hasManual(await dresden('publishedPeriod='))).toBe(true);
+
+      await prisma.listing.update({
+        where: { id: manualId },
+        data: { publishedAt: new Date(Date.now() - 4 * 3_600_000) },
+      });
+      try {
+        expect(hasManual(await dresden('publishedPeriod=3h'))).toBe(false);
+        expect(hasManual(await dresden('publishedPeriod=6h'))).toBe(true);
+      } finally {
+        await prisma.listing.update({ where: { id: manualId }, data: { publishedAt: new Date() } });
+      }
+
+      await request(app.getHttpServer())
+        .get('/api/v1/public/listings?publishedPeriod=5h')
+        .expect(400);
+    });
   });
 
   it('11. gold listings rank before standard (W.1.9)', async () => {
