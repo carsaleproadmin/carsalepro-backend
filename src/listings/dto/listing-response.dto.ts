@@ -51,6 +51,18 @@ export class MyListingItemDto {
   @ApiProperty({ example: 'One owner, full service history.', nullable: true })
   description!: string | null;
 
+  @ApiProperty({
+    example: '+4915123456789',
+    nullable: true,
+    description:
+      'DEN-413. The seller sees their own contacts, so the edit form can show them. ' +
+      'The public detail does not send them (DEN-411).',
+  })
+  contactPhone!: string | null;
+
+  @ApiProperty({ example: 'seller@example.com', nullable: true })
+  contactEmail!: string | null;
+
   @ApiProperty({ type: ListingVehicleDto })
   vehicle!: ListingVehicleDto;
 
