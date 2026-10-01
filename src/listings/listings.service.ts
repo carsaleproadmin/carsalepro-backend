@@ -785,6 +785,10 @@ export class ListingsService {
       countryCode: l.countryCode,
       plz: l.plz,
       description: l.description,
+      // DEN-413. The edit form fills its contact fields from these. Without
+      // them it opened blank, and a blank field there deletes the value.
+      contactPhone: l.contactPhone,
+      contactEmail: l.contactEmail,
       // Read from the listing's own columns: for a manual listing there is no
       // report to read from, and for a report-backed one these were copied at
       // claim time (and backfilled for pre-existing rows).
