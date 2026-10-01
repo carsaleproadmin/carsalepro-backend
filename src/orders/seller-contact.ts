@@ -69,14 +69,36 @@ export function isSellerListingUrl(value: string): boolean {
   if (url.username !== '' || url.password !== '') return false;
   if (isPublicHost(url.hostname)) return true;
   return (
-    process.env.NODE_ENV !== 'production' &&
-    (DEV_HOSTS as readonly string[]).includes(url.hostname)
+    process.env.NODE_ENV !== 'production' && (DEV_HOSTS as readonly string[]).includes(url.hostname)
   );
+}
+
+/** `(+49) 30 123` - the form the website's order field shows (DEN-421). */
+const BRACKETED_CODE = /^\(\s*\+\s*(\d{1,3})\s*\)/;
+
+/** Starts like a host name: no scheme, no space, a dot before the end. */
+const BARE_HOST = /^[^\s/:+@]+\.[^\s/:@]+([/?#].*)?$/;
+
+/**
+ * The value as it is stored - DEN-421. Brackets around the country code are
+ * removed, and a link without a scheme (`mobile.de/x`) gets `https://`, so
+ * the inspector always receives a link that opens. Any other value is only
+ * trimmed, and the validation refuses it. The website applies the SAME
+ * normalization in `lib/seller-contact.ts`.
+ */
+export function normalizeSellerContact(value: string): string {
+  const trimmed = value.trim();
+  if (BRACKETED_CODE.test(trimmed)) return trimmed.replace(BRACKETED_CODE, '+$1');
+  if (!trimmed.startsWith('+') && BARE_HOST.test(trimmed)) {
+    const withScheme = `https://${trimmed}`;
+    if (isSellerListingUrl(withScheme)) return withScheme;
+  }
+  return trimmed;
 }
 
 export function isValidSellerContact(value: unknown): boolean {
   if (typeof value !== 'string') return false;
-  const trimmed = value.trim();
+  const trimmed = normalizeSellerContact(value);
   if (trimmed === '') return false;
   return isSellerPhone(trimmed) || isSellerListingUrl(trimmed);
 }

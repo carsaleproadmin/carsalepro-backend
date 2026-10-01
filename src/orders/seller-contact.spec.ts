@@ -1,4 +1,9 @@
-import { isSellerListingUrl, isSellerPhone, isValidSellerContact } from './seller-contact';
+import {
+  isSellerListingUrl,
+  isSellerPhone,
+  isValidSellerContact,
+  normalizeSellerContact,
+} from './seller-contact';
 
 /**
  * The API's half of DEN-361 and DEN-380. The website has the same table in
@@ -62,7 +67,9 @@ describe('the order contact field', () => {
     it.each([
       ['a scheme that is not http', 'javascript:alert(1)'],
       ['an ftp link', 'ftp://example.com/car'],
-      ['a bare host', 'carsalepro.de'],
+      ['a bare word', 'carsalepro'],
+      ['a bare IPv4 address', '192.168.0.1/cars/1'],
+      ['a sentence with a host in it', 'see mobile.de please'],
       ['a host without a dot', 'http://intranet/cars/1'],
       ['an IPv4 address', 'http://192.168.0.1/cars/1'],
       ['an IPv6 address', 'http://[2001:db8::1]/cars/1'],
@@ -93,6 +100,27 @@ describe('the order contact field', () => {
     it('refuses one in production', () => {
       process.env.NODE_ENV = 'production';
       expect(isValidSellerContact(LOCAL)).toBe(false);
+    });
+  });
+
+  // DEN-421. The website's order field shows the code in brackets and takes
+  // links without a scheme; both are stored in one form.
+  describe('the normalization', () => {
+    it.each([
+      ['google.com', 'https://google.com'],
+      ['www.mobile.de/listing/123', 'https://www.mobile.de/listing/123'],
+      ['  auto.ria.com/uk/x.html?id=1 ', 'https://auto.ria.com/uk/x.html?id=1'],
+      ['(+49) 30 123456', '+49 30 123456'],
+      ['(+380) 67 123 4567', '+380 67 123 4567'],
+      ['+49 30 123456', '+49 30 123456'],
+      ['https://www.mobile.de/x', 'https://www.mobile.de/x'],
+      ['carsalepro', 'carsalepro'],
+    ])('turns %s into %s', (value, expected) => {
+      expect(normalizeSellerContact(value)).toBe(expected);
+    });
+
+    it.each(['google.com', '(+49) 30 123456', '(+380) 67 123 4567'])('accepts %s', (value) => {
+      expect(isValidSellerContact(value)).toBe(true);
     });
   });
 });
