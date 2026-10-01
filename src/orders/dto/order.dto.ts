@@ -19,7 +19,7 @@ import {
   type ValidatorConstraintInterface,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
-import { isValidSellerContact } from '../seller-contact';
+import { isValidSellerContact, normalizeSellerContact } from '../seller-contact';
 
 /**
  * The contact field takes a telephone number or a link to a listing on any
@@ -83,7 +83,9 @@ export class CreateOrderDto {
    * stayed `listingUrl` so the wire contract did not change.
    */
   @ApiProperty({ example: '+4930123456 or https://www.carsalepro.de/cars/abc123' })
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  // DEN-421. `normalizeSellerContact` also trims; it stores `google.com` as
+  // `https://google.com` and `(+49) 30 1` as `+49 30 1`.
+  @Transform(({ value }) => (typeof value === 'string' ? normalizeSellerContact(value) : value))
   @IsString()
   @IsNotEmpty()
   @MaxLength(2048)
