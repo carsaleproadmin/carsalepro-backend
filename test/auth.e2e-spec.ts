@@ -207,6 +207,45 @@ describe('Auth + users (e2e)', () => {
       .expect(401);
   });
 
+  it('7b. locks the login for an email after 10 failures, also for the correct password (DEN-417)', async () => {
+    const email = uniqueEmail();
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/register')
+      .send({ email, password, gdprConsent: true })
+      .expect(201);
+    for (let i = 0; i < 10; i++) {
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: 'WrongPass123' })
+        .expect(401);
+    }
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email, password })
+      .expect(429);
+    expect(res.body.error.code).toBe('too_many_login_attempts');
+  });
+
+  it('7c. a successful login clears the failure count (DEN-417)', async () => {
+    const email = uniqueEmail();
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/register')
+      .send({ email, password, gdprConsent: true })
+      .expect(201);
+    for (let i = 0; i < 9; i++) {
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: 'WrongPass123' })
+        .expect(401);
+    }
+    await request(app.getHttpServer()).post('/api/v1/auth/login').send({ email, password }).expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email, password: 'WrongPass123' })
+      .expect(401);
+    await request(app.getHttpServer()).post('/api/v1/auth/login').send({ email, password }).expect(200);
+  });
+
   it('8. returns the profile for a valid bearer token', async () => {
     const email = uniqueEmail();
     const reg = await request(app.getHttpServer())

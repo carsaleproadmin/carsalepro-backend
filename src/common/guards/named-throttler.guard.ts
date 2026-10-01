@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ThrottlerGuard, ThrottlerRequest } from '@nestjs/throttler';
+import { internalKeyFromEnv, resolveClientIp, type ClientIpRequest } from '../client-ip';
 
 /**
  * `THROTTLER:LIMIT` from `@nestjs/throttler` 6.5.0
@@ -31,6 +32,11 @@ const THROTTLER_LIMIT = 'THROTTLER:LIMIT';
  */
 @Injectable()
 export class NamedThrottlerGuard extends ThrottlerGuard {
+  /** DEN-417. Count the client, not the proxy node. See `client-ip.ts`. */
+  protected async getTracker(req: Record<string, unknown>): Promise<string> {
+    return resolveClientIp(req as unknown as ClientIpRequest, internalKeyFromEnv());
+  }
+
   protected async handleRequest(requestProps: ThrottlerRequest): Promise<boolean> {
     const name = requestProps.throttler.name ?? 'default';
 
