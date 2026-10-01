@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -13,6 +15,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { AppConfig } from '../config/configuration';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
 import { AuthUser, JwtPayload } from './jwt.types';
 
 export interface IssuedToken {
@@ -26,6 +29,15 @@ export interface VerificationGrant {
   expiresAt: Date;
 }
 
+/** DEN-417. Failed logins per email before the lock, and the lock window. */
+const LOGIN_MAX_FAILURES = 10;
+const LOGIN_LOCK_SECONDS = 15 * 60;
+
+/** The email is hashed so the Redis key does not hold personal data. */
+function loginFailureKey(email: string): string {
+  return `login-fail:${createHash('sha256').update(email).digest('hex')}`;
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -33,6 +45,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService<AppConfig, true>,
     private readonly notifications: NotificationsService,
+    private readonly redis: RedisService,
   ) {}
 
   // ---- token helpers ----
@@ -109,10 +122,13 @@ export class AuthService {
   }
 
   async validateCredentials(email: string, password: string): Promise<IssuedToken> {
+    const normalized = email.toLowerCase().trim();
+    await this.assertLoginNotLocked(normalized);
     const user = await this.prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
+      where: { email: normalized },
     });
     if (!user || !user.passwordHash || user.deletedAt) {
+      await this.recordLoginFailure(normalized);
       throw new UnauthorizedException({
         error: { code: 'invalid_credentials', message: 'Invalid email or password' },
       });
@@ -124,11 +140,41 @@ export class AuthService {
     }
     const ok = await verify(user.passwordHash, password);
     if (!ok) {
+      await this.recordLoginFailure(normalized);
       throw new UnauthorizedException({
         error: { code: 'invalid_credentials', message: 'Invalid email or password' },
       });
     }
+    await this.redis.del(loginFailureKey(normalized)).catch(() => undefined);
     return this.issueToken(user);
+  }
+
+  /*
+   * DEN-417. A limit per IP does not stop a slow attack on one account from
+   * many addresses, so failures are also counted per email. The lock applies
+   * to an unknown email too, so the answer does not tell which emails exist.
+   * Redis that does not answer must not stop every login: the check then
+   * passes, and the per-IP limit still applies.
+   */
+  private async assertLoginNotLocked(email: string): Promise<void> {
+    const raw = await this.redis.get(loginFailureKey(email)).catch(() => null);
+    if (raw && parseInt(raw, 10) >= LOGIN_MAX_FAILURES) {
+      throw new HttpException(
+        {
+          error: {
+            code: 'too_many_login_attempts',
+            message: 'Too many failed login attempts. Try again later.',
+          },
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
+  private async recordLoginFailure(email: string): Promise<void> {
+    await this.redis
+      .incrWithTtl(loginFailureKey(email), LOGIN_LOCK_SECONDS)
+      .catch(() => undefined);
   }
 
   // ---- email verification ----
