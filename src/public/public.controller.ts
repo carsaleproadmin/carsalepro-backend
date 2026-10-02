@@ -20,8 +20,12 @@ export class PublicController {
 
   @Get('listings/:id')
   @ApiOperation({ summary: 'Get a single verified listing (public)' })
-  listing(@Param('id') id: string) {
-    return this.publicService.getListing(id);
+  /*
+   * `count=0` reads the listing without a view. The order form uses it to
+   * prefill the car, and that read is not a visit to the listing.
+   */
+  listing(@Param('id') id: string, @Query('count') count?: string) {
+    return this.publicService.getListing(id, count !== '0');
   }
 
   /*
