@@ -4691,7 +4691,7 @@ export class OrdersService {
           // every few minutes. Tell the admins and write the timeline event on
           // the FIRST failure only: one order once collected 178 identical
           // events and 178 admin notifications during a two-day Stripe outage.
-          repeatFailure = await this.hasUnresolvedReleaseFailure(order.id);
+          repeatFailure = await this.hasUnresolvedReleaseFailure(order.id, payment.id);
           if (!repeatFailure) await this.notifyAdminsOfStrandedHold(order, detail);
         }
       } else {
@@ -4714,6 +4714,7 @@ export class OrdersService {
         reason,
         released,
         error: detail,
+        paymentId: payment.id,
       });
     }
 
@@ -4831,13 +4832,16 @@ export class OrdersService {
    * honest figure, because nothing was ever taken; what is stuck is the hold.
    */
   /**
-   * True when the order already has a failed hold release with no successful
+   * True when this payment already has a failed hold release with no successful
    * release after it (DEN-400). Used to write a repeated failure only once.
+   * The check is per payment: a failed release of a replaced hold must not
+   * silence the alert for the current hold.
    */
-  private async hasUnresolvedReleaseFailure(orderId: string): Promise<boolean> {
+  private async hasUnresolvedReleaseFailure(orderId: string, paymentId: string): Promise<boolean> {
     const last = await this.prisma.orderEvent.findFirst({
       where: {
         orderId,
+        payload: { path: ['paymentId'], equals: paymentId },
         type: { in: ['authorization_released', 'authorization_release_failed'] },
       },
       orderBy: { createdAt: 'desc' },

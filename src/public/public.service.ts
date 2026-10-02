@@ -520,7 +520,7 @@ export class PublicService {
     };
   }
 
-  async getListing(id: string) {
+  async getListing(id: string, countView = true) {
     const listing = await this.prisma.listing.findFirst({
       where: {
         id,
@@ -530,7 +530,9 @@ export class PublicService {
     });
     if (!listing)
       throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
-    await this.prisma.listing.update({ where: { id }, data: { viewsCount: { increment: 1 } } });
+    if (countView) {
+      await this.prisma.listing.update({ where: { id }, data: { viewsCount: { increment: 1 } } });
+    }
 
     const inspection = this.inspectionOf(listing);
     const inspected = inspection.status === 'inspected';
@@ -570,7 +572,7 @@ export class PublicService {
       /** Seller's extended specs and equipment (DEN-397). Whitelisted keys only. */
       declaredSpecs: this.declaredSpecsOf(listing),
       photos,
-      views: listing.viewsCount + 1,
+      views: listing.viewsCount + (countView ? 1 : 0),
       // `reportUnlockPriceCents` was removed (DEN-292): the full report is free
       // (DEN-224), and the field quoted the withdrawn pay-per-view price. The
       // website and the mobile app never read it.
