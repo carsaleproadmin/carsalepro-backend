@@ -85,6 +85,48 @@ describe('Public showroom + report check (e2e)', () => {
     await app.close();
   });
 
+  describe('DEN-411: the seller contacts', () => {
+    beforeAll(async () => {
+      await prisma.listing.update({
+        where: { id: listingId },
+        data: { contactPhone: '+49301234567', contactEmail: 'seller@example.com' },
+      });
+    });
+
+    it('1a. the listing detail gives only flags, not the phone and the email', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/public/listings/${listingId}`)
+        .expect(200);
+      expect(res.body.hasPhone).toBe(true);
+      expect(res.body.hasEmail).toBe(true);
+      expect(res.body).not.toHaveProperty('contactPhone');
+      expect(res.body).not.toHaveProperty('contactEmail');
+      expect(JSON.stringify(res.body)).not.toContain('1234567');
+      expect(JSON.stringify(res.body)).not.toContain('seller@example.com');
+    });
+
+    it('1b. the contact endpoint gives the phone and the email', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/public/listings/${listingId}/contact`)
+        .expect(200);
+      expect(res.body).toEqual({ phone: '+49301234567', email: 'seller@example.com' });
+    });
+
+    it('1c. the contact endpoint gives 404 for a listing that is not active', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/public/listings/does-not-exist/contact')
+        .expect(404);
+      await prisma.listing.update({ where: { id: listingId }, data: { status: 'SOLD' } });
+      try {
+        await request(app.getHttpServer())
+          .post(`/api/v1/public/listings/${listingId}/contact`)
+          .expect(404);
+      } finally {
+        await prisma.listing.update({ where: { id: listingId }, data: { status: 'ACTIVE' } });
+      }
+    });
+  });
+
   it('1. lists verified listings without a token', async () => {
     const res = await request(app.getHttpServer()).get('/api/v1/public/listings').expect(200);
     expect(Array.isArray(res.body.items)).toBe(true);
@@ -677,6 +719,28 @@ describe('Public showroom + report check (e2e)', () => {
       expect(res.body.selfDeclaration).toEqual({ accidentFreeClaimed: true, ownersCount: 2 });
       expect(res.body.vehicle.powerKw).toBe(92);
       expect(res.body.vehicle.fuelType).toBe('petrol');
+    });
+
+    it('11n. DEN-406: the published period keeps new listings and drops old ones', async () => {
+      // The fixture was published a moment ago.
+      expect(hasManual(await dresden('publishedPeriod=1h'))).toBe(true);
+      expect(hasManual(await dresden('publishedPeriod=90d'))).toBe(true);
+      expect(hasManual(await dresden('publishedPeriod='))).toBe(true);
+
+      await prisma.listing.update({
+        where: { id: manualId },
+        data: { publishedAt: new Date(Date.now() - 4 * 3_600_000) },
+      });
+      try {
+        expect(hasManual(await dresden('publishedPeriod=3h'))).toBe(false);
+        expect(hasManual(await dresden('publishedPeriod=6h'))).toBe(true);
+      } finally {
+        await prisma.listing.update({ where: { id: manualId }, data: { publishedAt: new Date() } });
+      }
+
+      await request(app.getHttpServer())
+        .get('/api/v1/public/listings?publishedPeriod=5h')
+        .expect(400);
     });
   });
 

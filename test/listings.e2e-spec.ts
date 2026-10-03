@@ -703,6 +703,39 @@ describe('Listings (e2e)', () => {
     }
   });
 
+  it('11a. GET /api/v1/me/listings gives the owner their own contacts (DEN-413)', async () => {
+    // The edit form fills its contact fields from this response. Without the
+    // contacts it opened blank, and a blank field there deletes the value.
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id;
+
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ contactPhone: '+4915123456789', contactEmail: 'seller@example.com' })
+        .expect(200);
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      const item = res.body.items.find((i: { id: string }) => i.id === listingId);
+      expect(item.contactPhone).toBe('+4915123456789');
+      expect(item.contactEmail).toBe('seller@example.com');
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
   it('11b. GET /api/v1/me/listings without a token returns 401', async () => {
     await request(app.getHttpServer()).get('/api/v1/me/listings').expect(401);
   });

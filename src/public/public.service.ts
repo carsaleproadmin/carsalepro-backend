@@ -3,13 +3,20 @@ import { Listing, Prisma, Report } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import { SettingsService } from '../settings/settings.service';
-import { ListingQueryDto, ListingSort, PAGE_SIZES } from './dto/listing-query.dto';
+import {
+  EQUIPMENT_FILTER_KEYS,
+  ListingQueryDto,
+  ListingSort,
+  PAGE_SIZES,
+  PublishedPeriod,
+} from './dto/listing-query.dto';
 import {
   MAX_LISTING_PHOTOS,
   manifestPhotoRefs,
   mirroredPhotoKey,
   photoLocation,
 } from '../listings/listing-photo-urls';
+import { LISTING_EQUIPMENT_OPTIONS } from '../listings/dto/listing-vehicle-v1.dto';
 import { citySearchKeys, normalizeCompact, normalizeSearchText } from '../common/search-text';
 
 /*
@@ -310,6 +317,23 @@ function publicReportData(value: unknown, dropTopLevel: string[] = []): unknown 
   return value ?? null;
 }
 
+/** The `vehicleData.vehicle` keys that the public listing page can show. */
+const DECLARED_SPEC_KEYS = [
+  'vehicleType',
+  'engineVolumeL',
+  'fuelCityL',
+  'fuelHighwayL',
+  'fuelCombinedL',
+  'doors',
+  'seats',
+  'technicalCondition',
+  'emissionStandard',
+  'importedFrom',
+  'serviceCheckReady',
+  ...Object.keys(LISTING_EQUIPMENT_OPTIONS),
+  'features',
+] as const;
+
 @Injectable()
 export class PublicService {
   constructor(
@@ -371,6 +395,10 @@ export class PublicService {
         ...(cityKeys.length
           ? [{ OR: cityKeys.map((key) => ({ citySearch: { contains: key } })) }]
           : []),
+        ...declaredVehicleFilters(q),
+        ...(q.publishedPeriod
+          ? [{ publishedAt: { gte: publishedSince(q.publishedPeriod, new Date()) } }]
+          : []),
       ],
       /*
        * The country is an EXACT code, never a `contains`. A city is free text a
@@ -390,9 +418,7 @@ export class PublicService {
        * as a typo.
        */
       ...(bodyTypes.length ? { bodyType: { in: bodyTypes, mode: 'insensitive' as const } } : {}),
-      ...(driveTypes.length
-        ? { driveType: { in: driveTypes, mode: 'insensitive' as const } }
-        : {}),
+      ...(driveTypes.length ? { driveType: { in: driveTypes, mode: 'insensitive' as const } } : {}),
       /*
        * The three folded columns. `in` and not `equals`, because a buyer who
        * will take petrol OR a hybrid is asking one question, and two searches
@@ -410,6 +436,14 @@ export class PublicService {
       ...(q.fuelType?.length ? { fuelType: { in: q.fuelType } } : {}),
       ...(q.transmission?.length ? { transmission: { in: q.transmission } } : {}),
       ...(q.color?.length ? { color: { in: q.color } } : {}),
+      /*
+       * DEN-401. The category is not a column. It lives in the declared vehicle
+       * JSON, so this is a JSON path match. A listing with no category is left
+       * out, by the same rule as the fuel and the gearbox above.
+       */
+      ...(q.vehicleType
+        ? { vehicleData: { path: ['vehicle', 'vehicleType'], equals: q.vehicleType } }
+        : {}),
       ...(q.priceFrom != null || q.priceTo != null
         ? { priceCents: { gte: q.priceFrom ?? undefined, lte: q.priceTo ?? undefined } }
         : {}),
@@ -469,7 +503,24 @@ export class PublicService {
     return { items, total, page, pageSize, pages: Math.ceil(total / pageSize) };
   }
 
-  async getListing(id: string) {
+  /**
+   * DEN-411. The seller contacts of an active listing. The controller limits
+   * how often one IP can call this.
+   */
+  async getListingContact(id: string) {
+    const listing = await this.prisma.listing.findFirst({
+      where: { id, status: 'ACTIVE' },
+      select: { contactPhone: true, contactEmail: true },
+    });
+    if (!listing)
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
+    return {
+      phone: listing.contactPhone?.trim() || null,
+      email: listing.contactEmail?.trim() || null,
+    };
+  }
+
+  async getListing(id: string, countView = true) {
     const listing = await this.prisma.listing.findFirst({
       where: {
         id,
@@ -477,8 +528,11 @@ export class PublicService {
       },
       include: { report: true },
     });
-    if (!listing) throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
-    await this.prisma.listing.update({ where: { id }, data: { viewsCount: { increment: 1 } } });
+    if (!listing)
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Listing not found' } });
+    if (countView) {
+      await this.prisma.listing.update({ where: { id }, data: { viewsCount: { increment: 1 } } });
+    }
 
     const inspection = this.inspectionOf(listing);
     const inspected = inspection.status === 'inspected';
@@ -495,8 +549,14 @@ export class PublicService {
       countryCode: listing.countryCode,
       plz: listing.plz,
       description: listing.description,
-      contactPhone: listing.contactPhone,
-      contactEmail: listing.contactEmail,
+      /*
+       * DEN-411. Only flags. The seller phone and email are personal data of a
+       * private person, and a bot that reads this response or the page HTML
+       * must not get them. The page asks `getListingContact` when the buyer
+       * clicks "Show number".
+       */
+      hasPhone: Boolean(listing.contactPhone?.trim()),
+      hasEmail: Boolean(listing.contactEmail?.trim()),
       package: listing.package,
       source: listing.source,
       vehicle: this.listingVehicle(listing),
@@ -509,8 +569,10 @@ export class PublicService {
       inspection,
       /** Seller's own claims. Never merged into `vehicle` — provenance matters. */
       selfDeclaration: this.selfDeclarationOf(listing),
+      /** Seller's extended specs and equipment (DEN-397). Whitelisted keys only. */
+      declaredSpecs: this.declaredSpecsOf(listing),
       photos,
-      views: listing.viewsCount + 1,
+      views: listing.viewsCount + (countView ? 1 : 0),
       // `reportUnlockPriceCents` was removed (DEN-292): the full report is free
       // (DEN-224), and the field quoted the withdrawn pay-per-view price. The
       // website and the mobile app never read it.
@@ -545,7 +607,8 @@ export class PublicService {
       where: { code, deletedAt: null },
       orderBy: { createdAt: 'desc' },
     });
-    if (!report) throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
+    if (!report)
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
 
     const data = (report.reportData ?? {}) as Record<string, unknown>;
     const damages = Array.isArray((data as { damages?: unknown[] }).damages)
@@ -713,6 +776,24 @@ export class PublicService {
     return { status: 'self_declared', reportCode: null };
   }
 
+  /**
+   * The seller's extended specs and equipment from `vehicleData.vehicle`
+   * (DEN-397). Only the keys in `DECLARED_SPEC_KEYS` go out: the same block
+   * also holds the VIN, which the public page must not show.
+   */
+  private declaredSpecsOf(l: Listing): Record<string, unknown> | null {
+    if (l.source !== 'manual') return null;
+    const data = (l.vehicleData ?? null) as Record<string, unknown> | null;
+    const vehicle = data?.vehicle;
+    if (!vehicle || typeof vehicle !== 'object' || Array.isArray(vehicle)) return null;
+    const source = vehicle as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of DECLARED_SPEC_KEYS) {
+      if (source[key] !== undefined && source[key] !== null) out[key] = source[key];
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
   private selfDeclarationOf(l: Listing): Record<string, unknown> | null {
     if (l.source !== 'manual') return null;
     const data = (l.vehicleData ?? null) as Record<string, unknown> | null;
@@ -725,7 +806,9 @@ export class PublicService {
   private async toCard(listing: ListingWithReport) {
     const inspection = this.inspectionOf(listing);
     const inspected = inspection.status === 'inspected';
-    const [thumb] = await this.listingPhotos(listing, 1);
+    // Three, for the hover gallery on the card (DEN-399). The first is the cover.
+    const cardPhotos = await this.listingPhotos(listing, 3);
+    const thumb = cardPhotos[0];
     return {
       id: listing.id,
       priceCents: listing.priceCents,
@@ -737,7 +820,10 @@ export class PublicService {
       verified: inspected,
       inspection,
       vehicle: this.listingVehicle(listing),
+      /** Seller-declared engine displacement in litres (DEN-397), for the card. */
+      engineVolumeL: this.declaredSpecsOf(listing)?.engineVolumeL ?? null,
       thumbnailUrl: thumb?.url ?? null,
+      photoUrls: cardPhotos.map((photo) => photo.url),
     };
   }
 
@@ -866,12 +952,103 @@ export class PublicService {
         }
       }),
     );
-    return signed.filter((photo): photo is { url: string; kind?: string; angle?: string } =>
-      photo !== null,
+    return signed.filter(
+      (photo): photo is { url: string; kind?: string; angle?: string } => photo !== null,
     );
   }
 
   private maskVin(vin: string): string {
     return vin.length === 17 ? `${vin.slice(0, 3)}**********${vin.slice(-4)}` : vin;
   }
+}
+
+/*
+ * DEN-402. The advanced-search filters over the declared vehicle JSON.
+ *
+ * Each condition is its own element of the AND list, because two conditions
+ * on `vehicleData` in one object literal would overwrite each other. A JSON
+ * path match is false for a row without the key, so a listing that does not
+ * state a value is left out - the same rule as the fuel and gearbox columns.
+ */
+const PERIOD_HOURS: Record<Exclude<PublishedPeriod, 'today'>, number> = {
+  '1h': 1,
+  '3h': 3,
+  '6h': 6,
+  '12h': 12,
+  '24h': 24,
+  '2d': 48,
+  '3d': 72,
+  '7d': 7 * 24,
+  '30d': 30 * 24,
+  '90d': 90 * 24,
+};
+
+/**
+ * DEN-406. The earliest publication time for the period. `today` is the
+ * start of the current day in Berlin, so the result does not depend on the
+ * time zone of the server.
+ */
+export function publishedSince(period: PublishedPeriod, now: Date): Date {
+  if (period !== 'today') return new Date(now.getTime() - PERIOD_HOURS[period] * 3_600_000);
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Berlin',
+      hourCycle: 'h23',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    })
+      .formatToParts(now)
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  const sinceMidnightMs = ((parts.hour * 60 + parts.minute) * 60 + parts.second) * 1000;
+  return new Date(now.getTime() - sinceMidnightMs - now.getMilliseconds());
+}
+
+function declaredVehicleFilters(q: ListingQueryDto): Prisma.ListingWhereInput[] {
+  const out: Prisma.ListingWhereInput[] = [];
+  const at = (...path: string[]) => ['vehicle', ...path];
+
+  const range = (key: string, from?: number, to?: number) => {
+    if (from != null) out.push({ vehicleData: { path: at(key), gte: from } });
+    if (to != null) out.push({ vehicleData: { path: at(key), lte: to } });
+  };
+  range('engineVolumeL', q.engineVolumeFrom, q.engineVolumeTo);
+  range('fuelCityL', q.fuelCityFrom, q.fuelCityTo);
+  range('fuelHighwayL', q.fuelHighwayFrom, q.fuelHighwayTo);
+  range('fuelCombinedL', q.fuelCombinedFrom, q.fuelCombinedTo);
+  range('seats', q.seatsFrom, q.seatsTo);
+
+  const anyOf = (path: string[], values: (string | number)[] | undefined) => {
+    if (!values?.length) return;
+    out.push({ OR: values.map((value) => ({ vehicleData: { path, equals: value } })) });
+  };
+  anyOf(at('doors'), q.doors?.map(Number));
+  anyOf(at('technicalCondition'), q.technicalCondition);
+  anyOf(at('emissionStandard'), q.emissionStandard);
+  anyOf(at('importedFrom'), q.importedFrom);
+  for (const key of EQUIPMENT_FILTER_KEYS) anyOf(at(key), q[key]);
+
+  if (q.owners?.length) {
+    const path = ['selfDeclaration', 'ownersCount'];
+    out.push({
+      OR: q.owners.map((bucket) =>
+        bucket === '4plus'
+          ? { vehicleData: { path, gte: 4 } }
+          : { vehicleData: { path, equals: Number(bucket) } },
+      ),
+    });
+  }
+
+  const flag = (path: string[], on?: boolean) => {
+    if (on) out.push({ vehicleData: { path, equals: true } });
+  };
+  flag(['selfDeclaration', 'accidentFreeClaimed'], q.accidentFree);
+  flag(['selfDeclaration', 'serviceHistoryComplete'], q.serviceHistory);
+  flag(at('serviceCheckReady'), q.serviceCheckReady);
+
+  if (q.features?.length) {
+    out.push({ vehicleData: { path: at('features'), array_contains: q.features } });
+  }
+  return out;
 }

@@ -64,6 +64,29 @@ export class RedisService implements OnModuleDestroy {
     return entry.value;
   }
 
+  /**
+   * Adds one to a counter and returns the new value. The TTL starts with the
+   * first increment and does not move after it, so the window is fixed.
+   */
+  async incrWithTtl(key: string, ttlSeconds: number): Promise<number> {
+    if (this.client) {
+      const [[, count]] = (await this.client
+        .multi()
+        .incr(key)
+        .expire(key, ttlSeconds, 'NX')
+        .exec()) as [[Error | null, number]];
+      return count;
+    }
+    const entry = this.fallback.get(key);
+    const live = entry && entry.expiresAt > Date.now() ? entry : undefined;
+    const count = (live ? parseInt(live.value, 10) : 0) + 1;
+    this.fallback.set(key, {
+      value: String(count),
+      expiresAt: live?.expiresAt ?? Date.now() + ttlSeconds * 1000,
+    });
+    return count;
+  }
+
   async del(key: string): Promise<void> {
     if (this.client) {
       await this.client.del(key);

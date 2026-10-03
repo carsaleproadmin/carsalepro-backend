@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Public } from '../auth/auth.decorators';
@@ -20,8 +20,25 @@ export class PublicController {
 
   @Get('listings/:id')
   @ApiOperation({ summary: 'Get a single verified listing (public)' })
-  listing(@Param('id') id: string) {
-    return this.publicService.getListing(id);
+  /*
+   * `count=0` reads the listing without a view. The order form uses it to
+   * prefill the car, and that read is not a visit to the listing.
+   */
+  listing(@Param('id') id: string, @Query('count') count?: string) {
+    return this.publicService.getListing(id, count !== '0');
+  }
+
+  /*
+   * DEN-411. The seller phone and email, only when a buyer clicks "Show
+   * number" or "Show email". POST, so that a crawler that follows links does
+   * not call it. The `contact` bucket limits one IP to 10 calls a minute.
+   */
+  @Post('listings/:id/contact')
+  @HttpCode(200)
+  @Throttle({ contact: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Get the seller contacts of an active listing (public, rate-limited)' })
+  listingContact(@Param('id') id: string) {
+    return this.publicService.getListingContact(id);
   }
 
   // The two lookups below answer "does this VIN / report code exist?" without

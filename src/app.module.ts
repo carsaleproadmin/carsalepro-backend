@@ -61,6 +61,9 @@ import { VinModule } from './vin/vin.module';
         // configured throttler on every route, which capped the WHOLE API at
         // 20 req/min per IP (F-12).
         { name: 'lookup', ttl: 60_000, limit: 20 },
+        // DEN-411. The seller contacts of a listing. Only
+        // `POST /public/listings/:id/contact` opts in.
+        { name: 'contact', ttl: 60_000, limit: 10 },
       ],
       skipIf: () => process.env.NODE_ENV === 'test',
     }),

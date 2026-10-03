@@ -5,17 +5,22 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Length,
+  Matches,
   Max,
   Min,
 } from 'class-validator';
+import { COLOURS, FUEL_TYPES, TRANSMISSIONS } from '../../listings/vehicle-vocabulary';
 import {
-  COLOURS,
-  FUEL_TYPES,
-  TRANSMISSIONS,
-} from '../../listings/vehicle-vocabulary';
+  LISTING_EMISSION_STANDARDS,
+  LISTING_EQUIPMENT_OPTIONS,
+  LISTING_FEATURES,
+  LISTING_TECHNICAL_CONDITIONS,
+  LISTING_VEHICLE_TYPES,
+} from '../../listings/dto/listing-vehicle-v1.dto';
 
 const toInt = ({ value }: { value: unknown }) =>
   value === undefined || value === '' ? undefined : Number(value);
@@ -42,6 +47,50 @@ const toSlugList = ({ value }: { value: unknown }): string[] | undefined => {
     .filter(Boolean);
   return out.length ? [...new Set(out)] : undefined;
 };
+
+/**
+ * DEN-402. The same list shape as `toSlugList`, but the case is kept. The
+ * declared-vehicle vocabularies are camelCase (`climateMulti`, `carPlay`), so
+ * a lower-cased value would never match.
+ */
+const toList = ({ value }: { value: unknown }): string[] | undefined => {
+  const raw = Array.isArray(value) ? value : [value];
+  const out = raw
+    .flatMap((entry) => (typeof entry === 'string' ? entry.split(',') : []))
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return out.length ? [...new Set(out)] : undefined;
+};
+
+const toNumber = ({ value }: { value: unknown }) =>
+  value === undefined || value === '' ? undefined : Number(value);
+
+/** Owner-count buckets. `4plus` is four or more. */
+export const OWNER_BUCKETS = ['1', '2', '3', '4plus'] as const;
+
+/**
+ * DEN-406. How recently the listing was published. `today` starts at 00:00
+ * Berlin time; all other values are a window that ends now.
+ */
+export const PUBLISHED_PERIODS = [
+  '1h',
+  '3h',
+  '6h',
+  '12h',
+  'today',
+  '24h',
+  '2d',
+  '3d',
+  '7d',
+  '30d',
+  '90d',
+] as const;
+export type PublishedPeriod = (typeof PUBLISHED_PERIODS)[number];
+
+/** The 12 equipment selects, in the order of the seller editor. */
+export const EQUIPMENT_FILTER_KEYS = Object.keys(
+  LISTING_EQUIPMENT_OPTIONS,
+) as (keyof typeof LISTING_EQUIPMENT_OPTIONS)[];
 
 /** Query strings have no booleans; only the literal 'true'/'1' opt in. */
 const toBool = ({ value }: { value: unknown }) => {
@@ -130,6 +179,156 @@ export class ListingQueryDto {
   @ArrayMaxSize(COLOURS.length)
   @IsIn([...COLOURS], { each: true })
   color?: string[];
+
+  /*
+   * DEN-401. The vehicle category from the seller editor. One value, not a
+   * list: a buyer looks for a car OR a motorbike, not both in one search.
+   */
+  @IsOptional()
+  @IsIn([...LISTING_VEHICLE_TYPES])
+  vehicleType?: string;
+
+  /*
+   * DEN-402. Filters over the declared vehicle data (`vehicleData` JSON). The
+   * seller fills these in the manual editor. A listing that does not state a
+   * value is left out when the filter is set.
+   */
+  @IsOptional() @Transform(toNumber) @IsNumber() @Min(0) @Max(20) engineVolumeFrom?: number;
+  @IsOptional() @Transform(toNumber) @IsNumber() @Min(0) @Max(20) engineVolumeTo?: number;
+  @IsOptional() @Transform(toNumber) @IsNumber() @Min(0) @Max(50) fuelCityFrom?: number;
+  @IsOptional() @Transform(toNumber) @IsNumber() @Min(0) @Max(50) fuelCityTo?: number;
+  @IsOptional() @Transform(toNumber) @IsNumber() @Min(0) @Max(50) fuelHighwayFrom?: number;
+  @IsOptional() @Transform(toNumber) @IsNumber() @Min(0) @Max(50) fuelHighwayTo?: number;
+  @IsOptional() @Transform(toNumber) @IsNumber() @Min(0) @Max(50) fuelCombinedFrom?: number;
+  @IsOptional() @Transform(toNumber) @IsNumber() @Min(0) @Max(50) fuelCombinedTo?: number;
+  @IsOptional() @Transform(toInt) @IsInt() @Min(1) @Max(60) seatsFrom?: number;
+  @IsOptional() @Transform(toInt) @IsInt() @Min(1) @Max(60) seatsTo?: number;
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn(['2', '3', '4', '5'], { each: true })
+  doors?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_TECHNICAL_CONDITIONS], { each: true })
+  technicalCondition?: string[];
+
+  /** DEN-405. Emission standards, any of them. */
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EMISSION_STANDARDS], { each: true })
+  emissionStandard?: string[];
+
+  /** DEN-405. Countries the car was imported from (ISO alpha-2), any of them. */
+  @IsOptional()
+  @Transform(({ value }) => toList({ value })?.map((code) => code.toUpperCase()))
+  @IsArray()
+  @ArrayMaxSize(20)
+  @Matches(/^[A-Z]{2}$/, { each: true })
+  importedFrom?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...OWNER_BUCKETS], { each: true })
+  owners?: string[];
+
+  /** The seller claims no accidents. */
+  @IsOptional() @Transform(toBool) @IsBoolean() accidentFree?: boolean;
+  /** The seller claims a complete service history. */
+  @IsOptional() @Transform(toBool) @IsBoolean() serviceHistory?: boolean;
+  /** The seller agrees to a check at a service station. */
+  @IsOptional() @Transform(toBool) @IsBoolean() serviceCheckReady?: boolean;
+
+  /** DEN-406. Only listings published in this period. */
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsIn([...PUBLISHED_PERIODS])
+  publishedPeriod?: PublishedPeriod;
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.climate], { each: true })
+  climate?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.powerWindows], { each: true })
+  powerWindows?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.interiorMaterial], { each: true })
+  interiorMaterial?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.interiorColour], { each: true })
+  interiorColour?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.powerSteering], { each: true })
+  powerSteering?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.steeringAdjust], { each: true })
+  steeringAdjust?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.spareWheel], { each: true })
+  spareWheel?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.headlights], { each: true })
+  headlights?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.seatAdjust], { each: true })
+  seatAdjust?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.seatMemory], { each: true })
+  seatMemory?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.seatHeating], { each: true })
+  seatHeating?: string[];
+
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @IsIn([...LISTING_EQUIPMENT_OPTIONS.seatVentilation], { each: true })
+  seatVentilation?: string[];
+
+  /** Equipment the car must have. ALL of them, not any one. */
+  @IsOptional()
+  @Transform(toList)
+  @IsArray()
+  @ArrayMaxSize(LISTING_FEATURES.length)
+  @IsIn([...LISTING_FEATURES], { each: true })
+  features?: string[];
 
   @IsOptional() @Transform(toInt) @IsInt() @Min(1900) @Max(2100) yearFrom?: number;
   @IsOptional() @Transform(toInt) @IsInt() @Min(1900) @Max(2100) yearTo?: number;
