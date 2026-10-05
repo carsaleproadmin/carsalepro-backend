@@ -17,6 +17,7 @@ import {
   photoLocation,
 } from '../listings/listing-photo-urls';
 import { LISTING_EQUIPMENT_OPTIONS } from '../listings/dto/listing-vehicle-v1.dto';
+import { engineVolumeOf, JsonObject } from '../listings/listing-vehicle-data';
 import { citySearchKeys, normalizeCompact, normalizeSearchText } from '../common/search-text';
 
 /*
@@ -761,6 +762,13 @@ export class PublicService {
       powerKw: l.powerKw,
       firstRegistration: l.firstRegistration ? l.firstRegistration.toISOString() : null,
       huValidUntil: l.huValidUntil,
+      /*
+       * DEN-434. Inspection data, so a report-backed listing only. A manual
+       * listing gives its own value in `declaredSpecs`, as a claim of the
+       * seller - provenance matters.
+       */
+      engineVolumeL:
+        l.source === 'report' ? engineVolumeOf(l.vehicleData as JsonObject | null) : null,
     };
   }
 
@@ -820,8 +828,14 @@ export class PublicService {
       verified: inspected,
       inspection,
       vehicle: this.listingVehicle(listing),
-      /** Seller-declared engine displacement in litres (DEN-397), for the card. */
-      engineVolumeL: this.declaredSpecsOf(listing)?.engineVolumeL ?? null,
+      /**
+       * Engine displacement in litres, for the card: the inspected value of a
+       * report-backed listing (DEN-434), else the seller's claim (DEN-397).
+       */
+      engineVolumeL:
+        this.listingVehicle(listing).engineVolumeL ??
+        this.declaredSpecsOf(listing)?.engineVolumeL ??
+        null,
       thumbnailUrl: thumb?.url ?? null,
       photoUrls: cardPhotos.map((photo) => photo.url),
     };

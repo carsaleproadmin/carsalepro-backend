@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import request from 'supertest';
@@ -46,7 +47,12 @@ describe('Listings (e2e)', () => {
   });
 
   /** Seed a report. By default no userId (device-owned); pass userId to make a user the owner. */
-  async function seedReport(opts: { code: string; deviceId?: string; userId?: string }) {
+  async function seedReport(opts: {
+    code: string;
+    deviceId?: string;
+    userId?: string;
+    reportData?: Prisma.InputJsonValue;
+  }) {
     const deviceId = opts.deviceId ?? uniqueDeviceId();
     return prisma.report.create({
       data: {
@@ -64,7 +70,7 @@ describe('Listings (e2e)', () => {
         bodyType: 'sedan',
         driveType: 'rwd',
         qualityScore: 87,
-        reportData: { checklist: { brakes: 'ok' }, damages: [] },
+        reportData: opts.reportData ?? { checklist: { brakes: 'ok' }, damages: [] },
         photosManifest: [{ s3Key: `report-photos/${deviceId}/front.jpg`, kind: 'front' }],
       },
     });
@@ -440,6 +446,54 @@ describe('Listings (e2e)', () => {
         .get('/api/v1/public/listings?city=Munich')
         .expect(200);
       expect(showroom.body.items.find((i: { id: string }) => i.id === listingId)).toBeTruthy();
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
+  it('5b. DEN-434: the engine volume of the report reaches the card, the page and the filter', async () => {
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({
+      code,
+      userId: owner.userId,
+      reportData: { vehicle: { engineVolumeL: 1.968 }, damages: [] },
+    });
+    let listingId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id;
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ priceCents: 1500000, city: 'Munich' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listingId}/publish`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ package: 'standard' })
+        .expect(201);
+
+      const detail = await request(app.getHttpServer())
+        .get(`/api/v1/public/listings/${listingId}`)
+        .expect(200);
+      // Inspection data, rounded to one decimal - and not a seller claim.
+      expect(detail.body.vehicle.engineVolumeL).toBe(2);
+      expect(detail.body.declaredSpecs).toBeNull();
+
+      const find = async (query: string) => {
+        const res = await request(app.getHttpServer())
+          .get(`/api/v1/public/listings?city=Munich&${query}`)
+          .expect(200);
+        return res.body.items.find((i: { id: string }) => i.id === listingId);
+      };
+      const card = await find('engineVolumeFrom=1.9&engineVolumeTo=2.1');
+      expect(card?.engineVolumeL).toBe(2);
+      expect(await find('engineVolumeFrom=2.5')).toBeUndefined();
     } finally {
       await cleanup({ listingId, reportId: report.id });
     }

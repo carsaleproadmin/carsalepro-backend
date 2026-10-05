@@ -280,13 +280,8 @@ export class ListingVehicleDeclaredDto extends ReportVehicleDto {
   @Max(50)
   fuelCombinedL?: number;
 
-  /** Engine displacement in litres. */
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsNumber()
-  @Min(0.1)
-  @Max(10)
-  engineVolumeL?: number;
+  // `engineVolumeL` (litres, 0.1 to 10) is inherited from `ReportVehicleDto`
+  // since DEN-434, because a report gives the same value.
 
   /** Number of doors. */
   @ApiPropertyOptional()

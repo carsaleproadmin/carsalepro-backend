@@ -66,6 +66,13 @@ export class ReportVehicleDto {
   @IsOptional() @IsString() @MaxLength(32) driveType?: string;
   @IsOptional() @IsString() @MaxLength(32) fuelType?: string;
   @IsOptional() @IsString() @MaxLength(32) transmission?: string;
+
+  /**
+   * Engine volume in litres, one decimal (DEN-434). The same range as
+   * `ListingVehicleV1Dto.engineVolumeL`, because a report-based listing copies
+   * the value.
+   */
+  @IsOptional() @IsNumber() @Min(0.1) @Max(10) engineVolumeL?: number;
 }
 
 export class ReportOperationalDto {
