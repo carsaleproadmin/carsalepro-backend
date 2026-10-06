@@ -280,7 +280,7 @@ export class ListingVehicleDeclaredDto extends ReportVehicleDto {
   @Max(50)
   fuelCombinedL?: number;
 
-  // `engineVolumeL` (litres, 0.1 to 10) is inherited from `ReportVehicleDto`
+  // `engineVolumeL` (litres, 0.1 to 20) is inherited from `ReportVehicleDto`
   // since DEN-434, because a report gives the same value.
 
   /** Number of doors. */

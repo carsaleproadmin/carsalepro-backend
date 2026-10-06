@@ -126,7 +126,7 @@ export function engineVolumeOf(data: JsonObject | null | undefined): number | nu
   const vehicle = data && isPlainObject(data.vehicle) ? data.vehicle : {};
   const value = vehicle.engineVolumeL;
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  if (value < 0.1 || value > 10) return null;
+  if (value < 0.1 || value > 20) return null;
   return Math.round(value * 10) / 10;
 }
 

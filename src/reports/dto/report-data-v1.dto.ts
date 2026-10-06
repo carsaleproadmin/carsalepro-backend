@@ -75,11 +75,11 @@ export class ReportVehicleDto {
    * `ListingVehicleV1Dto.engineVolumeL`, because a report-based listing copies
    * the value.
    */
-  @ApiPropertyOptional({ description: 'Engine volume in litres, 0.1 to 10.', example: 2.0 })
+  @ApiPropertyOptional({ description: 'Engine volume in litres, 0.1 to 20.', example: 2.0 })
   @IsOptional()
   @IsNumber()
   @Min(0.1)
-  @Max(10)
+  @Max(20)
   engineVolumeL?: number;
 }
 
