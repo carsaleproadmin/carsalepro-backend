@@ -82,6 +82,8 @@ export function completeReportData(
       { kind: 'zeroproof' },
       { kind: 'zeroproof-al' },
       ...['fl', 'fr', 'rl', 'rr'].map((c) => ({ kind: `wheel-${c}` })),
+      // One cabin photo is required since 2026-10-06.
+      { kind: 'interior-interior_dashboard' },
     ],
     // Deliberately high. The score is still stored and still shown; a suite
     // that sets it to 100 and is still refused proves it no longer decides.
