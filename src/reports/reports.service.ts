@@ -31,6 +31,7 @@ import {
   validateReportDataV1,
 } from './report-data.validator';
 import { angleForKind, comparePhotoKinds } from '../catalog/catalog-photo-order';
+import { engineVolumeOf, JsonObject, mergeVehicleData } from '../listings/listing-vehicle-data';
 
 const UUID_CODE_RE = /^CSP-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -229,6 +230,10 @@ export class ReportsService {
       },
     });
 
+    if (dto.reportData !== undefined) {
+      await this.syncListingEngineVolume(existing.id, dto.reportData);
+    }
+
     const { url, expiresAt } = await this.r2.createPresignedUploadUrl(
       updated.s3Key,
       dto.contentType ?? 'application/pdf',
@@ -284,6 +289,10 @@ export class ReportsService {
       },
     });
 
+    if (dto.reportData !== undefined) {
+      await this.syncListingEngineVolume(report.id, dto.reportData);
+    }
+
     const response: UpdateReportResponseDto = {
       reportId: updated.id,
       code: updated.code,
@@ -306,6 +315,39 @@ export class ReportsService {
     }
 
     return response;
+  }
+
+  /**
+   * Copy the engine volume of a re-synced report to its listing (DEN-434).
+   *
+   * Only this one value is refreshed. The other listing columns keep the
+   * values they had when the listing was made. `null` removes the key, so a
+   * volume the inspector cleared leaves the listing too. A failure here is
+   * logged and never fails the re-sync: the report is already stored.
+   */
+  private async syncListingEngineVolume(
+    reportId: string,
+    reportData: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const listing = await this.prisma.listing.findFirst({
+        where: { reportId, source: 'report' },
+        select: { id: true, vehicleData: true },
+      });
+      if (!listing) return;
+      const stored = (listing.vehicleData ?? {}) as JsonObject;
+      const engineVolumeL = engineVolumeOf(reportData as JsonObject);
+      if ((engineVolumeOf(stored) ?? null) === engineVolumeL) return;
+      const merged = mergeVehicleData(stored, { vehicle: { engineVolumeL } });
+      await this.prisma.listing.update({
+        where: { id: listing.id },
+        data: { vehicleData: merged as Prisma.InputJsonValue },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Engine volume not copied to the listing of report ${reportId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -713,9 +755,7 @@ export class ReportsService {
    * keeps `remaining` on `GET /quota` internally consistent if the flag is ever
    * switched back on.
    */
-  private async consumeQuota(
-    deviceId: string,
-  ): Promise<{
+  private async consumeQuota(deviceId: string): Promise<{
     quota: { freeReportsUsed: number; freeReportsLimit: number; isPro: boolean };
     tier: 'free' | 'pro';
   }> {
