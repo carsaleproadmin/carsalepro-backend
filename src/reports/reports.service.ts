@@ -27,12 +27,12 @@ import { PhotoProcessingService } from '../common/photo/photo-processing.service
 import {
   extractDenormalizedFields,
   ExtractedReportFields,
+  normalizeReportData,
   validateReportDataV1,
 } from './report-data.validator';
 import { angleForKind, comparePhotoKinds } from '../catalog/catalog-photo-order';
 
-const UUID_CODE_RE =
-  /^CSP-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_CODE_RE = /^CSP-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class ReportsService {
@@ -120,7 +120,9 @@ export class ReportsService {
           bodyType: dto.bodyType ?? extracted?.bodyType ?? null,
           driveType: dto.driveType ?? extracted?.driveType ?? null,
           reportData:
-            dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+            dto.reportData !== undefined
+              ? (normalizeReportData(dto.reportData) as Prisma.InputJsonValue)
+              : undefined,
           photosManifest:
             dto.photosManifest !== undefined
               ? (dto.photosManifest as Prisma.InputJsonValue)
@@ -219,7 +221,9 @@ export class ReportsService {
         bodyType: dto.bodyType ?? extracted?.bodyType ?? existing.bodyType,
         driveType: dto.driveType ?? extracted?.driveType ?? existing.driveType,
         reportData:
-          dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+          dto.reportData !== undefined
+            ? (normalizeReportData(dto.reportData) as Prisma.InputJsonValue)
+            : undefined,
         // A new PDF is coming — require a fresh /complete verification.
         uploaded: false,
       },
@@ -273,7 +277,9 @@ export class ReportsService {
         bodyType: dto.bodyType ?? extracted?.bodyType ?? report.bodyType,
         driveType: dto.driveType ?? extracted?.driveType ?? report.driveType,
         reportData:
-          dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+          dto.reportData !== undefined
+            ? (normalizeReportData(dto.reportData) as Prisma.InputJsonValue)
+            : undefined,
         ...(dto.regeneratePdfUploadUrl ? { uploaded: false } : {}),
       },
     });
@@ -709,7 +715,10 @@ export class ReportsService {
    */
   private async consumeQuota(
     deviceId: string,
-  ): Promise<{ quota: { freeReportsUsed: number; freeReportsLimit: number; isPro: boolean }; tier: 'free' | 'pro' }> {
+  ): Promise<{
+    quota: { freeReportsUsed: number; freeReportsLimit: number; isPro: boolean };
+    tier: 'free' | 'pro';
+  }> {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.deviceQuota.upsert({
         where: { deviceId },
@@ -732,8 +741,7 @@ export class ReportsService {
         throw new HttpException(
           {
             error: 'PaymentRequired',
-            message:
-              `FREE-tier limit of ${existing.freeReportsLimit} reports reached. Upgrade to PRO to continue.`,
+            message: `FREE-tier limit of ${existing.freeReportsLimit} reports reached. Upgrade to PRO to continue.`,
             freeReportsUsed: existing.freeReportsUsed,
             freeReportsLimit: existing.freeReportsLimit,
           },

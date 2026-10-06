@@ -1,3 +1,4 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   Equals,
   IsArray,
@@ -68,11 +69,18 @@ export class ReportVehicleDto {
   @IsOptional() @IsString() @MaxLength(32) transmission?: string;
 
   /**
-   * Engine volume in litres, one decimal (DEN-434). The same range as
+   * Engine volume in litres, one decimal (DEN-434). The server rounds it to
+   * one decimal when it stores the report (`normalizeReportData`). The same
+   * range as
    * `ListingVehicleV1Dto.engineVolumeL`, because a report-based listing copies
    * the value.
    */
-  @IsOptional() @IsNumber() @Min(0.1) @Max(10) engineVolumeL?: number;
+  @ApiPropertyOptional({ description: 'Engine volume in litres, 0.1 to 10.', example: 2.0 })
+  @IsOptional()
+  @IsNumber()
+  @Min(0.1)
+  @Max(10)
+  engineVolumeL?: number;
 }
 
 export class ReportOperationalDto {
