@@ -47,7 +47,7 @@ export type CompleteReportData = {
   }[];
   thickness: { panels: { panelId: string; um?: number }[] };
   photos: { kind: string }[];
-  scores: { qualityScore: number };
+  scores: { qualityScore: number; breakdown?: { method: string } };
 };
 
 /**
@@ -87,7 +87,7 @@ export function completeReportData(
     ],
     // Deliberately high. The score is still stored and still shown; a suite
     // that sets it to 100 and is still refused proves it no longer decides.
-    scores: { qualityScore: 100 },
+    scores: { qualityScore: 100, breakdown: { method: 'section-share-v2' } },
   };
 }
 

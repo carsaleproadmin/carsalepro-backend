@@ -64,11 +64,14 @@ function completePayload() {
       ...['fl', 'fr', 'rl', 'rr'].map((c) => ({ kind: `wheel-${c}` })),
       { kind: 'interior-interior_dashboard' },
     ],
+    // The app build that shows the cabin and damage rules sends this.
+    scores: { qualityScore: 100, breakdown: { method: 'section-share-v2' } },
   } as {
     wheels: { corner: string; treadMm: number; dot: string; sizeSpec: string }[];
     thickness: { panels: { panelId: string; um: number }[] };
     photos: { kind: string }[];
     damages?: Record<string, unknown>[];
+    scores?: Record<string, unknown>;
   };
 }
 
@@ -291,5 +294,26 @@ describe('resolveRequiredPanels — the legacy amnesty for paint stations', () =
     expect(r.complete).toBe(false);
     expect(r.missing.thicknessValues).toContain('sill_rear_left');
     expect(r.missing.thicknessPhotos).toHaveLength(0);
+  });
+
+  // DEN-451. An app build from before 2026-10-06 did not show the cabin and
+  // damage rules to the inspector, so its reports are not held to them.
+  it('does not hold a report from an older app to the cabin and damage rules', () => {
+    const data = completePayload();
+    delete data.scores;
+    data.photos = data.photos.filter((p) => !p.kind.startsWith('interior-'));
+    data.damages = [{ id: 'd1', partId: 'hood' }];
+    const r = evaluateCompleteness(data);
+    expect(r.missing.interior).toEqual([]);
+    expect(r.missing.damages).toEqual([]);
+    expect(r.complete).toBe(true);
+  });
+
+  it('names a damage row without an id', () => {
+    const data = completePayload();
+    data.damages = [{ partId: 'hood', typeId: 'scratch' }];
+    const r = evaluateCompleteness(data);
+    expect(r.missing.damages).toEqual([{ id: '#1', missing: ['id'] }]);
+    expect(r.complete).toBe(false);
   });
 });

@@ -144,7 +144,29 @@ type Payload = {
   damages?: unknown;
   thickness?: unknown;
   photos?: unknown;
+  scores?: unknown;
 };
+
+/**
+ * True when the app that made the report tells the inspector about the cabin
+ * photo and the damage rows (DEN-451).
+ *
+ * The two rules came on 2026-10-06 (DEN-439). An app build from before that
+ * did not show them to the inspector, and reports it made are already on the
+ * server. Refusing such a report at attach time would send an inspector back
+ * to a car he can no longer reach, for a rule he was never shown. The first
+ * build that shows the rules (mobile PR #9) also sends
+ * `scores.breakdown.method`, so its presence marks a report that can be held
+ * to them. The same idea as `resolveRequiredAngles` above: a report is held to
+ * the rules its app knew.
+ */
+export function appKnowsCabinAndDamageRules(data: Payload): boolean {
+  const scores = data.scores;
+  if (!scores || typeof scores !== 'object') return false;
+  const breakdown = (scores as { breakdown?: unknown }).breakdown;
+  if (!breakdown || typeof breakdown !== 'object') return false;
+  return isNonEmptyString((breakdown as { method?: unknown }).method);
+}
 
 const EMPTY_MISSING: CompletenessMissing = {
   exteriorAngles: [],
@@ -296,14 +318,21 @@ export function evaluateCompleteness(reportData: unknown): CompletenessResult {
     if (gaps.length > 0) wheels.push({ corner, missing: gaps });
   }
 
-  const interior = [...photoKinds].some((k) => k.startsWith(INTERIOR_PREFIX)) ? [] : ['photo'];
+  const newRules = appKnowsCabinAndDamageRules(data);
+  const interior =
+    !newRules || [...photoKinds].some((k) => k.startsWith(INTERIOR_PREFIX)) ? [] : ['photo'];
 
   const damages: CompletenessMissing['damages'] = [];
-  if (Array.isArray(data.damages)) {
-    for (const d of data.damages) {
+  if (newRules && Array.isArray(data.damages)) {
+    for (const [index, d] of data.damages.entries()) {
       if (!d || typeof d !== 'object') continue;
       const row = d as Record<string, unknown>;
-      if (!isNonEmptyString(row.id)) continue;
+      // A row without an id cannot have its photo (`damage-<id>`), so it is
+      // incomplete. It used to be skipped, so it passed the gate.
+      if (!isNonEmptyString(row.id)) {
+        damages.push({ id: `#${index + 1}`, missing: ['id'] });
+        continue;
+      }
       const id = row.id as string;
       const gaps = damageGaps(row);
       if (!photoKinds.has(`${DAMAGE_PREFIX}${id}`)) gaps.push('photo');
