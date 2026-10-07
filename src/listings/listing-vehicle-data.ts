@@ -118,7 +118,7 @@ function int(value: unknown): number | null {
 /**
  * The engine volume in litres from `vehicle.engineVolumeL`, or null (DEN-434).
  *
- * The range is the one both DTOs declare (0.1 to 10). A value outside it is
+ * The range is the one both DTOs declare (0.1 to 20). A value outside it is
  * dropped, not clamped: a clamped 10.0 would be a figure nobody measured.
  * Rounded to one decimal, the precision the website shows.
  */
