@@ -47,7 +47,7 @@ export type CompleteReportData = {
   }[];
   thickness: { panels: { panelId: string; um?: number }[] };
   photos: { kind: string }[];
-  scores: { qualityScore: number };
+  scores: { qualityScore: number; breakdown?: { method: string } };
 };
 
 /**
@@ -82,10 +82,12 @@ export function completeReportData(
       { kind: 'zeroproof' },
       { kind: 'zeroproof-al' },
       ...['fl', 'fr', 'rl', 'rr'].map((c) => ({ kind: `wheel-${c}` })),
+      // One cabin photo is required since 2026-10-06.
+      { kind: 'interior-interior_dashboard' },
     ],
     // Deliberately high. The score is still stored and still shown; a suite
     // that sets it to 100 and is still refused proves it no longer decides.
-    scores: { qualityScore: 100 },
+    scores: { qualityScore: 100, breakdown: { method: 'section-share-v2' } },
   };
 }
 

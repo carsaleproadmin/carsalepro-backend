@@ -27,12 +27,13 @@ import { PhotoProcessingService } from '../common/photo/photo-processing.service
 import {
   extractDenormalizedFields,
   ExtractedReportFields,
+  normalizeReportData,
   validateReportDataV1,
 } from './report-data.validator';
 import { angleForKind, comparePhotoKinds } from '../catalog/catalog-photo-order';
+import { engineVolumeOf, JsonObject, mergeVehicleData } from '../listings/listing-vehicle-data';
 
-const UUID_CODE_RE =
-  /^CSP-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_CODE_RE = /^CSP-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class ReportsService {
@@ -120,7 +121,9 @@ export class ReportsService {
           bodyType: dto.bodyType ?? extracted?.bodyType ?? null,
           driveType: dto.driveType ?? extracted?.driveType ?? null,
           reportData:
-            dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+            dto.reportData !== undefined
+              ? (normalizeReportData(dto.reportData) as Prisma.InputJsonValue)
+              : undefined,
           photosManifest:
             dto.photosManifest !== undefined
               ? (dto.photosManifest as Prisma.InputJsonValue)
@@ -219,11 +222,17 @@ export class ReportsService {
         bodyType: dto.bodyType ?? extracted?.bodyType ?? existing.bodyType,
         driveType: dto.driveType ?? extracted?.driveType ?? existing.driveType,
         reportData:
-          dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+          dto.reportData !== undefined
+            ? (normalizeReportData(dto.reportData) as Prisma.InputJsonValue)
+            : undefined,
         // A new PDF is coming — require a fresh /complete verification.
         uploaded: false,
       },
     });
+
+    if (dto.reportData !== undefined) {
+      await this.syncListingEngineVolume(existing.id, dto.reportData);
+    }
 
     const { url, expiresAt } = await this.r2.createPresignedUploadUrl(
       updated.s3Key,
@@ -273,10 +282,16 @@ export class ReportsService {
         bodyType: dto.bodyType ?? extracted?.bodyType ?? report.bodyType,
         driveType: dto.driveType ?? extracted?.driveType ?? report.driveType,
         reportData:
-          dto.reportData !== undefined ? (dto.reportData as Prisma.InputJsonValue) : undefined,
+          dto.reportData !== undefined
+            ? (normalizeReportData(dto.reportData) as Prisma.InputJsonValue)
+            : undefined,
         ...(dto.regeneratePdfUploadUrl ? { uploaded: false } : {}),
       },
     });
+
+    if (dto.reportData !== undefined) {
+      await this.syncListingEngineVolume(report.id, dto.reportData);
+    }
 
     const response: UpdateReportResponseDto = {
       reportId: updated.id,
@@ -300,6 +315,39 @@ export class ReportsService {
     }
 
     return response;
+  }
+
+  /**
+   * Copy the engine volume of a re-synced report to its listing (DEN-434).
+   *
+   * Only this one value is refreshed. The other listing columns keep the
+   * values they had when the listing was made. `null` removes the key, so a
+   * volume the inspector cleared leaves the listing too. A failure here is
+   * logged and never fails the re-sync: the report is already stored.
+   */
+  private async syncListingEngineVolume(
+    reportId: string,
+    reportData: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const listing = await this.prisma.listing.findFirst({
+        where: { reportId, source: 'report' },
+        select: { id: true, vehicleData: true },
+      });
+      if (!listing) return;
+      const stored = (listing.vehicleData ?? {}) as JsonObject;
+      const engineVolumeL = engineVolumeOf(reportData as JsonObject);
+      if ((engineVolumeOf(stored) ?? null) === engineVolumeL) return;
+      const merged = mergeVehicleData(stored, { vehicle: { engineVolumeL } });
+      await this.prisma.listing.update({
+        where: { id: listing.id },
+        data: { vehicleData: merged as Prisma.InputJsonValue },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Engine volume not copied to the listing of report ${reportId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -707,9 +755,10 @@ export class ReportsService {
    * keeps `remaining` on `GET /quota` internally consistent if the flag is ever
    * switched back on.
    */
-  private async consumeQuota(
-    deviceId: string,
-  ): Promise<{ quota: { freeReportsUsed: number; freeReportsLimit: number; isPro: boolean }; tier: 'free' | 'pro' }> {
+  private async consumeQuota(deviceId: string): Promise<{
+    quota: { freeReportsUsed: number; freeReportsLimit: number; isPro: boolean };
+    tier: 'free' | 'pro';
+  }> {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.deviceQuota.upsert({
         where: { deviceId },
@@ -732,8 +781,7 @@ export class ReportsService {
         throw new HttpException(
           {
             error: 'PaymentRequired',
-            message:
-              `FREE-tier limit of ${existing.freeReportsLimit} reports reached. Upgrade to PRO to continue.`,
+            message: `FREE-tier limit of ${existing.freeReportsLimit} reports reached. Upgrade to PRO to continue.`,
             freeReportsUsed: existing.freeReportsUsed,
             freeReportsLimit: existing.freeReportsLimit,
           },

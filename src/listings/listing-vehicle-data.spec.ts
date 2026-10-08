@@ -1,4 +1,5 @@
 import {
+  engineVolumeOf,
   JsonObject,
   mergeVehicleData,
   projectVehicleColumns,
@@ -117,6 +118,27 @@ describe('listing vehicleData helpers (BE-S2)', () => {
       expect(junk.year).toBeNull();
       expect(junk.firstRegistration).toBeNull();
       expect(junk.make).toBeNull();
+    });
+  });
+
+  describe('engineVolumeOf (DEN-434)', () => {
+    it('reads the litres and rounds them to one decimal', () => {
+      expect(engineVolumeOf({ vehicle: { engineVolumeL: 1.968 } })).toBe(2);
+      expect(engineVolumeOf({ vehicle: { engineVolumeL: 1.4 } })).toBe(1.4);
+    });
+
+    it('drops a value outside 0.1 to 20 rather than clamping it', () => {
+      expect(engineVolumeOf({ vehicle: { engineVolumeL: 0 } })).toBeNull();
+      expect(engineVolumeOf({ vehicle: { engineVolumeL: 20.1 } })).toBeNull();
+      expect(engineVolumeOf({ vehicle: { engineVolumeL: 1968 } })).toBeNull();
+      expect(engineVolumeOf({ vehicle: { engineVolumeL: 15.5 } })).toBe(15.5);
+    });
+
+    it('gives null for an absent or malformed value', () => {
+      expect(engineVolumeOf(null)).toBeNull();
+      expect(engineVolumeOf({})).toBeNull();
+      expect(engineVolumeOf({ vehicle: { engineVolumeL: '2.0' } })).toBeNull();
+      expect(engineVolumeOf({ vehicle: [] })).toBeNull();
     });
   });
 });

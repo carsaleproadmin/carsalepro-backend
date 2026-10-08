@@ -27,6 +27,7 @@ import {
   PublishResultDto,
 } from './dto/listing-response.dto';
 import {
+  engineVolumeOf,
   JsonObject,
   mergeVehicleData,
   normalizeVehicleDataDto,
@@ -1185,6 +1186,23 @@ export class ListingsService {
       powerKw: fromJson.powerKw,
       firstRegistration: fromJson.firstRegistration,
       huValidUntil: fromJson.huValidUntil,
+      ...this.vehicleDataFromReport(data),
     };
+  }
+
+  /**
+   * The report facts that have no listing column, in `vehicleData` (DEN-434).
+   *
+   * The engine volume is the only one. It goes to `vehicleData.vehicle` and not
+   * to a new column, because the showroom filter (`engineVolumeFrom/To`)
+   * already reads that path for manual listings. The seller cannot change it:
+   * `update` refuses `vehicleData` on a report-backed listing.
+   */
+  private vehicleDataFromReport(
+    data: JsonObject,
+  ): Pick<Prisma.ListingUncheckedCreateInput, 'vehicleData'> {
+    const engineVolumeL = engineVolumeOf(data);
+    if (engineVolumeL == null) return {};
+    return { vehicleData: { vehicle: { engineVolumeL } } };
   }
 }

@@ -5232,7 +5232,7 @@ export class OrdersService {
       throw new ConflictException({
         error: {
           code: 'report_incomplete',
-          message: `This inspection is missing ${count} required element(s). Every exterior angle, paint panel, calibration reference and wheel needs its data and its photo.`,
+          message: `This inspection is missing ${count} required element(s). Every exterior angle, paint panel, calibration reference and wheel needs its data and its photo. The cabin needs at least one photo, and each damage needs its part, its type and a photo.`,
         },
         missing: result.missing,
         exteriorAngleCount: result.exteriorAngleCount,

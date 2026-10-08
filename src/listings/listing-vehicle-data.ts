@@ -116,6 +116,21 @@ function int(value: unknown): number | null {
 }
 
 /**
+ * The engine volume in litres from `vehicle.engineVolumeL`, or null (DEN-434).
+ *
+ * The range is the one both DTOs declare (0.1 to 20). A value outside it is
+ * dropped, not clamped: a clamped 10.0 would be a figure nobody measured.
+ * Rounded to one decimal, the precision the website shows.
+ */
+export function engineVolumeOf(data: JsonObject | null | undefined): number | null {
+  const vehicle = data && isPlainObject(data.vehicle) ? data.vehicle : {};
+  const value = vehicle.engineVolumeL;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (value < 0.1 || value > 20) return null;
+  return Math.round(value * 10) / 10;
+}
+
+/**
  * Project the searchable columns out of the JSON payload.
  *
  * Showroom search reads listing columns, never the JSON blob — a query planner

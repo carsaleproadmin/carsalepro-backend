@@ -47,6 +47,8 @@ import { CATALOG_V1 } from '../catalog/catalog.data';
 const EXTERIOR_PREFIX = 'exterior-';
 const THICKNESS_PREFIX = 'thickness-';
 const WHEEL_PREFIX = 'wheel-';
+const INTERIOR_PREFIX = 'interior-';
+const DAMAGE_PREFIX = 'damage-';
 
 /** The two gauge-calibration reference shots, ferrous and non-ferrous. */
 const CALIBRATION_KINDS = ['zeroproof', 'zeroproof-al'] as const;
@@ -112,6 +114,16 @@ export type CompletenessMissing = {
   calibration: string[];
   /** Per corner, which of photo / treadMm / dot / sizeSpec is absent. */
   wheels: { corner: string; missing: string[] }[];
+  /**
+   * `['photo']` when the payload has no `interior-<id>` photo at all, else
+   * empty. One cabin photo is enough (client decision, 2026-10-06).
+   */
+  interior: string[];
+  /**
+   * Per damage row, which of part / type / photo is absent. A report with no
+   * damage rows is complete: a clean car has none.
+   */
+  damages: { id: string; missing: string[] }[];
 };
 
 export type CompletenessResult = {
@@ -129,9 +141,32 @@ export type CompletenessResult = {
 
 type Payload = {
   wheels?: unknown;
+  damages?: unknown;
   thickness?: unknown;
   photos?: unknown;
+  scores?: unknown;
 };
+
+/**
+ * True when the app that made the report tells the inspector about the cabin
+ * photo and the damage rows (DEN-451).
+ *
+ * The two rules came on 2026-10-06 (DEN-439). An app build from before that
+ * did not show them to the inspector, and reports it made are already on the
+ * server. Refusing such a report at attach time would send an inspector back
+ * to a car he can no longer reach, for a rule he was never shown. The first
+ * build that shows the rules (mobile PR #9) also sends
+ * `scores.breakdown.method`, so its presence marks a report that can be held
+ * to them. The same idea as `resolveRequiredAngles` above: a report is held to
+ * the rules its app knew.
+ */
+export function appKnowsCabinAndDamageRules(data: Payload): boolean {
+  const scores = data.scores;
+  if (!scores || typeof scores !== 'object') return false;
+  const breakdown = (scores as { breakdown?: unknown }).breakdown;
+  if (!breakdown || typeof breakdown !== 'object') return false;
+  return isNonEmptyString((breakdown as { method?: unknown }).method);
+}
 
 const EMPTY_MISSING: CompletenessMissing = {
   exteriorAngles: [],
@@ -139,13 +174,13 @@ const EMPTY_MISSING: CompletenessMissing = {
   thicknessPhotos: [],
   calibration: [],
   wheels: [],
+  interior: [],
+  damages: [],
 };
 
 /** Every required exterior angle id in today's catalog. */
 export function currentRequiredAngles(): string[] {
-  return CATALOG_V1.angles
-    .filter((a) => a.group === 'exterior' && a.required)
-    .map((a) => a.id);
+  return CATALOG_V1.angles.filter((a) => a.group === 'exterior' && a.required).map((a) => a.id);
 }
 
 /** Every guided paint-thickness station id in today's catalog. */
@@ -165,14 +200,10 @@ export function thicknessPanelIds(): string[] {
 export function resolveRequiredAngles(capturedAngleIds: Set<string>): string[] {
   const current = currentRequiredAngles();
   const legacy = new Set<string>(LEGACY_EXTERIOR_ANGLES_8);
-  const knowsNewAngles = current.some(
-    (id) => !legacy.has(id) && capturedAngleIds.has(id),
-  );
+  const knowsNewAngles = current.some((id) => !legacy.has(id) && capturedAngleIds.has(id));
   if (knowsNewAngles) return current;
 
-  const coversLegacy = LEGACY_EXTERIOR_ANGLES_8.every((id) =>
-    capturedAngleIds.has(id),
-  );
+  const coversLegacy = LEGACY_EXTERIOR_ANGLES_8.every((id) => capturedAngleIds.has(id));
   return coversLegacy ? [...LEGACY_EXTERIOR_ANGLES_8] : current;
 }
 
@@ -192,14 +223,10 @@ export function resolveRequiredAngles(capturedAngleIds: Set<string>): string[] {
 export function resolveRequiredPanels(measuredPanelIds: Set<string>): string[] {
   const current = thicknessPanelIds();
   const legacy = new Set<string>(LEGACY_THICKNESS_PANELS_13);
-  const knowsNewPanels = current.some(
-    (id) => !legacy.has(id) && measuredPanelIds.has(id),
-  );
+  const knowsNewPanels = current.some((id) => !legacy.has(id) && measuredPanelIds.has(id));
   if (knowsNewPanels) return current;
 
-  const coversLegacy = LEGACY_THICKNESS_PANELS_13.every((id) =>
-    measuredPanelIds.has(id),
-  );
+  const coversLegacy = LEGACY_THICKNESS_PANELS_13.every((id) => measuredPanelIds.has(id));
   return coversLegacy ? [...LEGACY_THICKNESS_PANELS_13] : current;
 }
 
@@ -212,9 +239,7 @@ export function resolveRequiredPanels(measuredPanelIds: Set<string>): string[] {
  * only evidence available at gate time, and it is validated by
  * `ReportPhotoMetaDto`.
  */
-export function evaluateCompleteness(
-  reportData: unknown,
-): CompletenessResult {
+export function evaluateCompleteness(reportData: unknown): CompletenessResult {
   if (!reportData || typeof reportData !== 'object') {
     return {
       evaluable: false,
@@ -227,9 +252,7 @@ export function evaluateCompleteness(
   const data = reportData as Payload;
   const photoKinds = new Set(
     (Array.isArray(data.photos) ? data.photos : [])
-      .map((p) =>
-        p && typeof p === 'object' ? (p as { kind?: unknown }).kind : undefined,
-      )
+      .map((p) => (p && typeof p === 'object' ? (p as { kind?: unknown }).kind : undefined))
       .filter((k): k is string => typeof k === 'string'),
   );
 
@@ -251,10 +274,7 @@ export function evaluateCompleteness(
         if (!p || typeof p !== 'object') continue;
         const row = p as { panelId?: unknown; um?: unknown };
         if (typeof row.panelId !== 'string') continue;
-        panels.set(
-          row.panelId,
-          typeof row.um === 'number' ? row.um : undefined,
-        );
+        panels.set(row.panelId, typeof row.um === 'number' ? row.um : undefined);
       }
     }
   }
@@ -298,12 +318,36 @@ export function evaluateCompleteness(
     if (gaps.length > 0) wheels.push({ corner, missing: gaps });
   }
 
+  const newRules = appKnowsCabinAndDamageRules(data);
+  const interior =
+    !newRules || [...photoKinds].some((k) => k.startsWith(INTERIOR_PREFIX)) ? [] : ['photo'];
+
+  const damages: CompletenessMissing['damages'] = [];
+  if (newRules && Array.isArray(data.damages)) {
+    for (const [index, d] of data.damages.entries()) {
+      if (!d || typeof d !== 'object') continue;
+      const row = d as Record<string, unknown>;
+      // A row without an id cannot have its photo (`damage-<id>`), so it is
+      // incomplete. It used to be skipped, so it passed the gate.
+      if (!isNonEmptyString(row.id)) {
+        damages.push({ id: `#${index + 1}`, missing: ['id'] });
+        continue;
+      }
+      const id = row.id as string;
+      const gaps = damageGaps(row);
+      if (!photoKinds.has(`${DAMAGE_PREFIX}${id}`)) gaps.push('photo');
+      if (gaps.length > 0) damages.push({ id, missing: gaps });
+    }
+  }
+
   const missing: CompletenessMissing = {
     exteriorAngles,
     thicknessValues,
     thicknessPhotos,
     calibration: [...calibration],
     wheels,
+    interior,
+    damages,
   };
 
   return {
@@ -313,7 +357,9 @@ export function evaluateCompleteness(
       thicknessValues.length === 0 &&
       thicknessPhotos.length === 0 &&
       calibration.length === 0 &&
-      wheels.length === 0,
+      wheels.length === 0 &&
+      interior.length === 0 &&
+      damages.length === 0,
     exteriorAngleCount: requiredAngles.length,
     missing,
   };
@@ -326,10 +372,31 @@ export function countMissing(m: CompletenessMissing): number {
     m.thicknessValues.length +
     m.thicknessPhotos.length +
     m.calibration.length +
-    m.wheels.length
+    m.wheels.length +
+    m.interior.length +
+    m.damages.length
   );
 }
 
 function isNonEmptyString(v: unknown): boolean {
   return typeof v === 'string' && v.trim().length > 0;
+}
+
+/**
+ * Which of part / type a damage row lacks. The same rule as the mobile app's
+ * `isDamageRowIncomplete`: a legacy `C<number>` checklist row carries its own
+ * title, a free-text row needs its part and damage text, and every other row
+ * needs a part id and a damage type id.
+ */
+function damageGaps(row: Record<string, unknown>): string[] {
+  if (typeof row.kstCode === 'string' && /^C\d+$/.test(row.kstCode)) return [];
+  const gaps: string[] = [];
+  if (row.manualEntry === true) {
+    if (!isNonEmptyString(row.manualPart)) gaps.push('part');
+    if (!isNonEmptyString(row.manualDamage)) gaps.push('type');
+    return gaps;
+  }
+  if (!isNonEmptyString(row.partId)) gaps.push('part');
+  if (!isNonEmptyString(row.typeId)) gaps.push('type');
+  return gaps;
 }

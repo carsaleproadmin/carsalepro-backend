@@ -62,7 +62,16 @@ function completePayload() {
       { kind: 'zeroproof' },
       { kind: 'zeroproof-al' },
       ...['fl', 'fr', 'rl', 'rr'].map((c) => ({ kind: `wheel-${c}` })),
+      { kind: 'interior-interior_dashboard' },
     ],
+    // The app build that shows the cabin and damage rules sends this.
+    scores: { qualityScore: 100, breakdown: { method: 'section-share-v2' } },
+  } as {
+    wheels: { corner: string; treadMm: number; dot: string; sizeSpec: string }[];
+    thickness: { panels: { panelId: string; um: number }[] };
+    photos: { kind: string }[];
+    damages?: Record<string, unknown>[];
+    scores?: Record<string, unknown>;
   };
 }
 
@@ -88,9 +97,7 @@ describe('evaluateCompleteness', () => {
   it('names the exterior angles that were not photographed', () => {
     const data = completePayload();
     const dropped = currentRequiredAngles().slice(0, 3);
-    data.photos = data.photos.filter(
-      (p) => !dropped.some((id) => p.kind === `exterior-${id}`),
-    );
+    data.photos = data.photos.filter((p) => !dropped.some((id) => p.kind === `exterior-${id}`));
     const r = evaluateCompleteness(data);
     expect(r.complete).toBe(false);
     expect(r.missing.exteriorAngles.sort()).toEqual([...dropped].sort());
@@ -101,9 +108,7 @@ describe('evaluateCompleteness', () => {
     // picture of a gauge nobody transcribed is not a measurement.
     const data = completePayload();
     const target = thicknessPanelIds()[0];
-    data.thickness.panels = data.thickness.panels.filter(
-      (p) => p.panelId !== target,
-    );
+    data.thickness.panels = data.thickness.panels.filter((p) => p.panelId !== target);
     const r = evaluateCompleteness(data);
     expect(r.complete).toBe(false);
     expect(r.missing.thicknessValues).toEqual([target]);
@@ -147,9 +152,7 @@ describe('evaluateCompleteness', () => {
       }
       const r = evaluateCompleteness(data);
       expect(r.complete).toBe(false);
-      expect(r.missing.wheels).toEqual([
-        { corner: 'rr', missing: [c.expect] },
-      ]);
+      expect(r.missing.wheels).toEqual([{ corner: 'rr', missing: [c.expect] }]);
     }
   });
 
@@ -168,6 +171,39 @@ describe('evaluateCompleteness', () => {
     const r = evaluateCompleteness(data);
     // One calibration slot, plus the fl wheel (missing all four of its fields
     // counts as one incomplete wheel, not four gaps).
+    expect(countMissing(r.missing)).toBe(2);
+  });
+
+  // 2026-10-06. One cabin photo is enough; none is a gap.
+  it('requires at least one cabin photo', () => {
+    const data = completePayload();
+    data.photos = data.photos.filter((p) => !p.kind.startsWith('interior-'));
+    const r = evaluateCompleteness(data);
+    expect(r.complete).toBe(false);
+    expect(r.missing.interior).toEqual(['photo']);
+  });
+
+  it('accepts a clean car with no damage rows', () => {
+    const data = completePayload();
+    data.damages = [];
+    expect(evaluateCompleteness(data).complete).toBe(true);
+  });
+
+  it('requires a part, a type and a photo for each damage', () => {
+    const data = completePayload();
+    data.damages = [
+      { id: 'd1', partId: 'door_front_left', typeId: 'dent' },
+      { id: 'd2', partId: 'hood' },
+      { id: 'd3', manualEntry: true, manualPart: 'Hood', manualDamage: '' },
+      { id: 'd4', kstCode: 'C42' },
+    ];
+    data.photos.push({ kind: 'damage-d1' }, { kind: 'damage-d4' });
+    const r = evaluateCompleteness(data);
+    expect(r.complete).toBe(false);
+    expect(r.missing.damages).toEqual([
+      { id: 'd2', missing: ['type', 'photo'] },
+      { id: 'd3', missing: ['type', 'photo'] },
+    ]);
     expect(countMissing(r.missing)).toBe(2);
   });
 });
@@ -216,9 +252,7 @@ describe('resolveRequiredPanels — the legacy amnesty for paint stations', () =
     // thirteen for weeks. Without the amnesty each one is refused with eight
     // missing elements — four readings and four photographs — that its own
     // interface cannot collect.
-    expect(resolveRequiredPanels(new Set(LEGACY_PANELS_13))).toEqual(
-      LEGACY_PANELS_13,
-    );
+    expect(resolveRequiredPanels(new Set(LEGACY_PANELS_13))).toEqual(LEGACY_PANELS_13);
   });
 
   it('judges a payload that names any sill by the full current set', () => {
@@ -260,5 +294,26 @@ describe('resolveRequiredPanels — the legacy amnesty for paint stations', () =
     expect(r.complete).toBe(false);
     expect(r.missing.thicknessValues).toContain('sill_rear_left');
     expect(r.missing.thicknessPhotos).toHaveLength(0);
+  });
+
+  // DEN-451. An app build from before 2026-10-06 did not show the cabin and
+  // damage rules to the inspector, so its reports are not held to them.
+  it('does not hold a report from an older app to the cabin and damage rules', () => {
+    const data = completePayload();
+    delete data.scores;
+    data.photos = data.photos.filter((p) => !p.kind.startsWith('interior-'));
+    data.damages = [{ id: 'd1', partId: 'hood' }];
+    const r = evaluateCompleteness(data);
+    expect(r.missing.interior).toEqual([]);
+    expect(r.missing.damages).toEqual([]);
+    expect(r.complete).toBe(true);
+  });
+
+  it('names a damage row without an id', () => {
+    const data = completePayload();
+    data.damages = [{ partId: 'hood', typeId: 'scratch' }];
+    const r = evaluateCompleteness(data);
+    expect(r.missing.damages).toEqual([{ id: '#1', missing: ['id'] }]);
+    expect(r.complete).toBe(false);
   });
 });

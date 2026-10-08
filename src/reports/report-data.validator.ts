@@ -99,3 +99,27 @@ function flattenValidationErrors(errors: ValidationError[], parent = ''): string
   }
   return out;
 }
+
+/**
+ * Round `vehicle.engineVolumeL` to one decimal before the report is stored
+ * (DEN-434). The DTO checks only the range, so `1.968` passed and the report
+ * page showed it raw, while the listing showed `2`. Any other key is kept as
+ * it is. A payload of an unexpected shape is returned unchanged.
+ */
+export function normalizeReportData<T>(reportData: T): T {
+  if (!reportData || typeof reportData !== 'object' || Array.isArray(reportData)) {
+    return reportData;
+  }
+  const data = reportData as Record<string, unknown>;
+  const vehicle = data.vehicle;
+  if (!vehicle || typeof vehicle !== 'object' || Array.isArray(vehicle)) return reportData;
+  const litres = (vehicle as Record<string, unknown>).engineVolumeL;
+  if (typeof litres !== 'number' || !Number.isFinite(litres)) return reportData;
+  return {
+    ...data,
+    vehicle: {
+      ...(vehicle as Record<string, unknown>),
+      engineVolumeL: Math.round(litres * 10) / 10,
+    },
+  } as T;
+}
