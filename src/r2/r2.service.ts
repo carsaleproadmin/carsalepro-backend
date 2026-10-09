@@ -12,6 +12,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { AppConfig } from '../config/configuration';
+import { makeThumbnail, thumbnailKey } from '../common/photo/photo-thumbnail';
 
 /**
  * RFC 6266 `Content-Disposition`, with the ASCII fallback AND the UTF-8 form.
@@ -59,6 +60,7 @@ export class R2Service implements OnModuleInit {
   private publicClient?: S3Client;
   private publicBucket = '';
   private publicBaseUrl = '';
+  private publicThumbnails = false;
 
   constructor(@Inject(ConfigService) private readonly config: ConfigService<AppConfig, true>) {}
 
@@ -134,6 +136,7 @@ export class R2Service implements OnModuleInit {
     });
     this.publicBucket = pub.bucket;
     this.publicBaseUrl = pub.baseUrl;
+    this.publicThumbnails = pub.thumbnails === true;
     this.logger.log(`R2 public client ready (bucket=${this.publicBucket} at ${this.publicBaseUrl})`);
   }
 
@@ -498,6 +501,16 @@ export class R2Service implements OnModuleInit {
     return `${this.publicBaseUrl}/${key}`;
   }
 
+  /**
+   * The URL of the 640 px copy of a public photo, or undefined when the photo
+   * gets no copy or `R2_PUBLIC_THUMBNAILS` is off (see `configuration.ts`).
+   */
+  publicThumbnailUrl(key: string): string | undefined {
+    if (!this.publicThumbnails) return undefined;
+    const smallKey = thumbnailKey(key);
+    return smallKey ? this.publicObjectUrl(smallKey) : undefined;
+  }
+
   /** `HeadBucket` against the public bucket — used by the boot-time self-check. */
   async publicHeadBucket(): Promise<void> {
     await this.requirePublicClient().send(new HeadBucketCommand({ Bucket: this.publicBucket }));
@@ -526,16 +539,51 @@ export class R2Service implements OnModuleInit {
         CacheControl: 'public, max-age=31536000, immutable',
       }),
     );
+    await this.publicPutThumbnail(key, body, contentType);
     return this.publicBucket;
   }
 
-  async publicDeleteObject(key: string): Promise<void> {
+  /**
+   * The small copy of a showroom photo (DEN-469), written beside it. Every
+   * path that publishes a photo comes through `publicPutObject`, so each one
+   * gets the copy with no change at the call site.
+   *
+   * A failure is logged and not thrown. The original is already stored, and
+   * the website falls back to it when the copy is missing.
+   */
+  private async publicPutThumbnail(
+    key: string,
+    body: Uint8Array | Buffer,
+    contentType: string,
+  ): Promise<void> {
+    const smallKey = thumbnailKey(key);
+    if (!smallKey || contentType !== 'image/jpeg') return;
     try {
       await this.requirePublicClient().send(
-        new DeleteObjectCommand({ Bucket: this.publicBucket, Key: key }),
+        new PutObjectCommand({
+          Bucket: this.publicBucket,
+          Key: smallKey,
+          Body: await makeThumbnail(body),
+          ContentType: 'image/webp',
+          CacheControl: 'public, max-age=31536000, immutable',
+        }),
       );
     } catch (err: unknown) {
-      if (!this.isNotFound(err)) throw err;
+      this.logger.warn(`Thumbnail for ${key} not written: ${(err as Error).message}`);
+    }
+  }
+
+  /** Also deletes the small copy, so an erased photo leaves nothing behind. */
+  async publicDeleteObject(key: string): Promise<void> {
+    const smallKey = thumbnailKey(key);
+    for (const k of smallKey ? [key, smallKey] : [key]) {
+      try {
+        await this.requirePublicClient().send(
+          new DeleteObjectCommand({ Bucket: this.publicBucket, Key: k }),
+        );
+      } catch (err: unknown) {
+        if (!this.isNotFound(err)) throw err;
+      }
     }
   }
 
