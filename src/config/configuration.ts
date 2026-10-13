@@ -37,6 +37,14 @@ export interface AppConfig {
     bucket: string;
     /** Public base URL of that bucket, e.g. `https://img.carsalepro.de`. */
     baseUrl: string;
+    /**
+     * `R2_PUBLIC_THUMBNAILS`. When true, the API sends the URLs of the 640 px
+     * copies (DEN-469). Default false. Set it only AFTER
+     * `scripts/backfill-listing-thumbnails.ts` ran: a URL of a copy that does
+     * not exist yet gives a 404, and the CDN can keep that 404 after the copy
+     * is written. The copies are written whatever the value.
+     */
+    thumbnails: boolean;
   };
   quota: {
     freeReportsLimit: number;
@@ -250,6 +258,7 @@ export default (): AppConfig => ({
     secretAccessKey: process.env.R2_PUBLIC_SECRET_ACCESS_KEY ?? '',
     bucket: process.env.R2_PUBLIC_BUCKET ?? '',
     baseUrl: (process.env.R2_PUBLIC_BASE_URL ?? '').replace(/\/+$/, ''),
+    thumbnails: process.env.R2_PUBLIC_THUMBNAILS === 'true',
   },
   quota: {
     freeReportsLimit: parseInt(process.env.FREE_REPORTS_LIMIT ?? '3', 10),

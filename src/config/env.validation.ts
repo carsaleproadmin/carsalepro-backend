@@ -57,6 +57,8 @@ export const envValidationSchema = Joi.object({
   R2_PUBLIC_SECRET_ACCESS_KEY: Joi.string().allow('').default(''),
   R2_PUBLIC_BUCKET: Joi.string().allow('').default(''),
   R2_PUBLIC_BASE_URL: Joi.string().uri().allow('').default(''),
+  // Send the URLs of the 640 px photo copies. Set after the backfill (DEN-469).
+  R2_PUBLIC_THUMBNAILS: Joi.string().valid('true', 'false').default('false'),
   // Dedicated PRIVATE bucket + narrowly-scoped token for KYC identity documents
   // (SECURITY.md H2). Blank in dev/CI => R2Service falls back to the main bucket.
   R2_KYC_ACCESS_KEY_ID: Joi.string().allow('').default(''),

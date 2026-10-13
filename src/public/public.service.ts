@@ -838,7 +838,21 @@ export class PublicService {
         null,
       thumbnailUrl: thumb?.url ?? null,
       photoUrls: cardPhotos.map((photo) => photo.url),
+      /**
+       * The 640 px copies of `photoUrls`, index for index (DEN-469). A photo
+       * with no copy (a signed one) repeats its full URL here.
+       */
+      photoThumbUrls: cardPhotos.map((photo) => photo.thumbUrl ?? photo.url),
     };
+  }
+
+  /**
+   * A public-bucket photo and its small copy (`photo-thumbnail.ts`). Only
+   * public objects have a copy: a signed photo has no `thumbUrl`.
+   */
+  private publicPhoto(key: string): { url: string; thumbUrl?: string } {
+    const thumbUrl = this.r2.publicThumbnailUrl(key);
+    return { url: this.r2.publicObjectUrl(key), ...(thumbUrl ? { thumbUrl } : {}) };
   }
 
   /**
@@ -856,7 +870,7 @@ export class PublicService {
   private async listingPhotos(
     listing: ListingWithReport,
     limit: number,
-  ): Promise<{ url: string; kind?: string; angle?: string }[]> {
+  ): Promise<{ url: string; thumbUrl?: string; kind?: string; angle?: string }[]> {
     if (listing.source === 'report' && listing.report) {
       return this.reportPhotos(listing, listing.report.photosManifest, limit);
     }
@@ -867,10 +881,10 @@ export class PublicService {
       orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
       take: limit,
     });
-    const out: { url: string; kind?: string; angle?: string }[] = [];
+    const out: { url: string; thumbUrl?: string; kind?: string; angle?: string }[] = [];
     for (const row of rows) {
       if (photoLocation(row.bucket, publicConfigured) === 'public') {
-        out.push({ url: this.r2.publicObjectUrl(row.r2Key), kind: 'listing' });
+        out.push({ ...this.publicPhoto(row.r2Key), kind: 'listing' });
         continue;
       }
       try {
@@ -900,11 +914,11 @@ export class PublicService {
     listing: ListingWithReport,
     manifest: Prisma.JsonValue | null,
     limit: number,
-  ): Promise<{ url: string; kind?: string; angle?: string }[]> {
+  ): Promise<{ url: string; thumbUrl?: string; kind?: string; angle?: string }[]> {
     if (listing.publicPhotosMirroredAt && this.r2.isPublicBucketConfigured()) {
       const refs = manifestPhotoRefs(manifest, Math.min(limit, MAX_LISTING_PHOTOS));
       const mirrored = refs.map((ref) => ({
-        url: this.r2.publicObjectUrl(mirroredPhotoKey(listing.id, ref.s3Key)),
+        ...this.publicPhoto(mirroredPhotoKey(listing.id, ref.s3Key)),
         ...(ref.kind ? { kind: ref.kind } : {}),
         ...(ref.angle ? { angle: ref.angle } : {}),
       }));
