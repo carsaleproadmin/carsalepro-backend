@@ -56,6 +56,9 @@ export class MeService {
     const { count: reportsDeleted } = await this.prisma.report.deleteMany({
       where: { deviceId },
     });
+    // The device id is personal data. Dropping the row also frees the slot in
+    // the purchase's device cap, which is right: this device loses PRO now.
+    await this.prisma.iapGrant.deleteMany({ where: { deviceId } });
     const quotaDeleted = await this.prisma.deviceQuota
       .delete({ where: { deviceId } })
       .then(() => true)

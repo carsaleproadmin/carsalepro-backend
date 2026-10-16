@@ -46,6 +46,23 @@ model DeviceQuota {
   @@map("device_quota")
 }
 
+/// One row per (store purchase, device) that received PRO from that purchase.
+/// `storeTransactionId` is the store's id for the PURCHASE, the same on every
+/// device that restores it (Apple `originalTransactionId`, Google `orderId`).
+/// `QuotaService` refuses a new device once IAP_MAX_DEVICES_PER_PURCHASE rows
+/// share it. A repeat from the same device finds its own row and is idempotent.
+model IapGrant {
+  id                 String   @id @default(cuid())
+  platform           String
+  storeTransactionId String   @map("store_transaction_id")
+  deviceId           String   @map("device_id")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@unique([platform, storeTransactionId, deviceId])
+  @@index([deviceId])
+  @@map("iap_grant")
+}
+
 /// One row per inspection report PDF uploaded to R2. Soft-deletable.
 /// Website fields are all optional so legacy mobile uploads stay valid.
 model Report {

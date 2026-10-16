@@ -239,6 +239,24 @@ const bundleIdFromEnv = (value: string | undefined): string | undefined => {
 const holdsRetiredBundleId = (value: string | undefined): boolean =>
   RETIRED_BUNDLE_IDS.includes(value?.trim() ?? '');
 
+/**
+ * The App Store Connect `.p8` key as a PEM string, from one env line.
+ *
+ * Render holds one line per variable, so the PEM usually arrives with literal
+ * `\n` sequences. A paste of only the base64 body (no BEGIN/END lines) is
+ * wrapped as PKCS#8, which is what a `.p8` file is. Blank stays blank.
+ */
+export const applePrivateKeyFromEnv = (value: string | undefined): string => {
+  const pem = (value ?? '')
+    .replace(/\\r/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/\r/g, '')
+    .trim();
+  if (!pem || pem.includes('-----BEGIN')) return pem;
+  const lines = pem.replace(/\s+/g, '').match(/.{1,64}/g) ?? [];
+  return `-----BEGIN PRIVATE KEY-----\n${lines.join('\n')}\n-----END PRIVATE KEY-----\n`;
+};
+
 export default (): AppConfig => ({
   nodeEnv: (process.env.NODE_ENV as AppConfig['nodeEnv']) || 'development',
   port: parseInt(process.env.PORT ?? '3000', 10),
@@ -281,9 +299,9 @@ export default (): AppConfig => ({
       holdsRetiredBundleId(process.env.GOOGLE_PLAY_PACKAGE_NAME),
     apple: {
       sharedSecret: process.env.APPLE_SHARED_SECRET ?? '',
-      issuerId: process.env.APPLE_ISSUER_ID ?? '',
-      keyId: process.env.APPLE_KEY_ID ?? '',
-      privateKey: (process.env.APPLE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
+      issuerId: (process.env.APPLE_ISSUER_ID ?? '').trim(),
+      keyId: (process.env.APPLE_KEY_ID ?? '').trim(),
+      privateKey: applePrivateKeyFromEnv(process.env.APPLE_PRIVATE_KEY),
       useSandboxFirst: (process.env.APPLE_USE_SANDBOX_FIRST ?? 'false') === 'true',
     },
     google: {

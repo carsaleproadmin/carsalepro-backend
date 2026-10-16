@@ -7,10 +7,11 @@ export class UpgradeDto {
   platform!: 'ios' | 'android';
 
   @ApiProperty({
-    example: 'MIIBoAYJKoZIhvcNAQcC...',
+    example: 'eyJhbGciOiJFUzI1NiIsIng1YyI6WyJNSUlF...',
     description:
-      'Apple IAP base64-encoded receipt blob, or for Android the purchaseToken string. ' +
-      'When `IAP_VALIDATION_MODE=server`, this is verified against Apple/Google servers before the device is upgraded.',
+      '`PurchaseDetails.verificationData.serverVerificationData`. iOS: the StoreKit 2 signed ' +
+      'transaction (JWS). A bare numeric transaction id is refused. A base64 StoreKit 1 app ' +
+      'receipt is accepted only when `APPLE_SHARED_SECRET` is set. Android: the purchase token.',
   })
   @IsString()
   @MinLength(1)

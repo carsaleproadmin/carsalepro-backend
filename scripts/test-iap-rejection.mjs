@@ -5,11 +5,13 @@
  *   node scripts/test-iap-rejection.mjs <BASE_URL>
  *
  * Three categories of checks:
- *   1) Missing-credentials path: server-mode is on but no Apple/Google creds → 400 with clear error.
- *   2) Real-Apple-rejection path: a junk receipt is sent through verifyReceipt → Apple returns
- *      status 21002/21003/21004 → backend translates to 400.
+ *   1) Missing-credentials path: server-mode is on but no Apple/Google creds → 503
+ *      `iap_not_configured`. That FAILS here: the purchase is refused, but so is every real one.
+ *   2) Apple rejection path: a junk receipt is not a StoreKit 2 JWS → 400
+ *      `iap_receipt_unsupported` (or `iap_store_rejected` via verifyReceipt when
+ *      APPLE_SHARED_SECRET is set).
  *   3) Real-Google-rejection path: a junk purchase token is sent through Play Developer API →
- *      Google returns 400 invalid_grant or 404 → backend translates to 400.
+ *      Google returns 400 or 404 → backend translates to 400 `iap_store_rejected`.
  *
  * Categories (2) and (3) are skipped when the corresponding placeholder creds aren't set on the
  * deployed service. Use the --probe-real flag to verify category 1 only without flipping creds.
@@ -72,6 +74,12 @@ async function get(path, headers = {}) {
       false,
       'Got 200 isPro=true — service is in client-trust mode. Set IAP_VALIDATION_MODE=server to enable validation.',
     );
+  } else if (iosFake.status === 503) {
+    record(
+      'ios: REJECTS fake receipt',
+      false,
+      `server mode is on, but no verdict: code=${iosFake.body?.code} - set the store credentials (README)`,
+    );
   } else if (iosFake.status === 400 && /apple|receipt|cred|configured/i.test(JSON.stringify(iosFake.body))) {
     record(
       'ios: REJECTS fake receipt with clear error',
@@ -104,11 +112,17 @@ async function get(path, headers = {}) {
   const did3 = randomUUID();
   const andFake = await post(
     '/quota/upgrade',
-    { platform: 'android', receipt: 'fake-purchase-token-xyz', productId: 'carsalepro_pro_monthly' },
+    { platform: 'android', receipt: 'fake-purchase-token-xyz', productId: 'carsalepro_pro_lifetime' },
     { 'X-Device-Id': did3 },
   );
   if (andFake.status === 200 && andFake.body?.isPro === true) {
     record('android: REJECTS fake token', false, 'service in client-trust mode');
+  } else if (andFake.status === 503) {
+    record(
+      'android: REJECTS fake token',
+      false,
+      `server mode is on, but no verdict: code=${andFake.body?.code} - set the store credentials (README)`,
+    );
   } else if (andFake.status === 400 && /google|play|sa_json|configured|productId|token/i.test(JSON.stringify(andFake.body))) {
     record(
       'android: REJECTS fake token with clear error',

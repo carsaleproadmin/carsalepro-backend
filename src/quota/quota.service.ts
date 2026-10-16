@@ -1,12 +1,22 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DeviceQuota } from '@prisma/client';
+import { DeviceQuota, Prisma } from '@prisma/client';
 import { AppConfig } from '../config/configuration';
 import { PrismaService } from '../prisma/prisma.service';
 import { QuotaDto } from './dto/quota.dto';
 import { UpgradeDto } from './dto/upgrade.dto';
 import { IapValidatorService } from './iap/iap-validator.service';
-import { IapValidationError } from './iap/iap.types';
+import { IAP_MAX_DEVICES_PER_PURCHASE, IapValidationError } from './iap/iap.types';
+
+/** Serializable transactions that lose a race are retried this many times. */
+const GRANT_ATTEMPTS = 3;
 
 @Injectable()
 export class QuotaService {
@@ -57,6 +67,7 @@ export class QuotaService {
       `PRO activation requested for ${this.mask(deviceId)} via ${dto.platform} (mode=${this.iap.currentMode})`,
     );
 
+    let storeTransactionId: string | undefined;
     try {
       const result = await this.iap.validate({
         platform: dto.platform,
@@ -69,34 +80,114 @@ export class QuotaService {
           `productId=${result.productId ?? '-'} env=${result.environment} ` +
           `txn=${result.transactionId ?? '-'}`,
       );
-    } catch (err) {
-      if (err instanceof IapValidationError) {
-        this.logger.warn(
-          `IAP rejected for ${this.mask(deviceId)}: ${err.reason} (code=${err.providerCode ?? '-'})`,
-        );
-        throw new BadRequestException({
-          error: 'IapValidationFailed',
-          message: err.reason,
-          providerCode: err.providerCode,
-        });
+      storeTransactionId = result.storeTransactionId;
+      if (result.provider !== 'client-trust' && !storeTransactionId) {
+        // Fail closed: without the purchase id the device cap cannot hold.
+        throw new IapValidationError('iap_store_unavailable', 'store verdict has no purchase id');
       }
+    } catch (err) {
+      if (err instanceof IapValidationError) throw this.toHttpError(deviceId, err);
       throw err;
     }
 
-    return this.prisma.deviceQuota.upsert({
-      where: { deviceId },
-      update: {
-        isPro: true,
-        proActivatedAt: new Date(),
-        proPlatform: dto.platform,
-      },
-      create: {
-        deviceId,
-        isPro: true,
-        proActivatedAt: new Date(),
-        proPlatform: dto.platform,
-        freeReportsLimit: this.defaultLimit,
-      },
+    return this.grantPro(deviceId, dto.platform, storeTransactionId);
+  }
+
+  /**
+   * Record the (purchase, device) pair and set `isPro`, in one transaction.
+   *
+   * One purchase may unlock at most `IAP_MAX_DEVICES_PER_PURCHASE` devices; the
+   * next NEW device gets 409 `iap_device_limit`. A device that already holds a
+   * row for this purchase (a restore, a retry) passes without a new row.
+   *
+   * SERIALIZABLE, because the check is a count followed by an insert: under
+   * READ COMMITTED two new devices could both count 4 and both insert. A lost
+   * race is a serialization failure (P2034), or a unique violation (P2002) when
+   * the same device raced itself, and is retried.
+   *
+   * `client-trust` has no purchase id and records nothing.
+   */
+  private async grantPro(
+    deviceId: string,
+    platform: UpgradeDto['platform'],
+    storeTransactionId: string | undefined,
+  ): Promise<DeviceQuota> {
+    const markPro = (tx: Prisma.TransactionClient) =>
+      tx.deviceQuota.upsert({
+        where: { deviceId },
+        update: { isPro: true, proActivatedAt: new Date(), proPlatform: platform },
+        create: {
+          deviceId,
+          isPro: true,
+          proActivatedAt: new Date(),
+          proPlatform: platform,
+          freeReportsLimit: this.defaultLimit,
+        },
+      });
+
+    if (!storeTransactionId) return markPro(this.prisma);
+
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const own = await tx.iapGrant.findUnique({
+              where: {
+                platform_storeTransactionId_deviceId: { platform, storeTransactionId, deviceId },
+              },
+            });
+            if (!own) {
+              const holders = await tx.iapGrant.count({ where: { platform, storeTransactionId } });
+              if (holders >= IAP_MAX_DEVICES_PER_PURCHASE) {
+                this.logger.warn(
+                  `IAP device limit for ${this.mask(deviceId)}: purchase already holds ${holders} devices`,
+                );
+                throw new ConflictException({
+                  error: 'IapDeviceLimit',
+                  code: 'iap_device_limit',
+                  message: `This purchase is already used on ${IAP_MAX_DEVICES_PER_PURCHASE} devices.`,
+                  deviceLimit: IAP_MAX_DEVICES_PER_PURCHASE,
+                });
+              }
+              await tx.iapGrant.create({ data: { platform, storeTransactionId, deviceId } });
+            }
+            return markPro(tx);
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (err) {
+        const code = err instanceof Prisma.PrismaClientKnownRequestError ? err.code : undefined;
+        if ((code === 'P2034' || code === 'P2002') && attempt < GRANT_ATTEMPTS) continue;
+        throw err;
+      }
+    }
+  }
+
+  /**
+   * A refused upgrade grants nothing, whatever the reason. The status says
+   * whose problem it is: 400 when the store (or the request) says this is not
+   * a valid PRO purchase, 503 when the server could not get a verdict. `code`
+   * is machine-readable in both; `error` keeps its legacy value on the 400.
+   * The 503 must nest `{ code, message }` in `error`, or `AllExceptionsFilter`
+   * masks it as `internal_error`.
+   */
+  private toHttpError(deviceId: string, err: IapValidationError): HttpException {
+    const detail = `${err.code}: ${err.reason} (provider=${err.providerCode ?? '-'})`;
+    if (err.unavailable) {
+      this.logger.error(`IAP verdict unavailable for ${this.mask(deviceId)} - ${detail}`);
+      return new ServiceUnavailableException({
+        error: { code: err.code, message: err.reason },
+        code: err.code,
+        message: err.reason,
+        providerCode: err.providerCode,
+      });
+    }
+    this.logger.warn(`IAP rejected for ${this.mask(deviceId)} - ${detail}`);
+    return new BadRequestException({
+      error: 'IapValidationFailed',
+      code: err.code,
+      message: err.reason,
+      providerCode: err.providerCode,
     });
   }
 

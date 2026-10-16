@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { AppConfig, RETIRED_BUNDLE_IDS } from '../config/configuration';
 import { FONT_MANIFEST } from '../fonts/fonts.manifest';
+import { appleCredentialStatus } from '../quota/iap/apple-validator';
+import { googleCredentialStatus } from '../quota/iap/google-validator';
 import { R2Service } from '../r2/r2.service';
 import {
   CRITICAL_ENV_VARS,
@@ -174,7 +176,7 @@ export class StartupCheckService implements OnApplicationBootstrap {
     await this.checkPublicBucket(raw);
     await this.checkStripe(raw, production);
     await this.checkMapbox(raw, production);
-    this.checkIap(raw);
+    this.checkIap(raw, production);
     await this.checkFonts(raw);
 
     const findings: StartupFinding[] = raw.map((finding) => {
@@ -646,12 +648,20 @@ export class StartupCheckService implements OnApplicationBootstrap {
    * raised in `client-trust` mode too — the variable is equally stale there, and
    * only the consequence differs.
    *
-   * It also reports the product ids Play is told are subscriptions, because PRO
-   * became a one-time managed product on 2026-08-19 and listing its id there
-   * routes the validation to `/purchases/subscriptions/`, where Play answers
-   * 404.
+   * It also reports `GOOGLE_PLAY_SUBSCRIPTION_IDS`. PRO became a one-time
+   * managed product on 2026-08-19 and the validator has no subscription path
+   * any more, so any value there is ignored and worth a warning.
+   *
+   * In `server` mode it also checks that each store's credentials are present
+   * and usable. Server mode fails CLOSED, so a missing credential refuses every
+   * purchase on that platform with 503 `iap_not_configured` - paying customers
+   * get no PRO, and nothing else in the boot says why. That is an ERROR and not
+   * a FATAL, for the same reason as `iap.bundle`: a mobile-only setting must not
+   * take the whole API down. `client-trust` in production is a warning, because
+   * there any fake receipt buys PRO. The credentials are checked in
+   * `client-trust` mode too, as `info`, so they can be proven before the switch.
    */
-  private checkIap(raw: RawFinding[]): void {
+  private checkIap(raw: RawFinding[], production: boolean): void {
     // Read defensively. A self-check that THROWS takes the boot down for a
     // reason it was written to report, which is the one failure mode it must
     // not have — and the spec's config double carries only the blocks each case
@@ -661,7 +671,12 @@ export class StartupCheckService implements OnApplicationBootstrap {
           mode?: string;
           bundleId?: string;
           retiredBundleIdInEnv?: boolean;
-          google?: { packageName?: string; subscriptionProductIds?: string[] };
+          apple?: { issuerId?: string; keyId?: string; privateKey?: string; sharedSecret?: string };
+          google?: {
+            packageName?: string;
+            serviceAccountJson?: string;
+            subscriptionProductIds?: string[];
+          };
         }
       | undefined;
     if (!iap) return;
@@ -680,18 +695,86 @@ export class StartupCheckService implements OnApplicationBootstrap {
       });
     }
 
-    const lifetimeAsSub = subs.includes('carsalepro_pro_lifetime');
+    // Checked in BOTH modes, so the credentials can be proven on Render before
+    // anybody flips the switch. Only server mode makes a gap an error.
+    const enforced = iap.mode === 'server';
+    this.checkIapCredentials(raw, iap, enforced);
+    if (!enforced && production) {
+      raw.push({
+        id: 'iap.mode',
+        intended: 'warn',
+        message:
+          'IAP_VALIDATION_MODE=client-trust in production - POST /quota/upgrade gives PRO for ANY ' +
+          'receipt, also a fake one. Set the store credentials and IAP_VALIDATION_MODE=server.',
+      });
+    }
+
+    // The validator has no subscription path any more, so a value here is
+    // inert - but it says something that is not true, so it is a warning.
+    const staleSubs = subs.length > 0;
     raw.push({
       id: 'iap',
-      intended: lifetimeAsSub ? 'warn' : 'info',
+      intended: staleSubs ? 'warn' : 'info',
       message:
         `IAP mode=${iap.mode} bundleId=${iap.bundleId} ` +
         `googlePackage=${iap.google?.packageName} ` +
         `subscriptionIds=[${subs.join(', ')}]` +
-        (lifetimeAsSub
-          ? ' - carsalepro_pro_lifetime is a one-time managed product and must ' +
-            'NOT be listed as a subscription; Play answers 404 for it there.'
+        (staleSubs
+          ? ' - GOOGLE_PLAY_SUBSCRIPTION_IDS is IGNORED: carsalepro_pro_lifetime is a one-time ' +
+            'managed product and there is no subscription path. Clear the variable.'
           : ''),
+    });
+  }
+
+  /** Secret-free: names variables and states, never a value. */
+  private checkIapCredentials(
+    raw: RawFinding[],
+    iap: {
+      apple?: { issuerId?: string; keyId?: string; privateKey?: string; sharedSecret?: string };
+      google?: { serviceAccountJson?: string };
+    },
+    enforced: boolean,
+  ): void {
+    const gap: Severity = enforced ? 'error' : 'info';
+    const consequence = enforced ? 'is refused' : 'would be refused in server mode';
+    const apple = appleCredentialStatus({
+      issuerId: iap.apple?.issuerId ?? '',
+      keyId: iap.apple?.keyId ?? '',
+      privateKey: iap.apple?.privateKey ?? '',
+      sharedSecret: iap.apple?.sharedSecret ?? '',
+    });
+    const appleProblem: Record<typeof apple.serverApi, string | null> = {
+      ok: null,
+      missing: 'APPLE_ISSUER_ID, APPLE_KEY_ID and APPLE_PRIVATE_KEY are MISSING',
+      partial: 'APPLE_ISSUER_ID, APPLE_KEY_ID and APPLE_PRIVATE_KEY are only PARTLY set',
+      invalid_key: 'APPLE_PRIVATE_KEY is set but is not a P-256 private key (.p8)',
+    };
+    const problem = appleProblem[apple.serverApi];
+    raw.push({
+      id: 'iap.apple',
+      intended: problem ? gap : 'ok',
+      message: problem
+        ? `${problem} - every iOS purchase (StoreKit 2 JWS) ${consequence} with 503 iap_not_configured.`
+        : 'App Store Server API credentials set' +
+          (apple.sharedSecret
+            ? '; APPLE_SHARED_SECRET set (StoreKit 1 receipts use the deprecated verifyReceipt).'
+            : '; StoreKit 1 app receipts are refused (no APPLE_SHARED_SECRET).'),
+    });
+
+    const google = googleCredentialStatus(iap.google?.serviceAccountJson ?? '');
+    const googleProblem: Record<typeof google, string | null> = {
+      ok: null,
+      missing: 'GOOGLE_PLAY_SA_JSON is MISSING',
+      unparseable: 'GOOGLE_PLAY_SA_JSON is set but does not parse as a service account',
+      invalid_key: 'GOOGLE_PLAY_SA_JSON parses, but its private_key is not a valid RSA key',
+    };
+    const googleGap = googleProblem[google];
+    raw.push({
+      id: 'iap.google',
+      intended: googleGap ? gap : 'ok',
+      message: googleGap
+        ? `${googleGap} - every Android purchase ${consequence} with 503 iap_not_configured.`
+        : 'GOOGLE_PLAY_SA_JSON set (service account parses, private key loads).',
     });
   }
 

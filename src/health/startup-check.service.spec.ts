@@ -226,6 +226,128 @@ describe('StartupCheckService', () => {
       expect(findingsFor(report, 'iap')[0].severity).toBe('info');
       expect(report.counts.fatal).toBe(0);
     });
+
+    /**
+     * Server mode fails closed, so a missing store credential refuses every
+     * purchase on that platform. Loud (error), never fatal: a mobile-only
+     * setting must not take the API down - the lesson of `iap.bundle`.
+     */
+    it('reports missing store credentials in server mode as errors, never fatal', async () => {
+      const report = await build({
+        iap: {
+          mode: 'server',
+          bundleId: 'net.carsalepro.app',
+          retiredBundleIdInEnv: false,
+          apple: { issuerId: '', keyId: '', privateKey: '', sharedSecret: '' },
+          google: {
+            packageName: 'net.carsalepro.app',
+            serviceAccountJson: '',
+            subscriptionProductIds: [],
+          },
+        },
+      }).run();
+
+      const apple = findingsFor(report, 'iap.apple');
+      const google = findingsFor(report, 'iap.google');
+      expect(apple[0].severity).toBe('error');
+      expect(apple[0].message).toContain('APPLE_PRIVATE_KEY');
+      expect(google[0].severity).toBe('error');
+      expect(google[0].message).toContain('GOOGLE_PLAY_SA_JSON');
+      expect(report.counts.fatal).toBe(0);
+    });
+
+    it('accepts usable credentials in server mode and never prints them', async () => {
+      const { generateKeyPairSync } = await import('node:crypto');
+      const ec = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({
+        type: 'pkcs8',
+        format: 'pem',
+      }) as string;
+      const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({
+        type: 'pkcs8',
+        format: 'pem',
+      }) as string;
+      const sa = JSON.stringify({
+        type: 'service_account',
+        client_email: 'x@y.iam.gserviceaccount.com',
+        private_key: rsa,
+      });
+
+      const service = build({
+        iap: {
+          mode: 'server',
+          bundleId: 'net.carsalepro.app',
+          retiredBundleIdInEnv: false,
+          apple: { issuerId: 'issuer-uuid', keyId: 'KEYID12345', privateKey: ec, sharedSecret: '' },
+          google: {
+            packageName: 'net.carsalepro.app',
+            serviceAccountJson: sa,
+            subscriptionProductIds: [],
+          },
+        },
+      });
+      await service.onApplicationBootstrap();
+      const report = service.getReport()!;
+
+      expect(findingsFor(report, 'iap.apple')[0].severity).toBe('ok');
+      expect(findingsFor(report, 'iap.google')[0].severity).toBe('ok');
+      const body = ec.split('\n')[1];
+      expect(JSON.stringify(report)).not.toContain(body);
+      expect(logs.join('\n')).not.toContain(body);
+    });
+
+    it('flags a private key that is not a P-256 .p8 key', async () => {
+      const report = await build({
+        iap: {
+          mode: 'server',
+          bundleId: 'net.carsalepro.app',
+          apple: { issuerId: 'i', keyId: 'k', privateKey: 'not-a-key', sharedSecret: '' },
+          google: { serviceAccountJson: '' },
+        },
+      }).run();
+      expect(findingsFor(report, 'iap.apple')[0].message).toContain('not a P-256 private key');
+    });
+
+    it('loads the Google private key, not only the JSON around it', async () => {
+      const sa = JSON.stringify({
+        type: 'service_account',
+        client_email: 'x@y.iam.gserviceaccount.com',
+        private_key: '-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----',
+      });
+      const report = await build({
+        iap: { mode: 'server', bundleId: 'net.carsalepro.app', google: { serviceAccountJson: sa } },
+      }).run();
+      const google = findingsFor(report, 'iap.google')[0];
+      expect(google.severity).toBe('error');
+      expect(google.message).toContain('not a valid RSA key');
+    });
+
+    it('warns that GOOGLE_PLAY_SUBSCRIPTION_IDS is ignored', async () => {
+      const report = await build({
+        iap: {
+          mode: 'server',
+          bundleId: 'net.carsalepro.app',
+          google: { subscriptionProductIds: ['carsalepro_pro_lifetime'] },
+        },
+      }).run();
+      const iap = findingsFor(report, 'iap')[0];
+      expect(iap.severity).toBe('warn');
+      expect(iap.message).toContain('IGNORED');
+    });
+
+    it('warns that client-trust in production gives PRO for any receipt', async () => {
+      const report = await build({
+        iap: { mode: 'client-trust', bundleId: 'net.carsalepro.app', google: {} },
+      }).run();
+      const mode = findingsFor(report, 'iap.mode');
+      expect(mode).toHaveLength(1);
+      expect(mode[0].severity).toBe('warn');
+      // Credentials are still reported, so they can be proven before the switch.
+      expect(findingsFor(report, 'iap.apple')[0].severity).toBe('info');
+      expect(findingsFor(report, 'iap.google')[0].severity).toBe('info');
+      expect(
+        report.findings.filter((f) => f.id.startsWith('iap') && f.severity === 'error'),
+      ).toHaveLength(0);
+    });
   });
 
   describe('CORS', () => {

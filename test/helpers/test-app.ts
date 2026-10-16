@@ -53,6 +53,7 @@ export async function cleanDb(app: INestApplication): Promise<void> {
   await prisma.reportPurchase.deleteMany();
   await prisma.listing.deleteMany();
   await prisma.report.deleteMany();
+  await prisma.iapGrant.deleteMany();
   await prisma.deviceQuota.deleteMany();
   await prisma.vinCache.deleteMany();
 }

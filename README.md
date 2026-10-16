@@ -114,3 +114,38 @@ Render auto-deploys on push to `main` and runs `prisma migrate deploy` on start.
 **Onboarding an inspector outside the platform's own country needs cross-border payouts enabled on the Stripe platform account.** Nothing in this repo restricts the country — `STRIPE_CONNECT_DEFAULT_COUNTRY` is only the fallback for a request that names none — so the first proof that a country works is Stripe's answer. Get it from `node scripts/stripe-connect-smoke.mjs` (it creates an Express account in that country with a test key) rather than from an inspector's failed attempt.
 
 > The older `docs/{API,ARCHITECTURE,DEPLOY,DEV_REPORT}.md` files describe the original **mobile MVP** only. For the website, treat Swagger (`/docs`), this README, and the `../docs/reports/` development report as current.
+
+## Mobile PRO purchase validation
+
+`POST /quota/upgrade` gives PRO to a device after an in-app purchase. The behaviour, the error codes and the request body are in [docs/API.md](./docs/API.md#post-quotaupgrade).
+
+- `IAP_VALIDATION_MODE=client-trust` (default) gives PRO for each request, also for a fake receipt. In production, the startup check shows a warning for this mode.
+- `IAP_VALIDATION_MODE=server` sends each purchase to the store before the API gives PRO. If the store does not confirm the purchase, the device does not get PRO: 400 when the store rejects it, 503 when the API cannot get a decision.
+- iOS: the app sends a StoreKit 2 signed transaction (JWS). The API does not trust it. The API gets the same transaction from the App Store Server API (production first, then the sandbox), and checks it there.
+- Android: the API reads the purchase with `purchases.products.get`, and acknowledges it.
+- One purchase gives PRO to 5 devices at most (`IAP_MAX_DEVICES_PER_PURCHASE`). The table `iap_grant` records each device. A restore on a device that already has the purchase always works. `DELETE /me` removes the rows of that device.
+- A refund does not remove PRO yet. See [SECURITY.md](./SECURITY.md).
+
+**Env vars (Render).** The API reads each value on one line.
+
+| Variable | Server mode | Format |
+|---|---|---|
+| `IAP_VALIDATION_MODE` | `server` | `client-trust` or `server`. |
+| `APPLE_ISSUER_ID` | required | The Issuer ID (UUID) of the App Store Connect In-App Purchase key. |
+| `APPLE_KEY_ID` | required | The Key ID of that key (10 characters). |
+| `APPLE_PRIVATE_KEY` | required | The content of the `.p8` file. Write each line break as `\n`, or give only the base64 body without the `BEGIN`/`END` lines. |
+| `GOOGLE_PLAY_SA_JSON` | required | The JSON key of a Google Cloud service account, as raw JSON or as base64 of the JSON. |
+| `APPLE_SHARED_SECRET` | optional | The app-specific shared secret. Set it only to accept StoreKit 1 app receipts through the deprecated `verifyReceipt`. |
+| `IAP_BUNDLE_ID`, `GOOGLE_PLAY_PACKAGE_NAME` | do not set | The default is `net.carsalepro.app`. |
+| `GOOGLE_PLAY_SUBSCRIPTION_IDS` | keep empty | The API ignores it: PRO is a one-time product. The startup check shows a warning if it is set. |
+| `APPLE_USE_SANDBOX_FIRST` | keep `false` | `true` sends the first request to the sandbox. |
+
+**How to switch to server mode**
+
+1. In App Store Connect, open Users and Access > Integrations > In-App Purchase. Make a key, download the `.p8` file, and record the Issuer ID and the Key ID. You can download the file one time only.
+2. In Google Cloud, enable the Google Play Android Developer API. Make a service account and a JSON key for it. In Play Console, open Users and permissions, invite the service account e-mail, and give it access to the app with the permissions to see financial data and to manage orders.
+3. On Render, set the variables from the table. Keep `IAP_VALIDATION_MODE=client-trust` for this deploy.
+4. Open `GET /health/startup`. Make sure that `iap.apple` and `iap.google` show `ok`. In `client-trust` mode a problem shows as `info`; in `server` mode it shows as `error`.
+5. Set `IAP_VALIDATION_MODE=server` on Render.
+6. Do a test purchase: TestFlight on iOS, a license tester on Android. Make sure that the device gets PRO. Then run `node scripts/test-iap-rejection.mjs https://carsalepro-backend.onrender.com` and make sure that each fake receipt gets a 400.
+7. To roll back, set `IAP_VALIDATION_MODE=client-trust`. No migration is necessary.
