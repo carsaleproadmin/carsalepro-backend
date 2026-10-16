@@ -1,5 +1,18 @@
 import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
-import { ApiHeader, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiConflictResponse,
+  ApiHeader,
+  ApiOkResponse,
+  ApiOperation,
+  ApiServiceUnavailableResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import {
+  IAP_MAX_DEVICES_PER_PURCHASE,
+  IAP_REJECTED_CODES,
+  IAP_UNAVAILABLE_CODES,
+} from './iap/iap.types';
 import { DeviceId } from '../common/decorators/device-id.decorator';
 import { QuotaDto } from './dto/quota.dto';
 import { UpgradeDto } from './dto/upgrade.dto';
@@ -28,12 +41,38 @@ export class QuotaController {
   @ApiOperation({
     summary: 'Mark device as PRO after IAP success',
     description:
-      'When `IAP_VALIDATION_MODE=server` (Render env), the receipt is validated against ' +
-      "Apple's App Store servers or Google Play Developer API before the device is upgraded. " +
-      'If validation fails the request returns 400 with the provider error code. ' +
-      'In `client-trust` mode the call upgrades the device unconditionally (used in MVP launch).',
+      '`IAP_VALIDATION_MODE` selects the mode.\n\n' +
+      '- `server`: the API sends the purchase to the store before it gives PRO. ' +
+      'iOS: send the StoreKit 2 signed transaction (JWS). The API gets the transaction from the ' +
+      'App Store Server API, and checks the bundle id, the product id `carsalepro_pro_lifetime` ' +
+      'and the revocation date. Android: send the purchase token and `productId`. The API calls ' +
+      '`purchases.products.get`, checks `purchaseState`, and acknowledges the purchase.\n' +
+      '- `client-trust`: the API gives PRO for each request, also for a fake receipt.\n\n' +
+      'If the store does not confirm the purchase, the device does not get PRO. ' +
+      `One purchase gives PRO to ${IAP_MAX_DEVICES_PER_PURCHASE} devices at most. ` +
+      'Each error body has a `code`.',
   })
   @ApiOkResponse({ type: QuotaDto })
+  @ApiBadRequestResponse({
+    description:
+      'The store or the request rejects the purchase. Body: ' +
+      '`{ error: "IapValidationFailed", code, message, providerCode }`. Codes: ' +
+      IAP_REJECTED_CODES.map((c) => `\`${c}\``).join(', ') +
+      '.',
+  })
+  @ApiConflictResponse({
+    description:
+      `The purchase already gives PRO to ${IAP_MAX_DEVICES_PER_PURCHASE} other devices. Body: ` +
+      '`{ error: "IapDeviceLimit", code: "iap_device_limit", message, deviceLimit }`. ' +
+      'A device that already has the purchase does not get this error.',
+  })
+  @ApiServiceUnavailableResponse({
+    description:
+      'The API cannot get a decision from the store (outage, or credentials not set). Try again ' +
+      'later. Body: `{ error: { code, message }, code, message, providerCode }`. Codes: ' +
+      IAP_UNAVAILABLE_CODES.map((c) => `\`${c}\``).join(', ') +
+      '.',
+  })
   async upgrade(@DeviceId() deviceId: string, @Body() dto: UpgradeDto): Promise<QuotaDto> {
     const quota = await this.quotaService.markPro(deviceId, dto);
     return this.quotaService.toDto(quota);

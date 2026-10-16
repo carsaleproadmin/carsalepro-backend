@@ -103,11 +103,22 @@ Each lists *what*, *why*, and *how to finish*.
 - **Why**: Before money is actually charged / PRO entitlements are granted on
   real revenue, receipts must be verified against Apple/Google to prevent
   forged-purchase fraud.
-- **How to finish**: Provision Apple (`APPLE_SHARED_SECRET`, App Store Server
-  API key: `APPLE_ISSUER_ID` / `APPLE_KEY_ID` / `APPLE_PRIVATE_KEY`) and Google
-  Play (`GOOGLE_PLAY_SA_JSON`, subscription product IDs) credentials, then set
-  `IAP_VALIDATION_MODE=server`. Validators already exist under
-  `src/quota/iap/`.
+- **How to finish**: Server-side validation is ready (`src/quota/iap/`). It
+  fails closed: no store confirmation, no PRO. Set `APPLE_ISSUER_ID`,
+  `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` and `GOOGLE_PLAY_SA_JSON`, then set
+  `IAP_VALIDATION_MODE=server`. Procedure: README "Mobile PRO purchase
+  validation".
+- **Device cap (done)**: one purchase gives PRO to 5 devices at most
+  (`IAP_MAX_DEVICES_PER_PURCHASE`). `iap_grant` records each (purchase,
+  device) pair. The 6th device gets 409 `iap_device_limit`. A bare numeric
+  transaction id is refused, because it is not a secret.
+- **Open: a refund does not revoke PRO.** The API checks the purchase one time,
+  at `POST /quota/upgrade`. It does not receive App Store Server Notifications
+  (`REFUND`, `REVOKE`) or read the Google Play Voided Purchases API. So, after
+  a refund, the device keeps `DeviceQuota.isPro`. To close this: add a
+  notification endpoint for Apple, a scheduled Voided Purchases read for
+  Google, and set `isPro = false` for each device in `iap_grant` for that
+  purchase.
 
 ## L5 — Strictly validate `X-Device-Id` as UUIDv4
 - **What**: The `X-Device-Id` header is parsed leniently

@@ -41,10 +41,14 @@ export class IapValidatorService {
       };
     }
 
+    // Server mode FAILS CLOSED: every path below either returns a verified
+    // result or throws. A missing credential is 503 `iap_not_configured`, not a
+    // grant and not a "your receipt is bad".
     if (req.platform === 'ios') {
       if (!this.apple.isConfigured()) {
         throw new IapValidationError(
-          'Apple validation requested but APPLE_SHARED_SECRET / APPLE_*_KEY are not configured',
+          'iap_not_configured',
+          'Apple validation requested but APPLE_ISSUER_ID / APPLE_KEY_ID / APPLE_PRIVATE_KEY are not configured',
         );
       }
       return this.apple.validate(req);
@@ -52,12 +56,16 @@ export class IapValidatorService {
     if (req.platform === 'android') {
       if (!this.google.isConfigured()) {
         throw new IapValidationError(
+          'iap_not_configured',
           'Google validation requested but GOOGLE_PLAY_SA_JSON is not configured',
         );
       }
       return this.google.validate(req);
     }
-    throw new IapValidationError(`Unsupported platform: ${req.platform as string}`);
+    throw new IapValidationError(
+      'iap_platform_unsupported',
+      `Unsupported platform: ${req.platform as string}`,
+    );
   }
 
   get currentMode(): IapValidationMode {
