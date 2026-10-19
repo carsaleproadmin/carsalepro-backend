@@ -42,6 +42,7 @@ import {
   photoLocation,
 } from './listing-photo-urls';
 import { listingSearchColumns } from './listing-search-columns';
+import { youtubeVideoIdForStorage } from './youtube-url';
 
 export { MAX_LISTING_PHOTOS };
 
@@ -190,7 +191,7 @@ export class ListingsService {
         description: dto.description ?? null,
         contactPhone: dto.contactPhone ?? null,
         contactEmail: dto.contactEmail ?? null,
-        youtubeVideoId: dto.youtubeVideoId ?? null,
+        youtubeVideoId: youtubeVideoIdForStorage(dto.youtubeUrl) ?? null,
         ...columns,
         // DEN-205. Derived last, from the values actually being written.
         ...listingSearchColumns({ city: dto.city, make: columns.make, model: columns.model }),
@@ -267,7 +268,10 @@ export class ListingsService {
      */
     const searchPatch = {
       ...(dto.city !== undefined ? { citySearch: listingSearchColumns({ city: dto.city }).citySearch } : {}),
-      ...(vehiclePatch
+      // `vehiclePatch` is `{}` when the request carries no vehicle data, so
+      // test the request: a truthy `{}` wrote empty make/model search columns
+      // on every other edit, and the listing left the make and model filters.
+      ...(dto.vehicleData !== undefined
         ? {
             makeSearch: listingSearchColumns({ make: vehiclePatch.make as string | null }).makeSearch,
             modelSearch: listingSearchColumns({ model: vehiclePatch.model as string | null }).modelSearch,
@@ -286,7 +290,9 @@ export class ListingsService {
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.contactPhone !== undefined ? { contactPhone: dto.contactPhone } : {}),
         ...(dto.contactEmail !== undefined ? { contactEmail: dto.contactEmail } : {}),
-        ...(dto.youtubeVideoId !== undefined ? { youtubeVideoId: dto.youtubeVideoId } : {}),
+        ...(dto.youtubeUrl !== undefined
+          ? { youtubeVideoId: youtubeVideoIdForStorage(dto.youtubeUrl) }
+          : {}),
         ...vehiclePatch,
       },
     });

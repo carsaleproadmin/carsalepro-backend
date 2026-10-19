@@ -9,6 +9,13 @@ describe('youtubeVideoIdFromUrl', () => {
     ],
     ['https://youtube.com/shorts/dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
     ['https://m.youtube.com/embed/dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['https://www.youtube.com/live/dQw4w9WgXcQ?si=x', 'dQw4w9WgXcQ'],
+    ['https://www.youtube.com/watch/?v=dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['https://music.youtube.com/watch?v=dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['youtube.com/watch?v=dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['youtu.be/dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['http://youtube.com/watch?v=dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
   ])('extracts the id from %s', (input, expected) => {
     expect(youtubeVideoIdFromUrl(input)).toBe(expected);
   });
@@ -20,7 +27,8 @@ describe('youtubeVideoIdFromUrl', () => {
     'https://youtube.com/watch?v=too-short',
     'https://youtube.com/playlist?list=PL123',
     'javascript:alert(1)',
-    'http://youtube.com/watch?v=dQw4w9WgXcQ',
+    'ftp://youtube.com/watch?v=dQw4w9WgXcQ',
+    'dQw4w9WgXcQ',
     'https://youtu.be/dQw4w9WgXcQ/extra',
     'https://youtube.com:444/watch?v=dQw4w9WgXcQ',
   ])('rejects %s', (input) => {

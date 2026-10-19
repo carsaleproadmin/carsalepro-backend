@@ -3,7 +3,6 @@ import { Transform, Type } from 'class-transformer';
 import {
   IsEmail,
   IsInt,
-  Matches,
   IsOptional,
   IsString,
   Length,
@@ -12,7 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { ListingVehicleV1Dto } from './listing-vehicle-v1.dto';
-import { transformYoutubeUrlInput } from '../youtube-url';
+import { IsYoutubeUrl } from '../youtube-url';
 
 /**
  * Open a DRAFT listing for a car that has NOT been inspected (BE-S2).
@@ -74,18 +73,8 @@ export class CreateManualListingDto {
     nullable: true,
     description: 'Optional YouTube video. A blank value is treated as no video.',
   })
-  @IsOptional()
-  @Transform(({ value }) => transformYoutubeUrlInput(value))
-  @IsString()
-  @MaxLength(2048)
-  @Matches(/^[A-Za-z0-9_-]{11}$/, {
-    message: 'youtubeUrl must be a valid YouTube video URL',
-  })
+  @IsYoutubeUrl()
   youtubeUrl?: string | null;
-
-  get youtubeVideoId(): string | null | undefined {
-    return this.youtubeUrl;
-  }
 
   @ApiPropertyOptional({ type: ListingVehicleV1Dto })
   @IsOptional()

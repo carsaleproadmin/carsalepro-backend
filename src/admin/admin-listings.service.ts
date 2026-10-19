@@ -77,6 +77,9 @@ export class AdminListingsService {
         make: l.make,
         model: l.model,
         year: l.year,
+        // The seller chooses the video, and the public page embeds it, so a
+        // moderator must be able to see it.
+        youtubeVideoId: l.youtubeVideoId,
         publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
         // Set only by an admin hide, so the admin panel offers Unhide on it
         // and not on a listing the seller took off the showroom.

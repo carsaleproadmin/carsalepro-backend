@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import request from 'supertest';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { ListingsService } from '../src/listings/listings.service';
+import { listingSearchColumns } from '../src/listings/listing-search-columns';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { R2Service } from '../src/r2/r2.service';
 import { MAX_LISTING_PHOTOS, mirroredPhotoKey } from '../src/listings/listing-photo-urls';
@@ -490,6 +491,8 @@ describe('Listings (e2e)', () => {
         model: 'Civic',
         year: 2018,
         publishedAt: new Date(),
+        // Raw fixtures must fill the search columns (DEN-205).
+        ...listingSearchColumns({ city: 'Berlin', make: 'Honda', model: 'Civic' }),
       },
     });
     try {
@@ -499,13 +502,18 @@ describe('Listings (e2e)', () => {
         .send({ youtubeUrl: 'https://youtube.com/shorts/dQw4w9WgXcQ' })
         .expect(200);
 
+      // A patch without vehicle data must keep the make and model search columns.
+      const stored = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+      expect(stored.makeSearch).toBe('honda');
+      expect(stored.modelSearch).toBe('civic');
+
       const detail = await request(app.getHttpServer())
         .get(`/api/v1/public/listings/${listing.id}`)
         .expect(200);
       expect(detail.body.youtubeVideoId).toBe('dQw4w9WgXcQ');
 
       const summary = await request(app.getHttpServer())
-        .get('/api/v1/public/listings?city=Berlin')
+        .get('/api/v1/public/listings?city=Berlin&make=Honda&model=Civic')
         .expect(200);
       const card = summary.body.items.find((item: { id: string }) => item.id === listing.id);
       expect(card).toBeDefined();

@@ -1,29 +1,31 @@
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import { youtubeVideoIdForStorage } from '../youtube-url';
 import { UpdateListingDto } from './update-listing.dto';
 
-async function youtubeUrlFrom(value: unknown) {
-  const dto = plainToInstance(UpdateListingDto, { youtubeUrl: value });
+async function errorsFor(body: Record<string, unknown>) {
+  const dto = plainToInstance(UpdateListingDto, body);
   return { dto, errors: await validate(dto, { whitelist: true, forbidNonWhitelisted: true }) };
 }
 
 describe('UpdateListingDto youtubeUrl', () => {
-  it('normalizes a supported YouTube link', async () => {
-    const { dto, errors } = await youtubeUrlFrom(' https://youtu.be/dQw4w9WgXcQ?t=43 ');
+  it('accepts a supported YouTube link and keeps it as a URL', async () => {
+    const { dto, errors } = await errorsFor({ youtubeUrl: ' https://youtu.be/dQw4w9WgXcQ?t=43 ' });
     expect(errors).toHaveLength(0);
-    expect(dto.youtubeVideoId).toBe('dQw4w9WgXcQ');
+    expect(dto.youtubeUrl).toBe(' https://youtu.be/dQw4w9WgXcQ?t=43 ');
+    expect(youtubeVideoIdForStorage(dto.youtubeUrl)).toBe('dQw4w9WgXcQ');
   });
 
-  it('accepts null for removal', async () => {
-    const { dto, errors } = await youtubeUrlFrom(null);
+  it.each([null, '   '])('accepts %p for removal', async (youtubeUrl) => {
+    const { dto, errors } = await errorsFor({ youtubeUrl });
     expect(errors).toHaveLength(0);
-    expect(dto.youtubeVideoId).toBeNull();
+    expect(youtubeVideoIdForStorage(dto.youtubeUrl)).toBeNull();
   });
 
-  it('accepts a blank string for removal', async () => {
-    const { dto, errors } = await youtubeUrlFrom('   ');
+  it('leaves the stored video alone when the field is absent', async () => {
+    const { dto, errors } = await errorsFor({});
     expect(errors).toHaveLength(0);
-    expect(dto.youtubeVideoId).toBeNull();
+    expect(youtubeVideoIdForStorage(dto.youtubeUrl)).toBeUndefined();
   });
 
   it.each([
@@ -32,8 +34,13 @@ describe('UpdateListingDto youtubeUrl', () => {
     'https://youtube.com.evil.test/watch?v=dQw4w9WgXcQ',
     'https://www.youtube.com/watch?v=too-short',
     123,
-  ])('rejects invalid input %p', async (value) => {
-    const { errors } = await youtubeUrlFrom(value);
+  ])('rejects invalid input %p', async (youtubeUrl) => {
+    const { errors } = await errorsFor({ youtubeUrl });
     expect(errors).not.toHaveLength(0);
+  });
+
+  it('rejects the response field name instead of dropping it silently', async () => {
+    const { errors } = await errorsFor({ youtubeVideoId: 'dQw4w9WgXcQ' });
+    expect(errors.map((error) => error.property)).toContain('youtubeVideoId');
   });
 });
