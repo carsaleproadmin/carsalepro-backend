@@ -42,5 +42,8 @@ prisma/dev.db-journal
 .ai-kit/tmp
 demo-photos/
 
+# Local service credentials used by developer tooling.
+/.test
+
 # Downloaded by tesseract.js on first use (see MrzOcrService).
 *.traineddata

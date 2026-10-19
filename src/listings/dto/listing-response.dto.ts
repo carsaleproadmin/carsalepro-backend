@@ -63,6 +63,9 @@ export class MyListingItemDto {
   @ApiProperty({ example: 'seller@example.com', nullable: true })
   contactEmail!: string | null;
 
+  @ApiProperty({ example: 'dQw4w9WgXcQ', nullable: true })
+  youtubeVideoId!: string | null;
+
   @ApiProperty({ type: ListingVehicleDto })
   vehicle!: ListingVehicleDto;
 

@@ -190,6 +190,7 @@ export class ListingsService {
         description: dto.description ?? null,
         contactPhone: dto.contactPhone ?? null,
         contactEmail: dto.contactEmail ?? null,
+        youtubeVideoId: dto.youtubeVideoId ?? null,
         ...columns,
         // DEN-205. Derived last, from the values actually being written.
         ...listingSearchColumns({ city: dto.city, make: columns.make, model: columns.model }),
@@ -285,6 +286,7 @@ export class ListingsService {
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.contactPhone !== undefined ? { contactPhone: dto.contactPhone } : {}),
         ...(dto.contactEmail !== undefined ? { contactEmail: dto.contactEmail } : {}),
+        ...(dto.youtubeVideoId !== undefined ? { youtubeVideoId: dto.youtubeVideoId } : {}),
         ...vehiclePatch,
       },
     });
@@ -790,6 +792,7 @@ export class ListingsService {
       // them it opened blank, and a blank field there deletes the value.
       contactPhone: l.contactPhone,
       contactEmail: l.contactEmail,
+      youtubeVideoId: l.youtubeVideoId,
       // Read from the listing's own columns: for a manual listing there is no
       // report to read from, and for a report-backed one these were copied at
       // claim time (and backfilled for pre-existing rows).

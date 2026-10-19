@@ -1045,6 +1045,8 @@ model Listing {
   description            String?
   contactPhone           String?       @map("contact_phone")
   contactEmail           String?       @map("contact_email")
+  /// Optional seller-supplied YouTube walk-around. Only YouTube's 11-char id is stored.
+  youtubeVideoId         String?       @map("youtube_video_id") @db.VarChar(11)
   // Denormalized vehicle facts. Copied from the report for source="report",
   // seller-declared for source="manual". Search reads THESE columns, never the
   // report relation, so both provenances are filterable the same way.

@@ -10,8 +10,10 @@ import {
   Min,
   ValidateIf,
   ValidateNested,
+  Matches,
 } from 'class-validator';
 import { ListingVehicleV1Dto } from './listing-vehicle-v1.dto';
+import { transformYoutubeUrlInput } from '../youtube-url';
 
 export class UpdateListingDto {
   @ApiPropertyOptional({ example: 1850000, description: 'Asking price in integer cents (> 0).' })
@@ -80,6 +82,25 @@ export class UpdateListingDto {
   @IsEmail()
   @MaxLength(254)
   contactEmail?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    nullable: true,
+    description:
+      'One YouTube video. Watch, youtu.be, Shorts and embed links are accepted; null/blank clears it.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => transformYoutubeUrlInput(value))
+  @IsString()
+  @MaxLength(2048)
+  @Matches(/^[A-Za-z0-9_-]{11}$/, {
+    message: 'youtubeUrl must be a valid YouTube video URL',
+  })
+  youtubeUrl?: string | null;
+
+  get youtubeVideoId(): string | null | undefined {
+    return this.youtubeUrl;
+  }
 
   /**
    * Seller-declared vehicle data. Accepted ONLY on a `source: 'manual'` listing
