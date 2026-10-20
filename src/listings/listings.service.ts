@@ -464,7 +464,16 @@ export class ListingsService {
         where: { id },
         // `publicPhotosMirroredAt` goes with the objects it stands for. Left
         // set, it says a copy is in the public bucket after the copy is gone.
-        data: { status: 'DELETED', reportId: null, publicPhotosMirroredAt: null },
+        // The seller's contacts and video go too, as on an account erasure:
+        // the video can show the seller, their home or their number plate.
+        data: {
+          status: 'DELETED',
+          reportId: null,
+          publicPhotosMirroredAt: null,
+          contactPhone: null,
+          contactEmail: null,
+          youtubeVideoId: null,
+        },
       });
     });
 
@@ -706,6 +715,41 @@ export class ListingsService {
    * Only a live listing: hiding a draft, a sold or a deleted listing marked
    * it HIDDEN, and an unhide could then publish it (409 `listing_not_active`).
    */
+  /**
+   * Admin: remove only the YouTube video of a listing, with a reason the
+   * seller reads. The listing stays in the showroom. The seller can attach
+   * a different video; an admin can remove that one too, or hide the listing.
+   * A deleted listing has no video (409 `listing_already_deleted`), and a
+   * listing without a video answers 409 `listing_has_no_video`.
+   */
+  async adminRemoveVideo(
+    id: string,
+    reason: string,
+  ): Promise<{ listing: Listing; removedVideoId: string }> {
+    const before = await this.requireListing(id);
+    if (before.status === 'DELETED') {
+      throw new ConflictException({
+        error: { code: 'listing_already_deleted', message: 'The listing is already deleted' },
+      });
+    }
+    if (!before.youtubeVideoId) {
+      throw new ConflictException({
+        error: { code: 'listing_has_no_video', message: 'The listing has no video' },
+      });
+    }
+    const listing = await this.prisma.listing.update({
+      where: { id },
+      data: { youtubeVideoId: null },
+    });
+    await this.notifications.notify(listing.sellerId, 'listing.video_removed', {
+      listingId: listing.id,
+      make: listing.make,
+      model: listing.model,
+      reason,
+    });
+    return { listing, removedVideoId: before.youtubeVideoId };
+  }
+
   async adminHide(id: string, reason: string): Promise<Listing> {
     const before = await this.requireListing(id);
     if (before.status !== 'ACTIVE') {

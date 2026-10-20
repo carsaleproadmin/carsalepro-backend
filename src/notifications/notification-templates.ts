@@ -865,6 +865,32 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
       short: `Объявление о ${str(p, 'make')} ${str(p, 'model')} удалено.`,
     }),
   },
+  'listing.video_removed': {
+    de: (p) => ({
+      subject: `Video entfernt`,
+      body:
+        `Die Plattform hat das Video aus Ihrer Anzeige für ${str(p, 'make')} ${str(p, 'model')} entfernt.\n\n` +
+        `Grund: ${str(p, 'reason')}\n\n` +
+        `Die Anzeige bleibt im Showroom. Bei Fragen wenden Sie sich an den Support.`,
+      short: `Video der Anzeige für ${str(p, 'make')} ${str(p, 'model')} entfernt.`,
+    }),
+    en: (p) => ({
+      subject: `Video removed`,
+      body:
+        `The platform removed the video from your listing for ${str(p, 'make')} ${str(p, 'model')}.\n\n` +
+        `Reason: ${str(p, 'reason')}\n\n` +
+        `The listing stays in the showroom. If you have questions, contact support.`,
+      short: `Video removed from the listing for ${str(p, 'make')} ${str(p, 'model')}.`,
+    }),
+    ru: (p) => ({
+      subject: `Видео удалено`,
+      body:
+        `Платформа удалила видео из вашего объявления о ${str(p, 'make')} ${str(p, 'model')}.\n\n` +
+        `Причина: ${str(p, 'reason')}\n\n` +
+        `Объявление остаётся в шоуруме. Если есть вопросы, напишите в поддержку.`,
+      short: `Видео из объявления о ${str(p, 'make')} ${str(p, 'model')} удалено.`,
+    }),
+  },
 };
 
 /** Resolve a supported locale, falling back to the platform default. */

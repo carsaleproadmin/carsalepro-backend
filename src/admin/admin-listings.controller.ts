@@ -9,6 +9,7 @@ import {
   AdminDeleteListingDto,
   AdminHideListingDto,
   AdminListingListQueryDto,
+  AdminRemoveListingVideoDto,
 } from './dto/admin-listings.dto';
 
 @ApiTags('admin')
@@ -55,6 +56,29 @@ export class AdminListingsController {
       status: listing.status,
     });
     return { id: listing.id, status: listing.status };
+  }
+
+  @Post(':id/remove-video')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Remove the YouTube video of a listing with a reason; the seller is notified (admin)',
+  })
+  @ApiParam({ name: 'id' })
+  async removeVideo(
+    @CurrentUser('id') adminId: string,
+    @Param('id') id: string,
+    @Body() dto: AdminRemoveListingVideoDto,
+  ) {
+    const { listing, removedVideoId } = await this.listings.adminRemoveVideo(id, dto.reason);
+    await this.audit.log(
+      adminId,
+      'listing.remove_video',
+      'listing',
+      id,
+      { youtubeVideoId: removedVideoId },
+      { youtubeVideoId: null, reason: dto.reason },
+    );
+    return { id: listing.id, status: listing.status, youtubeVideoId: listing.youtubeVideoId };
   }
 
   /**
