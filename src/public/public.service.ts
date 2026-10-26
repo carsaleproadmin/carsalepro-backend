@@ -558,6 +558,7 @@ export class PublicService {
        */
       hasPhone: Boolean(listing.contactPhone?.trim()),
       hasEmail: Boolean(listing.contactEmail?.trim()),
+      youtubeVideoId: listing.youtubeVideoId,
       package: listing.package,
       source: listing.source,
       vehicle: this.listingVehicle(listing),

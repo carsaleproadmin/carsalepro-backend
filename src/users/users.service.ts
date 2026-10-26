@@ -83,9 +83,16 @@ export class UsersService {
       await tx.verificationToken.deleteMany({ where: { userId } });
       await tx.deviceLink.deleteMany({ where: { userId } });
       await tx.notification.deleteMany({ where: { userId } });
+      // The seller's own contacts and video go with the listing. The video
+      // can show the seller, their home or their number plate.
       await tx.listing.updateMany({
         where: { sellerId: userId },
-        data: { status: 'DELETED' },
+        data: {
+          status: 'DELETED',
+          contactPhone: null,
+          contactEmail: null,
+          youtubeVideoId: null,
+        },
       });
       // The inspector's work contacts. `updateMany` rather than `update` because
       // most users have no profile, and this must not throw on them. The profile

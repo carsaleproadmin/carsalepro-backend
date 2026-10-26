@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import request from 'supertest';
 import { createTestApp, uniqueDeviceId } from './helpers/test-app';
 import { ListingsService } from '../src/listings/listings.service';
+import { listingSearchColumns } from '../src/listings/listing-search-columns';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { R2Service } from '../src/r2/r2.service';
 import { MAX_LISTING_PHOTOS, mirroredPhotoKey } from '../src/listings/listing-photo-urls';
@@ -410,6 +411,115 @@ describe('Listings (e2e)', () => {
       expect(res.body.plz).toBe('10115');
     } finally {
       await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
+  it('4a. stores, normalizes and clears an owned listing YouTube video', async () => {
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    let listingId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id;
+
+      const updated = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ youtubeUrl: ' https://youtu.be/dQw4w9WgXcQ?t=43 ' })
+        .expect(200);
+      expect(updated.body.youtubeVideoId).toBe('dQw4w9WgXcQ');
+
+      const owned = await request(app.getHttpServer())
+        .get(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      expect(owned.body.youtubeVideoId).toBe('dQw4w9WgXcQ');
+
+      const cleared = await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ youtubeUrl: null })
+        .expect(200);
+      expect(cleared.body.youtubeVideoId).toBeNull();
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
+  it('4b. rejects non-YouTube and malformed video URLs', async () => {
+    const owner = await registerUser(app);
+    const listing = await request(app.getHttpServer())
+      .post('/api/v1/listings/manual')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ city: 'Berlin', youtubeUrl: 'https://m.youtube.com/watch?v=dQw4w9WgXcQ' })
+      .expect(201);
+    expect(listing.body.youtubeVideoId).toBe('dQw4w9WgXcQ');
+    try {
+      for (const youtubeUrl of [
+        'dQw4w9WgXcQ',
+        'abcdefghijk',
+        'https://youtube.com.evil.test/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/watch?v=too-short',
+      ]) {
+        await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listing.body.id}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ youtubeUrl })
+          .expect(400);
+      }
+    } finally {
+      await cleanup({ listingId: listing.body.id });
+    }
+  });
+
+  it('4c. exposes the video on public detail but not on showroom summaries', async () => {
+    const owner = await registerUser(app);
+    const listing = await prisma.listing.create({
+      data: {
+        sellerId: owner.userId,
+        source: 'manual',
+        status: 'ACTIVE',
+        package: 'standard',
+        priceCents: 950000,
+        city: 'Berlin',
+        make: 'Honda',
+        model: 'Civic',
+        year: 2018,
+        publishedAt: new Date(),
+        // Raw fixtures must fill the search columns (DEN-205).
+        ...listingSearchColumns({ city: 'Berlin', make: 'Honda', model: 'Civic' }),
+      },
+    });
+    try {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/listings/${listing.id}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ youtubeUrl: 'https://youtube.com/shorts/dQw4w9WgXcQ' })
+        .expect(200);
+
+      // A patch without vehicle data must keep the make and model search columns.
+      const stored = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+      expect(stored.makeSearch).toBe('honda');
+      expect(stored.modelSearch).toBe('civic');
+
+      const detail = await request(app.getHttpServer())
+        .get(`/api/v1/public/listings/${listing.id}`)
+        .expect(200);
+      expect(detail.body.youtubeVideoId).toBe('dQw4w9WgXcQ');
+
+      const summary = await request(app.getHttpServer())
+        .get('/api/v1/public/listings?city=Berlin&make=Honda&model=Civic')
+        .expect(200);
+      const card = summary.body.items.find((item: { id: string }) => item.id === listing.id);
+      expect(card).toBeDefined();
+      expect(card).not.toHaveProperty('youtubeVideoId');
+    } finally {
+      await cleanup({ listingId: listing.id });
     }
   });
 

@@ -41,7 +41,8 @@ export type NotificationType =
   | 'listing.published'
   | 'listing.hidden'
   | 'listing.unhidden'
-  | 'listing.deleted';
+  | 'listing.deleted'
+  | 'listing.video_removed';
 
 /** The delivery channels a notification can travel on. */
 export type NotificationChannel = 'inapp' | 'email' | 'sms' | 'push';
@@ -177,6 +178,11 @@ export const TYPE_DEFAULT_CHANNELS: Record<NotificationType, NotificationChannel
    * seller's cabinet, so this notice is the only place the seller learns why.
    */
   'listing.deleted': ['inapp', 'email'],
+  /**
+   * An admin removed the video of a listing, with a reason. The listing stays
+   * on sale, so the seller only has to read why.
+   */
+  'listing.video_removed': ['inapp', 'email'],
 };
 
 /**

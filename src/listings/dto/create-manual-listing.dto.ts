@@ -11,6 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { ListingVehicleV1Dto } from './listing-vehicle-v1.dto';
+import { IsYoutubeUrl } from '../youtube-url';
 
 /**
  * Open a DRAFT listing for a car that has NOT been inspected (BE-S2).
@@ -66,6 +67,14 @@ export class CreateManualListingDto {
   @IsEmail()
   @MaxLength(254)
   contactEmail?: string;
+
+  @ApiPropertyOptional({
+    example: 'https://youtu.be/dQw4w9WgXcQ',
+    nullable: true,
+    description: 'Optional YouTube video. A blank value is treated as no video.',
+  })
+  @IsYoutubeUrl()
+  youtubeUrl?: string | null;
 
   @ApiPropertyOptional({ type: ListingVehicleV1Dto })
   @IsOptional()

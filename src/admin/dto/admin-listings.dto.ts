@@ -42,6 +42,20 @@ export class AdminHideListingDto {
   reason!: string;
 }
 
+export class AdminRemoveListingVideoDto {
+  @ApiProperty({
+    description:
+      `Why the video is removed (${ADMIN_REASON_MIN_LENGTH}-${ADMIN_REASON_MAX_LENGTH} ` +
+      'characters after trimming). The seller receives this text.',
+    example: 'The video shows a different car.',
+  })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MinLength(ADMIN_REASON_MIN_LENGTH)
+  @MaxLength(ADMIN_REASON_MAX_LENGTH)
+  reason!: string;
+}
+
 export class AdminDeleteListingDto {
   @ApiProperty({
     description:

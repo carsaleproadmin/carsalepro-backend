@@ -1233,6 +1233,14 @@ describe('Admin panel (E9) (e2e)', () => {
       const user = await makeUser('nonadmin');
       const seller = await makeUser('seller');
       const listingId = await seedListing(seller, 'ACTIVE');
+      await prisma.listing.update({
+        where: { id: listingId },
+        data: {
+          youtubeVideoId: 'dQw4w9WgXcQ',
+          contactPhone: '+49 151 1234567',
+          contactEmail: 'seller@example.test',
+        },
+      });
       const reason = 'The photos show a different car';
       const del = (token: string, body: object) =>
         bearer(
@@ -1255,6 +1263,10 @@ describe('Admin panel (E9) (e2e)', () => {
       expect(deleted.status).toBe('DELETED');
       expect(deleted.reportId).toBeNull();
       expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(0);
+      // The seller's contacts and video go with the listing.
+      expect(deleted.youtubeVideoId).toBeNull();
+      expect(deleted.contactPhone).toBeNull();
+      expect(deleted.contactEmail).toBeNull();
 
       const audit = await prisma.adminAuditLog.findFirst({
         where: { entity: 'listing', entityId: listingId, action: 'listing.delete' },
@@ -1277,6 +1289,48 @@ describe('Admin panel (E9) (e2e)', () => {
 
       const again = await del(admin.token, { reason }).expect(409);
       expect(again.body.error.code).toBe('listing_already_deleted');
+    });
+
+    it('20e. an admin removes only the video of a live listing; the seller is told', async () => {
+      const admin = await makeAdmin();
+      const user = await makeUser('nonadmin');
+      const seller = await makeUser('seller');
+      const listingId = await seedListing(seller, 'ACTIVE');
+      await prisma.listing.update({
+        where: { id: listingId },
+        data: { youtubeVideoId: 'dQw4w9WgXcQ' },
+      });
+      const reason = 'The video shows a different car';
+      const remove = (token: string, body: object) =>
+        bearer(
+          request(app.getHttpServer())
+            .post(`/api/v1/admin/listings/${listingId}/remove-video`)
+            .send(body),
+          token,
+        );
+
+      await remove(user.token, { reason }).expect(403);
+      await remove(admin.token, { reason: 'short' }).expect(400);
+
+      const res = await remove(admin.token, { reason }).expect(200);
+      expect(res.body).toMatchObject({ status: 'ACTIVE', youtubeVideoId: null });
+      const after = await prisma.listing.findUniqueOrThrow({ where: { id: listingId } });
+      expect(after.status).toBe('ACTIVE');
+      expect(after.youtubeVideoId).toBeNull();
+
+      const audit = await prisma.adminAuditLog.findFirst({
+        where: { entity: 'listing', entityId: listingId, action: 'listing.remove_video' },
+      });
+      expect(audit!.before).toMatchObject({ youtubeVideoId: 'dQw4w9WgXcQ' });
+      expect(audit!.after).toMatchObject({ youtubeVideoId: null, reason });
+
+      const notice = await prisma.notification.findFirst({
+        where: { userId: seller.userId, type: 'listing.video_removed', channel: 'inapp' },
+      });
+      expect((notice!.payload as { reason: string }).reason).toBe(reason);
+
+      const again = await remove(admin.token, { reason }).expect(409);
+      expect(again.body.error.code).toBe('listing_has_no_video');
     });
 
   });

@@ -42,6 +42,7 @@ import {
   photoLocation,
 } from './listing-photo-urls';
 import { listingSearchColumns } from './listing-search-columns';
+import { youtubeVideoIdForStorage } from './youtube-url';
 
 export { MAX_LISTING_PHOTOS };
 
@@ -190,6 +191,7 @@ export class ListingsService {
         description: dto.description ?? null,
         contactPhone: dto.contactPhone ?? null,
         contactEmail: dto.contactEmail ?? null,
+        youtubeVideoId: youtubeVideoIdForStorage(dto.youtubeUrl) ?? null,
         ...columns,
         // DEN-205. Derived last, from the values actually being written.
         ...listingSearchColumns({ city: dto.city, make: columns.make, model: columns.model }),
@@ -266,7 +268,10 @@ export class ListingsService {
      */
     const searchPatch = {
       ...(dto.city !== undefined ? { citySearch: listingSearchColumns({ city: dto.city }).citySearch } : {}),
-      ...(vehiclePatch
+      // `vehiclePatch` is `{}` when the request carries no vehicle data, so
+      // test the request: a truthy `{}` wrote empty make/model search columns
+      // on every other edit, and the listing left the make and model filters.
+      ...(dto.vehicleData !== undefined
         ? {
             makeSearch: listingSearchColumns({ make: vehiclePatch.make as string | null }).makeSearch,
             modelSearch: listingSearchColumns({ model: vehiclePatch.model as string | null }).modelSearch,
@@ -285,6 +290,9 @@ export class ListingsService {
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.contactPhone !== undefined ? { contactPhone: dto.contactPhone } : {}),
         ...(dto.contactEmail !== undefined ? { contactEmail: dto.contactEmail } : {}),
+        ...(dto.youtubeUrl !== undefined
+          ? { youtubeVideoId: youtubeVideoIdForStorage(dto.youtubeUrl) }
+          : {}),
         ...vehiclePatch,
       },
     });
@@ -456,7 +464,16 @@ export class ListingsService {
         where: { id },
         // `publicPhotosMirroredAt` goes with the objects it stands for. Left
         // set, it says a copy is in the public bucket after the copy is gone.
-        data: { status: 'DELETED', reportId: null, publicPhotosMirroredAt: null },
+        // The seller's contacts and video go too, as on an account erasure:
+        // the video can show the seller, their home or their number plate.
+        data: {
+          status: 'DELETED',
+          reportId: null,
+          publicPhotosMirroredAt: null,
+          contactPhone: null,
+          contactEmail: null,
+          youtubeVideoId: null,
+        },
       });
     });
 
@@ -698,6 +715,41 @@ export class ListingsService {
    * Only a live listing: hiding a draft, a sold or a deleted listing marked
    * it HIDDEN, and an unhide could then publish it (409 `listing_not_active`).
    */
+  /**
+   * Admin: remove only the YouTube video of a listing, with a reason the
+   * seller reads. The listing stays in the showroom. The seller can attach
+   * a different video; an admin can remove that one too, or hide the listing.
+   * A deleted listing has no video (409 `listing_already_deleted`), and a
+   * listing without a video answers 409 `listing_has_no_video`.
+   */
+  async adminRemoveVideo(
+    id: string,
+    reason: string,
+  ): Promise<{ listing: Listing; removedVideoId: string }> {
+    const before = await this.requireListing(id);
+    if (before.status === 'DELETED') {
+      throw new ConflictException({
+        error: { code: 'listing_already_deleted', message: 'The listing is already deleted' },
+      });
+    }
+    if (!before.youtubeVideoId) {
+      throw new ConflictException({
+        error: { code: 'listing_has_no_video', message: 'The listing has no video' },
+      });
+    }
+    const listing = await this.prisma.listing.update({
+      where: { id },
+      data: { youtubeVideoId: null },
+    });
+    await this.notifications.notify(listing.sellerId, 'listing.video_removed', {
+      listingId: listing.id,
+      make: listing.make,
+      model: listing.model,
+      reason,
+    });
+    return { listing, removedVideoId: before.youtubeVideoId };
+  }
+
   async adminHide(id: string, reason: string): Promise<Listing> {
     const before = await this.requireListing(id);
     if (before.status !== 'ACTIVE') {
@@ -790,6 +842,7 @@ export class ListingsService {
       // them it opened blank, and a blank field there deletes the value.
       contactPhone: l.contactPhone,
       contactEmail: l.contactEmail,
+      youtubeVideoId: l.youtubeVideoId,
       // Read from the listing's own columns: for a manual listing there is no
       // report to read from, and for a report-backed one these were copied at
       // claim time (and backfilled for pre-existing rows).
