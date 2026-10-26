@@ -43,6 +43,7 @@ import {
 } from './listing-photo-urls';
 import { listingSearchColumns } from './listing-search-columns';
 import { youtubeVideoIdForStorage } from './youtube-url';
+import { coverPhotoUrl } from './listing-cover-photo';
 
 export { MAX_LISTING_PHOTOS };
 
@@ -825,10 +826,28 @@ export class ListingsService {
       include: {
         report: { select: { code: true, photosManifest: true } },
         _count: { select: { photos: true } },
+        // DEN-521. Only the cover, for the cabinet card.
+        photos: {
+          orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+          take: 1,
+          select: { r2Key: true, bucket: true },
+        },
       },
     });
 
-    const items = listings.map((l) => ({
+    const covers = await Promise.all(
+      listings.map((l) =>
+        coverPhotoUrl(this.r2, {
+          id: l.id,
+          source: l.source,
+          publicPhotosMirroredAt: l.publicPhotosMirroredAt,
+          manifest: l.report?.photosManifest ?? null,
+          firstPhoto: l.photos[0] ?? null,
+        }),
+      ),
+    );
+
+    const items = listings.map((l, index) => ({
       id: l.id,
       status: l.status,
       source: l.source,
@@ -866,6 +885,7 @@ export class ListingsService {
         l.source === 'report'
           ? manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).length
           : l._count.photos,
+      coverPhotoUrl: covers[index],
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
       viewsCount: l.viewsCount,
       // DEN-295. The seller must see WHY the platform hid the listing, and

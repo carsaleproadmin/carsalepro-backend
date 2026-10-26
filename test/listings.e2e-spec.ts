@@ -861,6 +861,10 @@ describe('Listings (e2e)', () => {
       // ListingPhoto rows, and the cabinet must still report the pictures its
       // public card shows — the seeded manifest holds one.
       expect(item.photoCount).toBe(1);
+      // DEN-521. A draft gets its cover too. The value is a URL or null: R2
+      // can be unconfigured in this environment, and then nothing is signed.
+      expect(item).toHaveProperty('coverPhotoUrl');
+      expect(item.coverPhotoUrl === null || typeof item.coverPhotoUrl === 'string').toBe(true);
       expect(typeof item.viewsCount).toBe('number');
     } finally {
       await cleanup({ listingId, reportId: report.id });

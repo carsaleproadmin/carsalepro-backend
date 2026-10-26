@@ -80,6 +80,16 @@ export class MyListingItemDto {
   })
   photoCount!: number;
 
+  @ApiProperty({
+    example: 'https://img.carsalepro.de/listings/abc/def.640.jpg',
+    nullable: true,
+    description:
+      'The first photo of the advert, for the cabinet card (DEN-521). A permanent ' +
+      'URL for a public photo, else a signed URL that expires. Null when the ' +
+      'listing has no photo or the photo cannot be signed.',
+  })
+  coverPhotoUrl!: string | null;
+
   @ApiProperty({ example: '2026-06-13T10:00:00.000Z', nullable: true })
   publishedAt!: string | null;
 
