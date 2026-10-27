@@ -866,6 +866,15 @@ describe('Listings (e2e)', () => {
       expect(item).toHaveProperty('coverPhotoUrl');
       expect(item.coverPhotoUrl === null || typeof item.coverPhotoUrl === 'string').toBe(true);
       expect(typeof item.viewsCount).toBe('number');
+
+      // The edit page asks without covers: the item is the same, with no cover.
+      const noCovers = await request(app.getHttpServer())
+        .get('/api/v1/me/listings?covers=false')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      const bare = noCovers.body.items.find((i: { id: string }) => i.id === listingId);
+      expect(bare.coverPhotoUrl).toBeNull();
+      expect(bare.photoCount).toBe(1);
     } finally {
       await cleanup({ listingId, reportId: report.id });
     }

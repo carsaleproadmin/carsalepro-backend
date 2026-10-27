@@ -7,6 +7,7 @@ import {
   Param,
   Post,
   Patch,
+  Query,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
@@ -20,6 +21,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -275,7 +277,15 @@ export class MeListingsController {
   @Get('listings')
   @ApiOperation({ summary: "List the current user's listings" })
   @ApiOkResponse({ type: MyListingsListDto })
-  listMine(@CurrentUser('id') userId: string): Promise<MyListingsListDto> {
-    return this.listings.listMine(userId);
+  @ApiQuery({
+    name: 'covers',
+    required: false,
+    description: 'Send "false" to skip the cover photos (coverPhotoUrl is then null).',
+  })
+  listMine(
+    @CurrentUser('id') userId: string,
+    @Query('covers') covers?: string,
+  ): Promise<MyListingsListDto> {
+    return this.listings.listMine(userId, { withCovers: covers !== 'false' });
   }
 }

@@ -16,6 +16,11 @@ import {
   mirroredPhotoKey,
   photoLocation,
 } from '../listings/listing-photo-urls';
+import {
+  publicPhotoUrls,
+  reportPhotosArePublic,
+  usesReportGallery,
+} from '../listings/listing-cover-photo';
 import { LISTING_EQUIPMENT_OPTIONS } from '../listings/dto/listing-vehicle-v1.dto';
 import { engineVolumeOf, JsonObject } from '../listings/listing-vehicle-data';
 import { citySearchKeys, normalizeCompact, normalizeSearchText } from '../common/search-text';
@@ -852,8 +857,7 @@ export class PublicService {
    * public objects have a copy: a signed photo has no `thumbUrl`.
    */
   private publicPhoto(key: string): { url: string; thumbUrl?: string } {
-    const thumbUrl = this.r2.publicThumbnailUrl(key);
-    return { url: this.r2.publicObjectUrl(key), ...(thumbUrl ? { thumbUrl } : {}) };
+    return publicPhotoUrls(this.r2, key);
   }
 
   /**
@@ -872,8 +876,8 @@ export class PublicService {
     listing: ListingWithReport,
     limit: number,
   ): Promise<{ url: string; thumbUrl?: string; kind?: string; angle?: string }[]> {
-    if (listing.source === 'report' && listing.report) {
-      return this.reportPhotos(listing, listing.report.photosManifest, limit);
+    if (usesReportGallery({ source: listing.source, hasReport: Boolean(listing.report) })) {
+      return this.reportPhotos(listing, listing.report?.photosManifest ?? null, limit);
     }
     const publicConfigured = this.r2.isPublicBucketConfigured();
     if (!this.r2.isConfigured() && !publicConfigured) return [];
@@ -916,7 +920,7 @@ export class PublicService {
     manifest: Prisma.JsonValue | null,
     limit: number,
   ): Promise<{ url: string; thumbUrl?: string; kind?: string; angle?: string }[]> {
-    if (listing.publicPhotosMirroredAt && this.r2.isPublicBucketConfigured()) {
+    if (reportPhotosArePublic(listing.publicPhotosMirroredAt, this.r2.isPublicBucketConfigured())) {
       const refs = manifestPhotoRefs(manifest, Math.min(limit, MAX_LISTING_PHOTOS));
       const mirrored = refs.map((ref) => ({
         ...this.publicPhoto(mirroredPhotoKey(listing.id, ref.s3Key)),

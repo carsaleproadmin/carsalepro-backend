@@ -1,8 +1,8 @@
-import { coverPhotoUrl, CoverPhotoR2, CoverPhotoSource } from './listing-cover-photo';
+import { coverPhotoUrl, CoverPhotoSource, ListingPhotoR2 } from './listing-cover-photo';
 import { mirroredPhotoKey } from './listing-photo-urls';
 
 function r2(options: { publicBucket?: boolean; configured?: boolean; signFails?: boolean } = {}) {
-  const fake: CoverPhotoR2 = {
+  const fake: ListingPhotoR2 = {
     isConfigured: () => options.configured ?? true,
     isPublicBucketConfigured: () => options.publicBucket ?? false,
     publicObjectUrl: (key) => `https://img.test/${key}`,
@@ -19,6 +19,7 @@ const manual = (firstPhoto: CoverPhotoSource['firstPhoto']): CoverPhotoSource =>
   id: 'l1',
   source: 'manual',
   publicPhotosMirroredAt: null,
+  hasReport: false,
   manifest: null,
   firstPhoto,
 });
@@ -27,6 +28,7 @@ const report = (mirrored: boolean): CoverPhotoSource => ({
   id: 'l2',
   source: 'report',
   publicPhotosMirroredAt: mirrored ? new Date() : null,
+  hasReport: true,
   manifest: [
     { s3Key: 'report-photos/d/r/damage-1.jpg', kind: 'damage-1' },
     { s3Key: 'report-photos/d/r/front.jpg', kind: 'exterior-front' },
@@ -70,6 +72,16 @@ describe('coverPhotoUrl', () => {
     const url = await coverPhotoUrl(r2({ publicBucket: true }), report(true));
     const key = mirroredPhotoKey('l2', 'report-photos/d/r/front.jpg');
     expect(url).toBe(`https://img.test/${key}.640`);
+  });
+
+  it('falls back to the ListingPhoto rows when the report row is gone, as the showroom does', async () => {
+    const url = await coverPhotoUrl(r2(), {
+      ...report(false),
+      hasReport: false,
+      manifest: null,
+      firstPhoto: { r2Key: 'listings/s/l2/a.jpg', bucket: null },
+    });
+    expect(url).toBe('https://signed.test/listings/s/l2/a.jpg');
   });
 
   it('gives null, and does not throw, when signing fails', async () => {

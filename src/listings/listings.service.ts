@@ -818,15 +818,22 @@ export class ListingsService {
     return listing;
   }
 
-  /** List the current user's listings (any status except DELETED). */
-  async listMine(userId: string): Promise<MyListingsListDto> {
+  /**
+   * List the current user's listings (any status except DELETED).
+   *
+   * `withCovers: false` skips the cover photos. The edit page reads this list
+   * only to find one listing, and it shows no cover.
+   */
+  async listMine(userId: string, { withCovers = true } = {}): Promise<MyListingsListDto> {
     const listings = await this.prisma.listing.findMany({
       where: { sellerId: userId, status: { not: 'DELETED' } },
       orderBy: { createdAt: 'desc' },
       include: {
         report: { select: { code: true, photosManifest: true } },
         _count: { select: { photos: true } },
-        // DEN-521. Only the cover, for the cabinet card.
+        // DEN-521. Only the cover, for the cabinet card. A report-backed
+        // listing whose report is gone falls back to these rows, as on the
+        // showroom card.
         photos: {
           orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
           take: 1,
@@ -835,17 +842,20 @@ export class ListingsService {
       },
     });
 
-    const covers = await Promise.all(
-      listings.map((l) =>
-        coverPhotoUrl(this.r2, {
-          id: l.id,
-          source: l.source,
-          publicPhotosMirroredAt: l.publicPhotosMirroredAt,
-          manifest: l.report?.photosManifest ?? null,
-          firstPhoto: l.photos[0] ?? null,
-        }),
-      ),
-    );
+    const covers = withCovers
+      ? await Promise.all(
+          listings.map((l) =>
+            coverPhotoUrl(this.r2, {
+              id: l.id,
+              source: l.source,
+              publicPhotosMirroredAt: l.publicPhotosMirroredAt,
+              hasReport: Boolean(l.report),
+              manifest: l.report?.photosManifest ?? null,
+              firstPhoto: l.photos[0] ?? null,
+            }),
+          ),
+        )
+      : listings.map(() => null);
 
     const items = listings.map((l, index) => ({
       id: l.id,
