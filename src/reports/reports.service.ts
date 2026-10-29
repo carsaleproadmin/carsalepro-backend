@@ -595,13 +595,35 @@ export class ReportsService {
       hash: originalHash,
     };
 
-    const row = existing
-      ? await this.prisma.reportPhoto.update({ where: { id: existing.id }, data })
-      : await this.prisma.reportPhoto.create({ data: { reportId, ...data } });
+    let replaced = existing;
+    let row: ReportPhoto;
+    if (existing) {
+      row = await this.prisma.reportPhoto.update({ where: { id: existing.id }, data });
+    } else {
+      try {
+        row = await this.prisma.reportPhoto.create({ data: { reportId, ...data } });
+      } catch (err) {
+        // DEN-528. Two uploads of one slot ran in parallel (the app sent the
+        // same photo two times). Both found the slot empty, and the other
+        // request created the row first. Continue from that row.
+        if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
+          throw err;
+        }
+        const winner = await this.prisma.reportPhoto.findUnique({
+          where: { reportId_kind_position: { reportId, kind: dto.kind, position } },
+        });
+        if (!winner) throw err;
+        // Same original: the other request stored this photo already.
+        if (winner.hash === originalHash) return this.toPhotoDto(winner, false);
+        // A different photo: this upload replaces it, as a later upload does.
+        row = await this.prisma.reportPhoto.update({ where: { id: winner.id }, data });
+        replaced = winner;
+      }
+    }
 
     // Replaced slot: drop the superseded object (key differs via hash suffix).
-    if (existing && existing.r2Key !== r2Key) {
-      await this.r2.deleteObject(existing.r2Key).catch(() => undefined);
+    if (replaced && replaced.r2Key !== r2Key) {
+      await this.r2.deleteObject(replaced.r2Key).catch(() => undefined);
     }
 
     await this.mirrorPhotosManifest(reportId);
@@ -611,7 +633,7 @@ export class ReportsService {
         `device=${this.mask(deviceId)} ${file.size}→${processed.sizeBytes} bytes`,
     );
 
-    return this.toPhotoDto(row, existing !== null);
+    return this.toPhotoDto(row, replaced !== null);
   }
 
   async listPhotos(deviceId: string, reportId: string): Promise<ReportPhotoListDto> {
