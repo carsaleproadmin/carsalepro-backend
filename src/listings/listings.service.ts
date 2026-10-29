@@ -43,6 +43,7 @@ import {
 } from './listing-photo-urls';
 import { listingSearchColumns } from './listing-search-columns';
 import { youtubeVideoIdForStorage } from './youtube-url';
+import { coverPhotoUrl } from './listing-cover-photo';
 
 export { MAX_LISTING_PHOTOS };
 
@@ -817,18 +818,46 @@ export class ListingsService {
     return listing;
   }
 
-  /** List the current user's listings (any status except DELETED). */
-  async listMine(userId: string): Promise<MyListingsListDto> {
+  /**
+   * List the current user's listings (any status except DELETED).
+   *
+   * `withCovers: false` skips the cover photos. The edit page reads this list
+   * only to find one listing, and it shows no cover.
+   */
+  async listMine(userId: string, { withCovers = true } = {}): Promise<MyListingsListDto> {
     const listings = await this.prisma.listing.findMany({
       where: { sellerId: userId, status: { not: 'DELETED' } },
       orderBy: { createdAt: 'desc' },
       include: {
         report: { select: { code: true, photosManifest: true } },
         _count: { select: { photos: true } },
+        // DEN-521. Only the cover, for the cabinet card. A report-backed
+        // listing whose report is gone falls back to these rows, as on the
+        // showroom card.
+        photos: {
+          orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
+          take: 1,
+          select: { r2Key: true, bucket: true },
+        },
       },
     });
 
-    const items = listings.map((l) => ({
+    const covers = withCovers
+      ? await Promise.all(
+          listings.map((l) =>
+            coverPhotoUrl(this.r2, {
+              id: l.id,
+              source: l.source,
+              publicPhotosMirroredAt: l.publicPhotosMirroredAt,
+              hasReport: Boolean(l.report),
+              manifest: l.report?.photosManifest ?? null,
+              firstPhoto: l.photos[0] ?? null,
+            }),
+          ),
+        )
+      : listings.map(() => null);
+
+    const items = listings.map((l, index) => ({
       id: l.id,
       status: l.status,
       source: l.source,
@@ -866,6 +895,7 @@ export class ListingsService {
         l.source === 'report'
           ? manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).length
           : l._count.photos,
+      coverPhotoUrl: covers[index],
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
       viewsCount: l.viewsCount,
       // DEN-295. The seller must see WHY the platform hid the listing, and

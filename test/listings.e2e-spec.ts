@@ -861,7 +861,20 @@ describe('Listings (e2e)', () => {
       // ListingPhoto rows, and the cabinet must still report the pictures its
       // public card shows — the seeded manifest holds one.
       expect(item.photoCount).toBe(1);
+      // DEN-521. A draft gets its cover too. The value is a URL or null: R2
+      // can be unconfigured in this environment, and then nothing is signed.
+      expect(item).toHaveProperty('coverPhotoUrl');
+      expect(item.coverPhotoUrl === null || typeof item.coverPhotoUrl === 'string').toBe(true);
       expect(typeof item.viewsCount).toBe('number');
+
+      // The edit page asks without covers: the item is the same, with no cover.
+      const noCovers = await request(app.getHttpServer())
+        .get('/api/v1/me/listings?covers=false')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      const bare = noCovers.body.items.find((i: { id: string }) => i.id === listingId);
+      expect(bare.coverPhotoUrl).toBeNull();
+      expect(bare.photoCount).toBe(1);
     } finally {
       await cleanup({ listingId, reportId: report.id });
     }
