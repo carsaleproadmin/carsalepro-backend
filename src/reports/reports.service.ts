@@ -35,6 +35,9 @@ import { engineVolumeOf, JsonObject, mergeVehicleData } from '../listings/listin
 
 const UUID_CODE_RE = /^CSP-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/** Tries to write one photo slot while parallel uploads change it (DEN-528). */
+const SLOT_WRITE_ATTEMPTS = 3;
+
 @Injectable()
 export class ReportsService {
   private readonly logger = new Logger(ReportsService.name);
@@ -595,13 +598,51 @@ export class ReportsService {
       hash: originalHash,
     };
 
-    const row = existing
-      ? await this.prisma.reportPhoto.update({ where: { id: existing.id }, data })
-      : await this.prisma.reportPhoto.create({ data: { reportId, ...data } });
+    // DEN-528. Two uploads of one slot can run in parallel (the app sent the
+    // photo two times, or two runs of its sync queue overlapped). Every write
+    // is conditional on the slot as this request last read it. When another
+    // request changed the slot first, read it again and decide again: the same
+    // original means that request stored this photo already; a different one
+    // is replaced, as a later upload replaces it.
+    let current = existing;
+    let replaced: ReportPhoto | null = null;
+    let row: ReportPhoto | null = null;
+    for (let attempt = 0; attempt < SLOT_WRITE_ATTEMPTS && !row; attempt++) {
+      if (current && current.hash === originalHash) return this.toPhotoDto(current, false);
+      if (!current) {
+        try {
+          row = await this.prisma.reportPhoto.create({ data: { reportId, ...data } });
+        } catch (err) {
+          if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
+            throw err;
+          }
+        }
+      } else {
+        const { count } = await this.prisma.reportPhoto.updateMany({
+          where: { id: current.id, r2Key: current.r2Key },
+          data,
+        });
+        if (count === 1) {
+          row = await this.prisma.reportPhoto.findUniqueOrThrow({ where: { id: current.id } });
+          replaced = current;
+        }
+      }
+      if (!row) {
+        current = await this.prisma.reportPhoto.findUnique({
+          where: { reportId_kind_position: { reportId, kind: dto.kind, position } },
+        });
+      }
+    }
+    if (!row) {
+      throw new ConflictException({
+        error: 'photo_slot_busy',
+        message: 'Another upload changed this photo slot. Try again.',
+      });
+    }
 
     // Replaced slot: drop the superseded object (key differs via hash suffix).
-    if (existing && existing.r2Key !== r2Key) {
-      await this.r2.deleteObject(existing.r2Key).catch(() => undefined);
+    if (replaced && replaced.r2Key !== r2Key) {
+      await this.r2.deleteObject(replaced.r2Key).catch(() => undefined);
     }
 
     await this.mirrorPhotosManifest(reportId);
@@ -611,7 +652,7 @@ export class ReportsService {
         `device=${this.mask(deviceId)} ${file.size}→${processed.sizeBytes} bytes`,
     );
 
-    return this.toPhotoDto(row, existing !== null);
+    return this.toPhotoDto(row, replaced !== null);
   }
 
   async listPhotos(deviceId: string, reportId: string): Promise<ReportPhotoListDto> {
