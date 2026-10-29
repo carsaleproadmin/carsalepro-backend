@@ -162,6 +162,26 @@ describe('Report photos — server-side compression (e2e)', () => {
     expect(await r2.objectExists(first.body.r2Key)).toBe(false); // superseded object dropped
   }, 90_000);
 
+  it('two parallel uploads of the same photo give 201 and one row (DEN-528)', async () => {
+    if (!r2Configured) return;
+    const did = uniqueDeviceId();
+    const report = await seedReport(did);
+    const a = fixture('small-800x600.png');
+
+    const [first, second] = await Promise.all([
+      upload(did, report.id, a, { kind: 'odometer' }),
+      upload(did, report.id, a, { kind: 'odometer' }),
+    ]);
+    cleanupKeys.push(first.body.r2Key);
+
+    expect([first.status, second.status]).toEqual([201, 201]);
+    expect(second.body.photoId).toBe(first.body.photoId);
+    expect(second.body.r2Key).toBe(first.body.r2Key);
+    const rows = await prisma.reportPhoto.findMany({ where: { reportId: report.id } });
+    expect(rows).toHaveLength(1);
+    expect(await r2.objectExists(first.body.r2Key)).toBe(true);
+  }, 90_000);
+
   it('rejects wrong owner (403), garbage bytes (400), oversize (413) and bad hash (400)', async () => {
     if (!r2Configured) return;
     const did = uniqueDeviceId();
