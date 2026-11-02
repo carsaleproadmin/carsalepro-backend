@@ -54,6 +54,15 @@ export const SUPPORTED_LOCALES: NotificationLocale[] = ['de', 'en', 'ru'];
 export const DEFAULT_LOCALE: NotificationLocale = 'de';
 
 /**
+ * Locales that only SOME templates cover (DEN-540): the auth letters have a
+ * Ukrainian version, the other types do not. A type with no template in one of
+ * these locales falls back to `DEFAULT_LOCALE`, as an unknown locale does.
+ */
+export type PartialLocale = 'uk';
+
+export const PARTIAL_LOCALES: PartialLocale[] = ['uk'];
+
+/**
  * Per-type default channels (from the E11 matrix). `inapp` is ALWAYS added by
  * NotificationService regardless of what is listed here, so the in-app history
  * is complete; the entries here drive the EXTERNAL channels (email/sms/push).

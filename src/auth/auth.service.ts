@@ -13,6 +13,7 @@ import { hash, verify } from '@node-rs/argon2';
 import { User } from '@prisma/client';
 import { createHash, randomBytes } from 'node:crypto';
 import { AppConfig } from '../config/configuration';
+import { PARTIAL_LOCALES, SUPPORTED_LOCALES } from '../notifications/notification-types';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
@@ -196,8 +197,12 @@ export class AuthService {
    * amount of observable work either way, so the response cannot be used to
    * learn whether an address is registered. The raw token is handed straight to
    * the notification layer and is never returned to a caller — see SECURITY.md.
+   *
+   * `locale` is the language of the page that asked (DEN-540). With no
+   * locale, the letter uses `User.locale`, as before. See `authLetterLocale`
+   * for a locale with no template.
    */
-  async requestPasswordResetAndNotify(email: string): Promise<void> {
+  async requestPasswordResetAndNotify(email: string, locale?: string): Promise<void> {
     const user = await this.prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
     });
@@ -209,27 +214,31 @@ export class AuthService {
       'password_reset',
       60,
     );
-    await this.notifications.notify(user.id, 'auth.password_reset', {
-      resetUrl: this.buildWebUrl('/reset-password', grant.rawToken),
-      expiresAt: grant.expiresAt.toISOString(),
-    });
+    await this.notifications.notify(
+      user.id,
+      'auth.password_reset',
+      {
+        resetUrl: this.buildWebUrl('/reset-password', grant.rawToken),
+        expiresAt: grant.expiresAt.toISOString(),
+      },
+      locale === undefined ? undefined : { locale: authLetterLocale(locale) },
+    );
   }
 
   /**
    * Email the freshly-registered user their single-use verification link.
    *
-   * The locale is pinned to English (DEN-200) rather than taken from
-   * `User.locale`. That is the client's instruction, and it is also the only
-   * defensible default here: this is the one letter sent before the account
-   * means anything, `User.locale` defaults to `de` for anyone who did not say
-   * otherwise, and the template catalog covers three languages against the
-   * site's thirty-five - so "the reader's own language" is a promise this layer
-   * cannot keep anyway. English is the one it can.
+   * `locale` is the language of the site page (DEN-540), so a reader who signed
+   * up in German gets a German letter. It is NOT taken from `User.locale`:
+   * that defaults to `de` for anyone who did not say otherwise. With no page
+   * language (the mobile app, an older site) the letter stays in English, as
+   * the client asked in DEN-200.
    */
   async sendVerificationEmail(
     userId: string,
     email: string,
     grant: VerificationGrant,
+    locale?: string,
   ): Promise<void> {
     await this.notifications.notify(
       userId,
@@ -239,7 +248,7 @@ export class AuthService {
         verifyUrl: this.buildWebUrl('/verify', grant.rawToken),
         expiresAt: grant.expiresAt.toISOString(),
       },
-      { locale: 'en' },
+      { locale: locale === undefined ? 'en' : authLetterLocale(locale) },
     );
   }
 
@@ -258,7 +267,7 @@ export class AuthService {
    * commonest case there is: a reader who clicks "send it again", then finds
    * the first letter and opens that one.
    */
-  async resendVerificationEmail(email: string): Promise<void> {
+  async resendVerificationEmail(email: string, locale?: string): Promise<void> {
     const user = await this.prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
     });
@@ -270,7 +279,7 @@ export class AuthService {
       'verify_email',
       60 * 24,
     );
-    await this.sendVerificationEmail(user.id, user.email, grant);
+    await this.sendVerificationEmail(user.id, user.email, grant, locale);
   }
 
   private buildWebUrl(path: string, token: string): string {
@@ -342,4 +351,15 @@ export class AuthService {
     });
     return this.issueToken(user);
   }
+}
+
+/**
+ * The template language of an auth letter asked for in `locale` (DEN-540).
+ * A locale with no template gets English, not the German default: the reader
+ * asked in a language that is not German, and English is the one most of them
+ * can read.
+ */
+function authLetterLocale(locale: string): string {
+  const written: string[] = [...SUPPORTED_LOCALES, ...PARTIAL_LOCALES];
+  return written.includes(locale) ? locale : 'en';
 }
