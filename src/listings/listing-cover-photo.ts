@@ -18,17 +18,18 @@ export interface ListingPhotoR2 {
  * exists. Without it (an erased report), the listing falls back to its own
  * `ListingPhoto` rows, the same as a manual listing.
  *
- * It also stops when the seller copied the report data into the listing
- * (DEN-535). The copy includes the walk-around and the cabin photos, and from
- * then on the seller's gallery is the one the buyer sees. The report keeps its
- * own photos, unchanged.
+ * It also stops when the report photos were copied into the listing (DEN-535).
+ * The copy holds the walk-around and the cabin, and from then on the seller's
+ * gallery is the one the buyer sees. It reads the PHOTO stamp, not the data
+ * one: the photos wait for the end of the upload (DEN-539), and until then the
+ * report gallery is the only complete one. The report keeps its own photos.
  */
 export function usesReportGallery(listing: {
   source: string;
   hasReport: boolean;
-  reportDataCopiedAt: Date | null;
+  reportPhotosCopiedAt: Date | null;
 }): boolean {
-  return listing.source === 'report' && listing.hasReport && !listing.reportDataCopiedAt;
+  return listing.source === 'report' && listing.hasReport && !listing.reportPhotosCopiedAt;
 }
 
 /**
@@ -67,8 +68,8 @@ export interface CoverPhotoSource {
   publicPhotosMirroredAt: Date | null;
   /** True when the report row of the listing exists. */
   hasReport: boolean;
-  /** Set when the seller copied the report data into the listing (DEN-535). */
-  reportDataCopiedAt: Date | null;
+  /** Set when the report photos were copied into the listing (DEN-539). */
+  reportPhotosCopiedAt: Date | null;
   /** `Report.photosManifest` of a report-backed listing. */
   manifest: Prisma.JsonValue | null;
   /** The first `ListingPhoto` row of the listing, in gallery order. */

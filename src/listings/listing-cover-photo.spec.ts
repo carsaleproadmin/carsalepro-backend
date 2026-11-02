@@ -20,7 +20,7 @@ const manual = (firstPhoto: CoverPhotoSource['firstPhoto']): CoverPhotoSource =>
   source: 'manual',
   publicPhotosMirroredAt: null,
   hasReport: false,
-  reportDataCopiedAt: null,
+  reportPhotosCopiedAt: null,
   manifest: null,
   firstPhoto,
 });
@@ -30,7 +30,7 @@ const report = (mirrored: boolean): CoverPhotoSource => ({
   source: 'report',
   publicPhotosMirroredAt: mirrored ? new Date() : null,
   hasReport: true,
-  reportDataCopiedAt: null,
+  reportPhotosCopiedAt: null,
   manifest: [
     { s3Key: 'report-photos/d/r/damage-1.jpg', kind: 'damage-1' },
     { s3Key: 'report-photos/d/r/front.jpg', kind: 'exterior-front' },
@@ -86,10 +86,10 @@ describe('coverPhotoUrl', () => {
     expect(url).toBe('https://signed.test/listings/s/l2/a.jpg');
   });
 
-  it('uses the ListingPhoto rows once the seller copied the report data (DEN-535)', async () => {
+  it('uses the ListingPhoto rows once the report photos were copied (DEN-539)', async () => {
     const url = await coverPhotoUrl(r2(), {
       ...report(true),
-      reportDataCopiedAt: new Date(),
+      reportPhotosCopiedAt: new Date(),
       firstPhoto: { r2Key: 'listings/l2/copy.jpg', bucket: null },
     });
     expect(url).toBe('https://signed.test/listings/l2/copy.jpg');

@@ -276,15 +276,17 @@ export class ListingsService {
    *   deletes a photo deletes the copy. The listing keeps `reportId`, so the
    *   showroom still shows the inspection badge and the full report.
    *
-   * Idempotent. A manual listing, or a listing that already has its copy, is
-   * returned as it is. The stamp is written LAST, and only when every photo
-   * was copied: a failed copy leaves the listing as it was, and the next call
-   * continues. A photo that is already in the gallery (same hash) is not
-   * copied twice.
+   * Idempotent. A manual listing, or a listing that already has both copies,
+   * is returned as it is. The data and the photos have their own stamps
+   * (DEN-539): the photos wait until the app has finished the upload. Each
+   * stamp is written LAST, and only when its copy succeeded: a failed copy
+   * leaves the listing as it was, and the next call continues. A photo that
+   * is already in the gallery (same hash) is not copied twice.
    */
   async copyReportData(userId: string, id: string): Promise<Listing> {
     const listing = await this.requireOwnedListing(userId, id);
-    if (listing.source === 'manual' || listing.reportDataCopiedAt) return listing;
+    if (listing.source === 'manual') return listing;
+    if (listing.reportDataCopiedAt && listing.reportPhotosCopiedAt) return listing;
     if (listing.status === 'DELETED') {
       throw new BadRequestException({
         error: { code: 'listing_deleted', message: 'Cannot edit a deleted listing' },
@@ -294,26 +296,41 @@ export class ListingsService {
     const report = listing.reportId
       ? await this.prisma.report.findUnique({
           where: { id: listing.reportId },
-          select: { reportData: true, photosManifest: true },
+          select: { reportData: true, photosManifest: true, uploaded: true },
         })
       : null;
 
-    if (report) await this.copyReportPhotos(listing.id, report.photosManifest);
+    const data: Prisma.ListingUpdateInput = {};
 
-    const base = (listing.vehicleData ?? {}) as JsonObject;
-    const merged = sanitizeVehicleData(
-      mergeVehicleData(base, editableReportBlocks((report?.reportData ?? {}) as JsonObject)),
-    );
-    return this.prisma.listing.update({
-      where: { id },
-      data: {
-        // Only the JSON. The columns were copied from the report at claim
-        // time, and recomputing them here could change what the showroom
-        // filters on before the seller changed anything.
-        vehicleData: merged as Prisma.InputJsonValue,
-        reportDataCopiedAt: new Date(),
-      },
-    });
+    /*
+     * DEN-539. The photos wait for the end of the upload. The app uploads
+     * only while it is open, and a copy taken earlier froze the gallery at
+     * the photos that had arrived: report CSP-1390d655 had 9 of 60 at
+     * publish time. Until the stamp is set the gallery is the report's own,
+     * so nothing is hidden meanwhile. A listing with no report has nothing
+     * to wait for.
+     */
+    if (!listing.reportPhotosCopiedAt && (!report || report.uploaded)) {
+      if (report) await this.copyReportPhotos(listing.id, report.photosManifest);
+      data.reportPhotosCopiedAt = new Date();
+    }
+
+    // The data is copied at once, so the seller can edit the car straight
+    // away. It is copied ONCE: a second merge would overwrite their edits.
+    if (!listing.reportDataCopiedAt) {
+      const base = (listing.vehicleData ?? {}) as JsonObject;
+      const merged = sanitizeVehicleData(
+        mergeVehicleData(base, editableReportBlocks((report?.reportData ?? {}) as JsonObject)),
+      );
+      // Only the JSON. The columns were copied from the report at claim
+      // time, and recomputing them here could change what the showroom
+      // filters on before the seller changed anything.
+      data.vehicleData = merged as Prisma.InputJsonValue;
+      data.reportDataCopiedAt = new Date();
+    }
+
+    if (Object.keys(data).length === 0) return listing;
+    return this.prisma.listing.update({ where: { id }, data });
   }
 
   /**
@@ -1007,7 +1024,7 @@ export class ListingsService {
               source: l.source,
               publicPhotosMirroredAt: l.publicPhotosMirroredAt,
               hasReport: Boolean(l.report),
-              reportDataCopiedAt: l.reportDataCopiedAt,
+              reportPhotosCopiedAt: l.reportPhotosCopiedAt,
               manifest: l.report?.photosManifest ?? null,
               firstPhoto: l.photos[0] ?? null,
             }),
@@ -1054,7 +1071,7 @@ export class ListingsService {
       photoCount: usesReportGallery({
         source: l.source,
         hasReport: Boolean(l.report),
-        reportDataCopiedAt: l.reportDataCopiedAt,
+        reportPhotosCopiedAt: l.reportPhotosCopiedAt,
       })
         ? manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).length
         : l._count.photos,
@@ -1188,7 +1205,7 @@ export class ListingsService {
     // 2. The report's own photos. Not after the copy (DEN-535): the showroom
     // then reads the seller's rows, and a mirrored report photo would be a
     // public object that no page shows.
-    const refs = listing.reportDataCopiedAt
+    const refs = listing.reportPhotosCopiedAt
       ? []
       : manifestPhotoRefs(listing.report?.photosManifest, MAX_LISTING_PHOTOS);
     for (const ref of refs) {

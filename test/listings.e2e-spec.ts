@@ -1323,6 +1323,117 @@ describe('Listings (e2e)', () => {
       }
     });
 
+    // DEN-539. A copy taken while the app still uploads froze the gallery at
+    // the photos that had arrived.
+    it('16e. copy-report-data waits for the end of the upload before it copies the photos', async () => {
+      const owner = await newSeller();
+      const code = uniqueCode();
+      const deviceId = uniqueDeviceId();
+      const report = await prisma.report.create({
+        data: {
+          deviceId,
+          code,
+          s3Key: `free/${deviceId}/${code}.pdf`,
+          tier: 'free',
+          uploaded: false,
+          userId: owner.userId,
+          make: 'Mercedes-Benz',
+          model: 'CLK',
+          year: 2004,
+          reportData: { vehicle: { make: 'Mercedes-Benz', model: 'CLK', year: 2004 } },
+          photosManifest: [
+            { s3Key: `report-photos/${deviceId}/r/front.jpg`, kind: 'exterior-front' },
+          ],
+        },
+      });
+
+      const r2 = app.get(R2Service);
+      const sharp = (await import('sharp')).default;
+      const reads: string[] = [];
+      jest.spyOn(r2, 'isConfigured').mockReturnValue(true);
+      jest.spyOn(r2, 'isPublicBucketConfigured').mockReturnValue(false);
+      jest.spyOn(r2, 'getObjectBytes').mockImplementation(async (key: string) => {
+        reads.push(key);
+        // Different bytes per key, so the hash check does not merge them.
+        return sharp({
+          create: { width: 40, height: 30, channels: 3, background: { r: reads.length, g: 0, b: 0 } },
+        })
+          .jpeg()
+          .toBuffer();
+      });
+      jest.spyOn(r2, 'putObject').mockResolvedValue(undefined);
+      jest
+        .spyOn(r2, 'createPresignedDownloadUrl')
+        .mockImplementation(async (key: string) => ({ url: `https://signed.test/${key}` }) as never);
+
+      let listingId: string | undefined;
+      const copy = () =>
+        request(app.getHttpServer())
+          .post(`/api/v1/listings/${listingId}/copy-report-data`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(201);
+      try {
+        const created = await request(app.getHttpServer())
+          .post('/api/v1/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ reportCode: code })
+          .expect(201);
+        listingId = created.body.id as string;
+
+        // Still uploading: the data is copied and editable, the photos wait.
+        const early = await copy();
+        expect(early.body.reportDataCopiedAt).toEqual(expect.any(String));
+        expect(early.body.reportPhotosCopiedAt).toBeNull();
+        expect(reads).toEqual([]);
+        expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(0);
+        await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listingId}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ vehicleData: { vehicle: { year: 2005 } } })
+          .expect(200);
+
+        // The cabinet still counts the report gallery meanwhile.
+        const mine = await request(app.getHttpServer())
+          .get('/api/v1/me/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+        const row = (mine.body.items as { id: string; photoCount: number }[]).find(
+          (item) => item.id === listingId,
+        );
+        expect(row?.photoCount).toBe(1);
+
+        // A photo arrives late, then the app completes the upload.
+        await prisma.report.update({
+          where: { id: report.id },
+          data: {
+            uploaded: true,
+            photosManifest: [
+              { s3Key: `report-photos/${deviceId}/r/front.jpg`, kind: 'exterior-front' },
+              { s3Key: `report-photos/${deviceId}/r/left.jpg`, kind: 'exterior-left' },
+            ],
+          },
+        });
+
+        const late = await copy();
+        expect(late.body.reportPhotosCopiedAt).toEqual(expect.any(String));
+        // The seller's edit survives: the data is not copied a second time.
+        expect((late.body.vehicleData as { vehicle: { year: number } }).vehicle.year).toBe(2005);
+        const photos = await prisma.listingPhoto.findMany({
+          where: { listingId },
+          orderBy: { order: 'asc' },
+        });
+        expect(photos.map((p) => p.caption)).toEqual(['left', 'front']);
+
+        // And only once.
+        await copy();
+        expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(2);
+      } finally {
+        jest.restoreAllMocks();
+        if (listingId) await prisma.listingPhoto.deleteMany({ where: { listingId } });
+        await cleanup({ listingId, reportId: report.id });
+      }
+    });
+
     it('16c. copy-report-data on a manual listing changes nothing', async () => {
       const seller = await newSeller();
       const listing = await createManual(seller.token, { city: 'Kiel' });

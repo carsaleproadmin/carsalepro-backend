@@ -881,7 +881,7 @@ export class PublicService {
       usesReportGallery({
         source: listing.source,
         hasReport: Boolean(listing.report),
-        reportDataCopiedAt: listing.reportDataCopiedAt,
+        reportPhotosCopiedAt: listing.reportPhotosCopiedAt,
       })
     ) {
       return this.reportPhotos(listing, listing.report?.photosManifest ?? null, limit);

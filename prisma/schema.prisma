@@ -1072,6 +1072,12 @@ model Listing {
   /// its own gallery, and the seller edits them like a manual listing. The
   /// report itself is never changed. Null = the listing still reads the report.
   reportDataCopiedAt     DateTime?     @map("report_data_copied_at")
+  /// DEN-539. When the walk-around and cabin photos of the report were copied
+  /// into `ListingPhoto` rows. Set only once the report upload is complete, so
+  /// a photo the app sends after the first open still reaches the listing.
+  /// The gallery rule reads THIS stamp: until it is set, the showroom and the
+  /// cabinet show the report gallery. Null = not copied.
+  reportPhotosCopiedAt   DateTime?     @map("report_photos_copied_at")
   /// A listing the PLATFORM created to fill the showroom, not a car anybody is
   /// selling (DEN-216).
   ///
