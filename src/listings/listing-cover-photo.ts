@@ -17,9 +17,18 @@ export interface ListingPhotoR2 {
  * A report-backed listing shows the report manifest only while the report row
  * exists. Without it (an erased report), the listing falls back to its own
  * `ListingPhoto` rows, the same as a manual listing.
+ *
+ * It also stops when the seller copied the report data into the listing
+ * (DEN-535). The copy includes the walk-around and the cabin photos, and from
+ * then on the seller's gallery is the one the buyer sees. The report keeps its
+ * own photos, unchanged.
  */
-export function usesReportGallery(listing: { source: string; hasReport: boolean }): boolean {
-  return listing.source === 'report' && listing.hasReport;
+export function usesReportGallery(listing: {
+  source: string;
+  hasReport: boolean;
+  reportDataCopiedAt: Date | null;
+}): boolean {
+  return listing.source === 'report' && listing.hasReport && !listing.reportDataCopiedAt;
 }
 
 /**
@@ -58,6 +67,8 @@ export interface CoverPhotoSource {
   publicPhotosMirroredAt: Date | null;
   /** True when the report row of the listing exists. */
   hasReport: boolean;
+  /** Set when the seller copied the report data into the listing (DEN-535). */
+  reportDataCopiedAt: Date | null;
   /** `Report.photosManifest` of a report-backed listing. */
   manifest: Prisma.JsonValue | null;
   /** The first `ListingPhoto` row of the listing, in gallery order. */

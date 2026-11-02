@@ -96,6 +96,16 @@ export class PhotoProcessingService {
     }
   }
 
+  /**
+   * Read the pixel size of an image that this pipeline ALREADY produced, without
+   * encoding it again (DEN-535). A report photo is copied into a listing as the
+   * same bytes, and a second JPEG pass would only lose quality.
+   */
+  async measure(input: Buffer): Promise<{ width: number; height: number }> {
+    const { width, height } = await sharp(input).metadata();
+    return { width: width ?? 0, height: height ?? 0 };
+  }
+
   private acquire(): Promise<void> {
     if (this.active < MAX_CONCURRENT) {
       this.active += 1;

@@ -27,6 +27,7 @@ import {
   PublishResultDto,
 } from './dto/listing-response.dto';
 import {
+  editableReportBlocks,
   engineVolumeOf,
   JsonObject,
   mergeVehicleData,
@@ -43,7 +44,7 @@ import {
 } from './listing-photo-urls';
 import { listingSearchColumns } from './listing-search-columns';
 import { youtubeVideoIdForStorage } from './youtube-url';
-import { coverPhotoUrl } from './listing-cover-photo';
+import { coverPhotoUrl, usesReportGallery } from './listing-cover-photo';
 
 export { MAX_LISTING_PHOTOS };
 
@@ -229,6 +230,133 @@ export class ListingsService {
     return this.requireOwnedListing(userId, id);
   }
 
+  /**
+   * DEN-535. Give a report-backed listing its own copy of the report data, so
+   * the seller can edit it in the full editor like a manual listing.
+   *
+   * WHAT IS COPIED
+   *   - `vehicleData`: the report blocks that the manual payload shares with
+   *     the report (`vehicle`, `operational`, `wheels`, `damages`,
+   *     `thickness`), through the same sanitizer as a seller patch. The
+   *     inspector's cost figures, scores and sign-off are not copied.
+   *   - photos: the walk-around and the cabin, as `ListingPhoto` rows with the
+   *     catalog angle id as the caption. That is how the editor puts a photo
+   *     in its slot. Close-ups of damage, paint and wheels stay in the report.
+   *
+   * WHAT IS NOT CHANGED
+   *   The report. Its row, its `reportData`, its manifest and its objects in
+   *   R2 are only read. The photos are COPIED into new keys, so a seller who
+   *   deletes a photo deletes the copy. The listing keeps `reportId`, so the
+   *   showroom still shows the inspection badge and the full report.
+   *
+   * Idempotent. A manual listing, or a listing that already has its copy, is
+   * returned as it is. The stamp is written LAST, and only when every photo
+   * was copied: a failed copy leaves the listing as it was, and the next call
+   * continues. A photo that is already in the gallery (same hash) is not
+   * copied twice.
+   */
+  async copyReportData(userId: string, id: string): Promise<Listing> {
+    const listing = await this.requireOwnedListing(userId, id);
+    if (listing.source === 'manual' || listing.reportDataCopiedAt) return listing;
+    if (listing.status === 'DELETED') {
+      throw new BadRequestException({
+        error: { code: 'listing_deleted', message: 'Cannot edit a deleted listing' },
+      });
+    }
+
+    const report = listing.reportId
+      ? await this.prisma.report.findUnique({
+          where: { id: listing.reportId },
+          select: { reportData: true, photosManifest: true },
+        })
+      : null;
+
+    if (report) await this.copyReportPhotos(listing.id, report.photosManifest);
+
+    const base = (listing.vehicleData ?? {}) as JsonObject;
+    const merged = sanitizeVehicleData(
+      mergeVehicleData(base, editableReportBlocks((report?.reportData ?? {}) as JsonObject)),
+    );
+    return this.prisma.listing.update({
+      where: { id },
+      data: {
+        // Only the JSON. The columns were copied from the report at claim
+        // time, and recomputing them here could change what the showroom
+        // filters on before the seller changed anything.
+        vehicleData: merged as Prisma.InputJsonValue,
+        reportDataCopiedAt: new Date(),
+      },
+    });
+  }
+
+  /**
+   * Copy the walk-around and cabin photos of a report into the listing's own
+   * gallery. The bytes are copied as they are: the report pipeline already
+   * made them 1920 px mozjpeg, and a second JPEG pass would only lose quality.
+   */
+  private async copyReportPhotos(listingId: string, manifest: Prisma.JsonValue): Promise<void> {
+    const refs = manifestPhotoRefs(manifest, Number.MAX_SAFE_INTEGER).filter(
+      (ref) =>
+        ref.angle &&
+        (ref.kind?.startsWith('exterior-') || ref.kind?.startsWith('interior-')),
+    );
+    if (refs.length === 0) return;
+    if (!this.r2.isConfigured()) {
+      throw new HttpException(
+        { error: { code: 'storage_unavailable', message: 'Cloud storage is not configured' } },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    const existing = await this.prisma.listingPhoto.findMany({
+      where: { listingId },
+      select: { hash: true, caption: true, order: true },
+    });
+    const hashes = new Set(existing.map((row) => row.hash));
+    // One photo per slot. A second photo of the same angle goes to the free
+    // list with no caption, as an extra photo does in the editor.
+    const captions = new Set(existing.map((row) => row.caption));
+    let count = existing.length;
+    let order = existing.reduce((max, row) => Math.max(max, row.order + 1), 0);
+
+    for (const ref of refs) {
+      if (count >= MAX_LISTING_PHOTOS) break;
+      const bytes = await this.r2.getObjectBytes(ref.s3Key);
+      if (!bytes) {
+        this.logger.warn(`Report photo ${ref.s3Key} is missing - not copied`);
+        continue;
+      }
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      if (hashes.has(hash)) continue;
+
+      const { width, height } = await this.photoProcessing.measure(bytes);
+      // Same key layout and bucket choice as a seller upload (`addPhoto`).
+      const r2Key = `listings/${listingId}/${randomUUID()}.jpg`;
+      const bucket = this.r2.isPublicBucketConfigured()
+        ? await this.r2.publicPutObject(r2Key, bytes, 'image/jpeg')
+        : await this.r2.putObject(r2Key, bytes, 'image/jpeg').then(() => null);
+      const caption = ref.angle && !captions.has(ref.angle) ? ref.angle : null;
+      await this.prisma.listingPhoto.create({
+        data: {
+          listingId,
+          r2Key,
+          bucket,
+          sizeBytes: bytes.length,
+          sourceBytes: bytes.length,
+          width,
+          height,
+          format: 'jpeg',
+          hash,
+          order: order++,
+          caption,
+        },
+      });
+      hashes.add(hash);
+      if (caption) captions.add(caption);
+      count += 1;
+    }
+  }
+
   /** Patch editable fields on an owned, non-deleted listing. */
   async update(userId: string, id: string, dto: UpdateListingDto): Promise<Listing> {
     const listing = await this.requireOwnedListing(userId, id);
@@ -240,9 +368,11 @@ export class ListingsService {
 
     let vehiclePatch: Prisma.ListingUpdateInput = {};
     if (dto.vehicleData !== undefined) {
-      if (listing.source !== 'manual') {
-        // An inspected listing's vehicle data IS the report. Letting the seller
-        // edit it would let the listing contradict the document buyers trust.
+      if (listing.source !== 'manual' && !listing.reportDataCopiedAt) {
+        // Until the copy, an inspected listing's vehicle data IS the report, and
+        // a patch here would change what the report says. After the copy
+        // (`copyReportData`, DEN-535) the listing has its own data and the
+        // report stays as the inspector made it.
         throw new BadRequestException({
           error: {
             code: 'vehicle_immutable',
@@ -850,6 +980,7 @@ export class ListingsService {
               source: l.source,
               publicPhotosMirroredAt: l.publicPhotosMirroredAt,
               hasReport: Boolean(l.report),
+              reportDataCopiedAt: l.reportDataCopiedAt,
               manifest: l.report?.photosManifest ?? null,
               firstPhoto: l.photos[0] ?? null,
             }),
@@ -891,10 +1022,16 @@ export class ListingsService {
       // Capped at MAX_LISTING_PHOTOS because that is the subset the showroom
       // displays: the count answers "how many pictures does my advert show",
       // not "how many frames did the inspector take".
-      photoCount:
-        l.source === 'report'
-          ? manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).length
-          : l._count.photos,
+      photoCount: usesReportGallery({
+        source: l.source,
+        hasReport: Boolean(l.report),
+        reportDataCopiedAt: l.reportDataCopiedAt,
+      })
+        ? manifestPhotoRefs(l.report?.photosManifest, MAX_LISTING_PHOTOS).length
+        : l._count.photos,
+      // DEN-535. The cabinet opens the full editor for every listing. This
+      // tells it that a report-backed listing already has its own data.
+      reportDataCopiedAt: l.reportDataCopiedAt ? l.reportDataCopiedAt.toISOString() : null,
       coverPhotoUrl: covers[index],
       publishedAt: l.publishedAt ? l.publishedAt.toISOString() : null,
       viewsCount: l.viewsCount,
@@ -1019,8 +1156,12 @@ export class ListingsService {
       }
     }
 
-    // 2. The report's own photos.
-    const refs = manifestPhotoRefs(listing.report?.photosManifest, MAX_LISTING_PHOTOS);
+    // 2. The report's own photos. Not after the copy (DEN-535): the showroom
+    // then reads the seller's rows, and a mirrored report photo would be a
+    // public object that no page shows.
+    const refs = listing.reportDataCopiedAt
+      ? []
+      : manifestPhotoRefs(listing.report?.photosManifest, MAX_LISTING_PHOTOS);
     for (const ref of refs) {
       try {
         const bytes = await this.r2.getObjectBytes(ref.s3Key);

@@ -773,8 +773,9 @@ export class PublicService {
        * listing gives its own value in `declaredSpecs`, as a claim of the
        * seller - provenance matters.
        */
-      engineVolumeL:
-        l.source === 'report' ? engineVolumeOf(l.vehicleData as JsonObject | null) : null,
+      engineVolumeL: hasSellerData(l)
+        ? null
+        : engineVolumeOf(l.vehicleData as JsonObject | null),
     };
   }
 
@@ -796,7 +797,7 @@ export class PublicService {
    * also holds the VIN, which the public page must not show.
    */
   private declaredSpecsOf(l: Listing): Record<string, unknown> | null {
-    if (l.source !== 'manual') return null;
+    if (!hasSellerData(l)) return null;
     const data = (l.vehicleData ?? null) as Record<string, unknown> | null;
     const vehicle = data?.vehicle;
     if (!vehicle || typeof vehicle !== 'object' || Array.isArray(vehicle)) return null;
@@ -809,7 +810,7 @@ export class PublicService {
   }
 
   private selfDeclarationOf(l: Listing): Record<string, unknown> | null {
-    if (l.source !== 'manual') return null;
+    if (!hasSellerData(l)) return null;
     const data = (l.vehicleData ?? null) as Record<string, unknown> | null;
     const declared = data?.selfDeclaration;
     return declared && typeof declared === 'object' && !Array.isArray(declared)
@@ -876,7 +877,13 @@ export class PublicService {
     listing: ListingWithReport,
     limit: number,
   ): Promise<{ url: string; thumbUrl?: string; kind?: string; angle?: string }[]> {
-    if (usesReportGallery({ source: listing.source, hasReport: Boolean(listing.report) })) {
+    if (
+      usesReportGallery({
+        source: listing.source,
+        hasReport: Boolean(listing.report),
+        reportDataCopiedAt: listing.reportDataCopiedAt,
+      })
+    ) {
       return this.reportPhotos(listing, listing.report?.photosManifest ?? null, limit);
     }
     const publicConfigured = this.r2.isPublicBucketConfigured();
@@ -993,6 +1000,16 @@ export class PublicService {
   private maskVin(vin: string): string {
     return vin.length === 17 ? `${vin.slice(0, 3)}**********${vin.slice(-4)}` : vin;
   }
+}
+
+/**
+ * True when the listing's `vehicleData` is the seller's word: a manual
+ * listing, or a report-backed one whose report data the seller copied and may
+ * have edited (DEN-535). The page then shows it as the seller's claims, beside
+ * the unchanged report, and never as inspection data.
+ */
+function hasSellerData(l: Pick<Listing, 'source' | 'reportDataCopiedAt'>): boolean {
+  return l.source === 'manual' || Boolean(l.reportDataCopiedAt);
 }
 
 /*

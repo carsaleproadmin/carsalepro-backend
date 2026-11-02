@@ -1066,6 +1066,12 @@ model Listing {
   driveType              String?       @map("drive_type")
   /// Structured seller-declared payload (ListingVehicleV1Dto). Manual only.
   vehicleData            Json?         @map("vehicle_data")
+  /// DEN-535. When the seller of a report-backed listing opened the full
+  /// editor, and the report data was COPIED into this listing (`vehicleData`
+  /// and `ListingPhoto` rows). From then on the listing has its own data and
+  /// its own gallery, and the seller edits them like a manual listing. The
+  /// report itself is never changed. Null = the listing still reads the report.
+  reportDataCopiedAt     DateTime?     @map("report_data_copied_at")
   /// A listing the PLATFORM created to fill the showroom, not a car anybody is
   /// selling (DEN-216).
   ///

@@ -1103,6 +1103,198 @@ describe('Listings (e2e)', () => {
       }
     });
 
+    // DEN-535. R2 is stubbed: `.env.test` points at a real bucket, and this
+    // test must neither read report objects there nor write copies into it.
+    it('16b. copy-report-data gives a report-backed listing its own editable data, and the report does not change', async () => {
+      const owner = await newSeller();
+      const code = uniqueCode();
+      const deviceId = uniqueDeviceId();
+      const reportData = {
+        vehicle: { make: 'BMW', model: '320d', year: 2018, engineVolumeL: 2 },
+        operational: { mileageKm: 120000, keysCount: 2 },
+        wheels: [{ corner: 'fl', treadMm: 6 }],
+        damages: Array.from({ length: 60 }, (_, i) => ({
+          id: `d${i}`,
+          tier: 'T1',
+          partId: 'door_front_left',
+          hours: 2,
+          manualCostEur: 300,
+        })),
+        thickness: { panels: [{ panelId: 'hood', um: 110 }] },
+        checklist: { brakes: 'ok' },
+        scores: { total: 87 },
+      };
+      const report = await prisma.report.create({
+        data: {
+          deviceId,
+          code,
+          s3Key: `free/${deviceId}/${code}.pdf`,
+          tier: 'free',
+          uploaded: true,
+          userId: owner.userId,
+          make: 'BMW',
+          model: '320d',
+          year: 2018,
+          mileageKm: 120000,
+          reportData,
+          photosManifest: [
+            { s3Key: `report-photos/${deviceId}/r/front.jpg`, kind: 'exterior-front' },
+            { s3Key: `report-photos/${deviceId}/r/front-2.jpg`, kind: 'exterior-front' },
+            { s3Key: `report-photos/${deviceId}/r/dash.jpg`, kind: 'interior-interior_dashboard' },
+            { s3Key: `report-photos/${deviceId}/r/damage.jpg`, kind: 'damage-d1' },
+            { s3Key: `report-photos/${deviceId}/r/doc.jpg`, kind: 'passport' },
+          ],
+        },
+      });
+
+      const r2 = app.get(R2Service);
+      const sharp = (await import('sharp')).default;
+      const reads: string[] = [];
+      const writes: string[] = [];
+      jest.spyOn(r2, 'isConfigured').mockReturnValue(true);
+      jest.spyOn(r2, 'isPublicBucketConfigured').mockReturnValue(false);
+      jest.spyOn(r2, 'getObjectBytes').mockImplementation(async (key: string) => {
+        reads.push(key);
+        // Different bytes per key, so the hash check does not merge them.
+        return sharp({
+          create: { width: 40, height: 30, channels: 3, background: { r: reads.length, g: 0, b: 0 } },
+        })
+          .jpeg()
+          .toBuffer();
+      });
+      jest.spyOn(r2, 'putObject').mockImplementation(async (key: string) => {
+        writes.push(key);
+      });
+      jest
+        .spyOn(r2, 'createPresignedDownloadUrl')
+        .mockImplementation(async (key: string) => ({ url: `https://signed.test/${key}` }) as never);
+
+      let listingId: string | undefined;
+      try {
+        const created = await request(app.getHttpServer())
+          .post('/api/v1/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ reportCode: code })
+          .expect(201);
+        listingId = created.body.id as string;
+
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listingId}/copy-report-data`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(201);
+        expect(res.body.reportDataCopiedAt).toEqual(expect.any(String));
+        expect(res.body.source).toBe('report');
+
+        const data = res.body.vehicleData as Record<string, unknown>;
+        expect(data.vehicle).toEqual({ make: 'BMW', model: '320d', year: 2018, engineVolumeL: 2 });
+        expect(data.operational).toEqual({ mileageKm: 120000, keysCount: 2 });
+        expect(data.wheels).toEqual([{ corner: 'fl', treadMm: 6 }]);
+        expect(data.thickness).toEqual({ panels: [{ panelId: 'hood', um: 110 }] });
+        // Cut to what the listing DTO accepts, and without the cost figures.
+        const damages = data.damages as Record<string, unknown>[];
+        expect(damages).toHaveLength(50);
+        expect(damages[0]).toEqual({ id: 'd0', tier: 'T1', partId: 'door_front_left' });
+        // Inspector-only blocks never reach the listing.
+        expect(data.scores).toBeUndefined();
+        expect(data.checklist).toBeUndefined();
+
+        // Walk-around and cabin only: no damage close-up, no registration document.
+        expect(reads).toEqual([
+          `report-photos/${deviceId}/r/front.jpg`,
+          `report-photos/${deviceId}/r/front-2.jpg`,
+          `report-photos/${deviceId}/r/dash.jpg`,
+        ]);
+        const photos = await prisma.listingPhoto.findMany({
+          where: { listingId },
+          orderBy: { order: 'asc' },
+        });
+        // One photo per slot; the second photo of an angle goes to the free list.
+        expect(photos.map((p) => p.caption)).toEqual(['front', null, 'interior_dashboard']);
+        expect(photos.every((p) => p.r2Key.startsWith(`listings/${listingId}/`))).toBe(true);
+        expect(writes).toEqual(photos.map((p) => p.r2Key));
+        expect(photos[0]).toMatchObject({ width: 40, height: 30 });
+
+        // The seller may now edit the vehicle data.
+        await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listingId}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ vehicleData: { vehicle: { year: 2019 } } })
+          .expect(200);
+
+        // A second call changes nothing: no second copy of the photos.
+        await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listingId}/copy-report-data`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(201);
+        expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(3);
+
+        // The report is exactly as the inspector made it.
+        const after = await prisma.report.findUniqueOrThrow({ where: { id: report.id } });
+        expect(after.reportData).toEqual(reportData);
+        expect(after.year).toBe(2018);
+
+        // The cabinet counts the listing's own gallery now, not the manifest.
+        const mine = await request(app.getHttpServer())
+          .get('/api/v1/me/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+        const row = (mine.body.items as { id: string; photoCount: number; reportDataCopiedAt: string | null }[])
+          .find((item) => item.id === listingId);
+        expect(row?.photoCount).toBe(3);
+        expect(row?.reportDataCopiedAt).toEqual(expect.any(String));
+
+        // The buyer still sees the inspection, and the seller's own gallery.
+        await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listingId}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ priceCents: 1500000, city: 'Kiel' })
+          .expect(200);
+        await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listingId}/publish`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ package: 'standard' })
+          .expect(201);
+        const page = await request(app.getHttpServer())
+          .get(`/api/v1/public/listings/${listingId}`)
+          .expect(200);
+        expect(page.body.inspection).toEqual({ status: 'inspected', reportCode: code });
+        expect(page.body.photos).toHaveLength(3);
+        expect(
+          (page.body.photos as { url: string; kind: string }[]).every(
+            (photo) => photo.kind === 'listing' && photo.url.includes(`listings/${listingId}/`),
+          ),
+        ).toBe(true);
+        // Seller data is shown as the seller's word, not as inspection data.
+        expect(page.body.declaredSpecs).toEqual({ engineVolumeL: 2 });
+        expect(page.body.vehicle.engineVolumeL).toBeNull();
+      } finally {
+        jest.restoreAllMocks();
+        if (listingId) await prisma.listingPhoto.deleteMany({ where: { listingId } });
+        await cleanup({ listingId, reportId: report.id });
+      }
+    });
+
+    it('16c. copy-report-data on a manual listing changes nothing', async () => {
+      const seller = await newSeller();
+      const listing = await createManual(seller.token, { city: 'Kiel' });
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/copy-report-data`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(201);
+      expect(res.body.reportDataCopiedAt).toBeNull();
+      expect(res.body.source).toBe('manual');
+    });
+
+    it('16d. copy-report-data refuses a listing the caller does not own', async () => {
+      const owner = await newSeller();
+      const other = await newSeller();
+      const listing = await createManual(owner.token, { city: 'Kiel' });
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/copy-report-data`)
+        .set('Authorization', `Bearer ${other.token}`)
+        .expect(403);
+    });
+
     it('17. photos upload, list, reorder and delete', async () => {
       const seller = await newSeller();
       const listing = await createManual(seller.token, { city: 'Kiel' });

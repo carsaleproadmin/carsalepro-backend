@@ -90,6 +90,15 @@ export class MyListingItemDto {
   })
   coverPhotoUrl!: string | null;
 
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    description:
+      'DEN-535. When the report data was copied into this report-backed listing ' +
+      'for the full editor. Null for a manual listing and before the copy.',
+  })
+  reportDataCopiedAt!: string | null;
+
   @ApiProperty({ example: '2026-06-13T10:00:00.000Z', nullable: true })
   publishedAt!: string | null;
 

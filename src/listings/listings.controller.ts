@@ -104,8 +104,9 @@ export class ListingsController {
   @ApiOperation({
     summary: 'Update editable fields of an owned listing',
     description:
-      '`vehicleData` is accepted ONLY when the listing has `source: "manual"` ' +
-      '(otherwise 400 `vehicle_immutable`). It is deep-merged: objects merge, ' +
+      '`vehicleData` is accepted ONLY when the listing has `source: "manual"`, or ' +
+      'when its report data was copied (`POST /:id/copy-report-data`); otherwise 400 ' +
+      '`vehicle_immutable`. It is deep-merged: objects merge, ' +
       'arrays replace wholesale, an explicit null deletes the key.',
   })
   @ApiParam({ name: 'id' })
@@ -116,6 +117,21 @@ export class ListingsController {
     @Body() dto: UpdateListingDto,
   ): Promise<Listing> {
     return this.listings.update(userId, id, dto);
+  }
+
+  @Post(':id/copy-report-data')
+  @ApiOperation({
+    summary: 'Copy the report data into a report-backed listing, for the full editor',
+    description:
+      'DEN-535. Copies the vehicle, wheel, damage and paint data and the walk-around ' +
+      'and cabin photos of the report into the listing. After this the seller edits ' +
+      'the listing like a manual one. The report does not change. Idempotent: a manual ' +
+      'listing, or one that already has its copy, is returned as it is.',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiResponse({ status: 503, type: ErrorResponseDto, description: 'storage_unavailable' })
+  copyReportData(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<Listing> {
+    return this.listings.copyReportData(userId, id);
   }
 
   @Post(':id/publish')
