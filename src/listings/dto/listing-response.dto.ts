@@ -99,6 +99,15 @@ export class MyListingItemDto {
   })
   reportDataCopiedAt!: string | null;
 
+  @ApiProperty({
+    example: true,
+    nullable: true,
+    description:
+      'DEN-538. False while the inspection app still uploads the report photos, ' +
+      'true when the upload is complete, null for a listing with no report.',
+  })
+  reportUploaded!: boolean | null;
+
   @ApiProperty({ example: '2026-06-13T10:00:00.000Z', nullable: true })
   publishedAt!: string | null;
 

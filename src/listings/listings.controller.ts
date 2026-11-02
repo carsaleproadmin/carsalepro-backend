@@ -42,7 +42,7 @@ import {
 } from './dto/listing-response.dto';
 import { PublishListingDto } from './dto/publish-listing.dto';
 import { UpdateListingDto } from './dto/update-listing.dto';
-import { ListingsService } from './listings.service';
+import { ListingsService, ListingWithUploadState } from './listings.service';
 
 /** Same ceiling as report photos — an original camera JPEG fits well inside it. */
 const MAX_PHOTO_UPLOAD_BYTES = 15 * 1024 * 1024;
@@ -63,7 +63,7 @@ export class ListingsController {
   create(
     @CurrentUser('id') userId: string,
     @Body() dto: CreateListingDto,
-  ): Promise<Listing> {
+  ): Promise<ListingWithUploadState> {
     return this.listings.create(userId, dto.reportCode);
   }
 
@@ -96,7 +96,10 @@ export class ListingsController {
       'nothing.',
   })
   @ApiParam({ name: 'id', description: 'Listing id' })
-  get(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<Listing> {
+  get(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<ListingWithUploadState> {
     return this.listings.getOwned(userId, id);
   }
 

@@ -48,6 +48,13 @@ import { coverPhotoUrl, usesReportGallery } from './listing-cover-photo';
 
 export { MAX_LISTING_PHOTOS };
 
+/**
+ * DEN-538. A listing with the upload state of its report. `reportUploaded` is
+ * true when the inspection app finished the upload (`POST /reports/:id/complete`),
+ * false while it still sends photos, and null for a listing with no report.
+ */
+export type ListingWithUploadState = Listing & { reportUploaded: boolean | null };
+
 /** What one call to {@link ListingsService.mirrorShowroomPhotos} did. */
 export interface ShowroomMirrorResult {
   listingId: string;
@@ -93,7 +100,7 @@ export class ListingsService {
    * "Not found" and "already claimed" return the SAME 404. Distinguishing them
    * would turn this endpoint into an oracle for which report codes exist.
    */
-  async create(userId: string, reportCode: string): Promise<Listing> {
+  async create(userId: string, reportCode: string): Promise<ListingWithUploadState> {
     const report = await this.prisma.report.findFirst({
       where: { code: reportCode, deletedAt: null },
       orderBy: { createdAt: 'desc' },
@@ -101,7 +108,7 @@ export class ListingsService {
     if (!report) throw this.unclaimable();
 
     try {
-      return await this.prisma.listing.create({
+      const listing = await this.prisma.listing.create({
         data: {
           sellerId: userId,
           reportId: report.id,
@@ -115,6 +122,8 @@ export class ListingsService {
           ...listingSearchColumns({ city: '', make: report.make, model: report.model }),
         },
       });
+      // DEN-538. The seller is warned while the app still uploads photos.
+      return { ...listing, reportUploaded: report.uploaded };
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         // Already claimed. The one caller who may be told so is the caller who
@@ -226,8 +235,26 @@ export class ListingsService {
    * `GET /me/listings` is a summary projection and the public route only serves
    * ACTIVE rows, so neither can rehydrate a DRAFT in the multi-stage editor.
    */
-  async getOwned(userId: string, id: string): Promise<Listing> {
-    return this.requireOwnedListing(userId, id);
+  async getOwned(userId: string, id: string): Promise<ListingWithUploadState> {
+    const listing = await this.requireOwnedListing(userId, id);
+    return { ...listing, reportUploaded: await this.reportUploadedOf(listing) };
+  }
+
+  /**
+   * DEN-538. Whether the inspection app finished uploading the report of this
+   * listing. A seller could publish a listing while the app still sent photos,
+   * and the car page then showed only the first few. The website warns the
+   * seller and does NOT block the publish: the app uploads only while it is
+   * open, and a block would keep a listing in draft for as long as nobody
+   * opens it.
+   */
+  private async reportUploadedOf(listing: Listing): Promise<boolean | null> {
+    if (!listing.reportId) return null;
+    const report = await this.prisma.report.findUnique({
+      where: { id: listing.reportId },
+      select: { uploaded: true },
+    });
+    return report ? report.uploaded : null;
   }
 
   /**
@@ -959,7 +986,7 @@ export class ListingsService {
       where: { sellerId: userId, status: { not: 'DELETED' } },
       orderBy: { createdAt: 'desc' },
       include: {
-        report: { select: { code: true, photosManifest: true } },
+        report: { select: { code: true, photosManifest: true, uploaded: true } },
         _count: { select: { photos: true } },
         // DEN-521. Only the cover, for the cabinet card. A report-backed
         // listing whose report is gone falls back to these rows, as on the
@@ -1013,6 +1040,8 @@ export class ListingsService {
         mileageKm: l.mileageKm,
       },
       reportCode: l.report?.code ?? null,
+      // DEN-538. False while the inspection app still uploads the report.
+      reportUploaded: l.report ? l.report.uploaded : null,
       // Whichever gallery the listing actually has — the same choice
       // `listingPhotos()` makes in the public service. A report-backed listing
       // owns no `ListingPhoto` rows, so `_count.photos` is 0 for every one of

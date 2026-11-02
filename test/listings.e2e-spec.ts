@@ -82,6 +82,55 @@ describe('Listings (e2e)', () => {
     if (ids.reportId) await prisma.report.deleteMany({ where: { id: ids.reportId } });
   }
 
+  // DEN-538. The website warns the seller while the app still uploads photos.
+  it('1c. the claim, the owned read and the cabinet carry the report upload state', async () => {
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    await prisma.report.update({ where: { id: report.id }, data: { uploaded: false } });
+    let listingId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id as string;
+      expect(created.body.reportUploaded).toBe(false);
+
+      const owned = await request(app.getHttpServer())
+        .get(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      expect(owned.body.reportUploaded).toBe(false);
+
+      await prisma.report.update({ where: { id: report.id }, data: { uploaded: true } });
+      const mine = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      const row = (mine.body.items as { id: string; reportUploaded: boolean | null }[]).find(
+        (item) => item.id === listingId,
+      );
+      expect(row?.reportUploaded).toBe(true);
+
+      // A manual listing has no report to wait for.
+      const manual = await request(app.getHttpServer())
+        .post('/api/v1/listings/manual')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({})
+        .expect(201);
+      const manualRead = await request(app.getHttpServer())
+        .get(`/api/v1/listings/${manual.body.id}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      expect(manualRead.body.reportUploaded).toBeNull();
+      await prisma.listing.deleteMany({ where: { id: manual.body.id } });
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
   it('1. POST /listings as the report owner creates a DRAFT listing', async () => {
     const owner = await registerUser(app);
     const code = uniqueCode();
