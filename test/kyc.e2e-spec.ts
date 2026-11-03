@@ -1322,6 +1322,70 @@ describe('KYC verification (e2e)', () => {
     expect((await fetch(secondUrl.url)).status).toBe(200);
   }, 30_000);
 
+  it('21. reset empties a DRAFT and keeps its id; another user and a decided application are refused (DEN-543)', async () => {
+    const user = await makeUser();
+    const stranger = await makeUser();
+    const appId = await createApplication(user);
+    await seedDocuments(user, appId, ['id_front', 'id_back', 'selfie']);
+
+    const forbidden = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/reset`)
+      .set('Authorization', `Bearer ${stranger.token}`);
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('not_kyc_owner');
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(3);
+
+    const reset = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/reset`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    expect(reset.body.id).toBe(appId);
+    expect(reset.body.status).toBe('DRAFT');
+    expect(reset.body.documents).toEqual([]);
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(0);
+
+    // The old route that "Start over" called still returns the same draft, now empty.
+    const again = await request(app.getHttpServer())
+      .post('/api/v1/kyc/applications')
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    expect(again.body.id).toBe(appId);
+    expect(again.body.documents).toEqual([]);
+
+    await seedDocuments(user, appId, ['id_front', 'id_back', 'selfie', 'gewerbeschein']);
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+
+    const decided = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/reset`)
+      .set('Authorization', `Bearer ${user.token}`);
+    expect(decided.status).toBe(400);
+    expect(decided.body.error.code).toBe('kyc_not_editable');
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(4);
+  });
+
+  it('21a. reset deletes the stored objects, not only the rows (DEN-543)', async () => {
+    if (!r2Configured) return;
+    const user = await makeUser();
+    const appId = await createApplication(user);
+    expect((await uploadDoc(user, appId, 'id_front')).status).toBe(201);
+    const doc = await prisma.kycDocument.findFirstOrThrow({
+      where: { applicationId: appId, kind: 'id_front' },
+    });
+    const url = await r2.kycSignedDownloadUrl(doc.s3Key, doc.bucket);
+    expect((await fetch(url.url)).status).toBe(200);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/reset`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+
+    expect((await fetch(url.url)).status).toBe(404);
+  }, 30_000);
+
   it('20. the upload endpoint requires a bearer token, a `kind` and a file', async () => {
     if (!r2Configured) return;
     const user = await makeUser();

@@ -117,6 +117,23 @@ export class KycController {
     return this.kyc.uploadDocument(userId, id, dto.kind, file);
   }
 
+  @Post('applications/:id/reset')
+  @ApiOperation({
+    summary: 'Delete every document of a DRAFT application (start over)',
+    description:
+      'Only for a DRAFT application of the caller. The application keeps its id; ' +
+      'its documents are deleted from storage and from the database (DEN-543).',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiOkResponse({ type: KycApplicationDto })
+  @ApiResponse({ status: 400, type: ErrorResponseDto, description: 'kyc_not_editable' })
+  resetDraft(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<KycApplicationDto> {
+    return this.kyc.resetDraft(userId, id);
+  }
+
   @Post('applications/:id/submit')
   @ApiOperation({
     summary: 'Submit a complete DRAFT application for review',

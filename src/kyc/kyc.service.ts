@@ -141,6 +141,50 @@ export class KycService {
   }
 
   /**
+   * Empty a DRAFT application: delete its documents from the bucket and the
+   * database, and return the draft with no documents - DEN-543.
+   *
+   * "Start over" used to call `createApplication`, which returns the active
+   * application when one exists. So the draft came back unchanged and the
+   * button did nothing. The application row is kept: it is the same draft, and
+   * a new row would only add an orphan to the admin history.
+   *
+   * Deleting the rows does not weaken the re-application checks (DEN-249,
+   * DEN-250). They read documents of REJECTED applications only, and a draft
+   * was never decided.
+   *
+   * A failed bucket delete is logged and does not stop the reset, the same as
+   * `purgeOldDocuments`: the row is the only reference to the object, and the
+   * applicant must not be locked into a draft by a storage error.
+   */
+  async resetDraft(userId: string, applicationId: string): Promise<KycApplicationDto> {
+    const application = await this.requireOwnedApplication(userId, applicationId);
+    if (application.status !== KycStatus.DRAFT) {
+      throw new BadRequestException({
+        error: {
+          code: 'kyc_not_editable',
+          message: 'Only a draft application can be started over',
+        },
+      });
+    }
+
+    for (const doc of application.documents) {
+      if (this.r2.isKycConfigured()) {
+        await this.r2.kycDeleteObject(doc.s3Key, doc.bucket).catch((err) => {
+          this.logger.warn(`Failed to delete KYC object ${doc.s3Key}: ${String(err)}`);
+        });
+      }
+    }
+    await this.prisma.kycDocument.deleteMany({ where: { applicationId } });
+    this.logger.log(
+      `KYC application ${applicationId} reset (${application.documents.length} document(s)) ` +
+        `for user=${this.mask(userId)}`,
+    );
+
+    return this.toApplicationDto({ ...application, documents: [] });
+  }
+
+  /**
    * Store ONE document for a DRAFT application the caller owns.
    *
    * ═══════════════════════════════════════════════════════════════════════
