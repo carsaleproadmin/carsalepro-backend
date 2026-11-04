@@ -43,6 +43,13 @@ export interface StoredConnectAccount {
   accountId: string | null;
   country: string | null;
   businessType: string | null;
+  /**
+   * DEN-551. The country of the inspector's base location, from reverse
+   * geocoding of the profile point. Null when the profile has no location or
+   * the lookup failed. Read only for a NEW account and only when nothing more
+   * specific is known.
+   */
+  profileCountry?: string | null;
 }
 
 export interface ConnectAccountParams {
@@ -74,7 +81,10 @@ export type ConnectAccountResolution =
 /**
  * Resolve the two parameters, or refuse.
  *
- * Precedence is request → stored → platform default. The platform default is
+ * Precedence is request → stored → profile location → platform default
+ * (DEN-551: the website sends no country since DEN-548, so the base address of
+ * the inspector decides, and Germany is the answer when it cannot). The
+ * platform default is
  * the last resort rather than the first answer so that an existing client which
  * sends no body keeps behaving exactly as it did (the default is the country
  * that used to be hardcoded), while an inspector who does answer is believed.
@@ -127,7 +137,7 @@ export function resolveConnectAccountParams(
 
   const country = stored.accountId
     ? (countryOfRecord ?? requestedCountry ?? fallback)
-    : (requestedCountry ?? storedCountry ?? fallback);
+    : (requestedCountry ?? storedCountry ?? normalizeCountryCode(stored.profileCountry) ?? fallback);
 
   const storedBusinessType = isStripeBusinessType(stored.businessType) ? stored.businessType : null;
   const businessType = requestedBusinessType ?? storedBusinessType;

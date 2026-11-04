@@ -13,7 +13,7 @@ export class StartStripeOnboardingDto {
     example: 'PL',
     description:
       'ISO 3166-1 alpha-2 country the payout account belongs to, upper case. ' +
-      'Defaults to the stored country, then to the platform country. ' +
+      'Defaults to the stored country, then to the country of the profile location, then to the platform country. ' +
       'Stripe fixes an account country at creation, so once onboarding has started ' +
       'a different value is refused with `connect_country_locked` rather than ignored.',
   })
