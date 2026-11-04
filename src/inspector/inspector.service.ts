@@ -439,7 +439,7 @@ export class InspectorService {
         businessType: params.businessType,
       };
     } catch (err) {
-      if (!storedAccountId || classifyStripeError(err).code !== 'resource_missing') throw err;
+      if (!storedAccountId || !isStaleConnectAccountError(err)) throw err;
 
       this.logger.warn(
         `Stored Stripe Connect account no longer exists for inspector=${mask(userId)} ` +
@@ -538,7 +538,7 @@ export class InspectorService {
         },
       });
     }
-    if (failure.code === 'resource_missing') {
+    if (isStaleConnectAccountError(err)) {
       return new BadGatewayException({
         error: {
           code: 'connect_account_unavailable',
@@ -776,4 +776,21 @@ export class InspectorService {
       contact: resolveContact(user, profile),
     };
   }
+}
+
+/**
+ * True when Stripe says the stored connected account cannot be used by this
+ * platform any more - DEN-544.
+ *
+ * `resource_missing` is the answer for an account that was deleted. An account
+ * that belongs to ANOTHER platform account (the secret key was replaced with
+ * the key of a different Stripe account) gets a plain invalid_request_error
+ * with no code, and only its text says so. Production hit exactly that on
+ * 2026-11-03: every inspector onboarded under the old test account got 502
+ * `connect_onboarding_failed`, and the self-heal never ran.
+ */
+export function isStaleConnectAccountError(err: unknown): boolean {
+  const failure = classifyStripeError(err);
+  if (failure.code === 'resource_missing') return true;
+  return /not connected to your platform or does not exist/i.test(failure.message);
 }
