@@ -70,6 +70,30 @@ export class KycDocumentUploadResultDto {
 }
 
 /**
+ * Response of GET /applications/:id/documents/:kind/view (DEN-546).
+ *
+ * A short-lived SIGNED link to one document of the caller's own DRAFT, so the
+ * applicant can check what they sent before the submit. The bucket stays
+ * private: the link expires, and the key is not in the response.
+ */
+export class KycDocumentViewDto {
+  @ApiProperty({ enum: KYC_DOCUMENT_KINDS, example: 'id_front' })
+  kind!: string;
+
+  @ApiProperty({ description: 'Signed GET URL of the stored object.' })
+  url!: string;
+
+  @ApiProperty({ example: '2026-11-04T12:05:00.000Z' })
+  expiresAt!: string;
+
+  @ApiProperty({
+    example: 'image/jpeg',
+    description: 'What the object was stored as: image/jpeg or application/pdf.',
+  })
+  contentType!: string;
+}
+
+/**
  * Response of POST /applications/:id/submit.
  *
  * The status is the ANSWER TO A QUESTION THE CALLER MUST ASK: an application

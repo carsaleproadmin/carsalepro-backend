@@ -36,11 +36,15 @@ import {
 import {
   KycApplicationDto,
   KycDocumentUploadResultDto,
+  KycDocumentViewDto,
   SubmitKycResultDto,
 } from './dto/kyc-response.dto';
 import { hashKycDocument, KycUploadPart, resolveKycObject } from './kyc-upload';
 import { mrzIdentityKey } from './mrz';
 import { MrzOcrService } from './mrz-ocr.service';
+
+/** Lifetime of the applicant's own view link to a draft document (DEN-546). */
+const KYC_DRAFT_VIEW_TTL_SECONDS = 300;
 
 type KycApplicationWithDocs = KycApplication & { documents: KycDocument[] };
 
@@ -182,6 +186,62 @@ export class KycService {
     );
 
     return this.toApplicationDto({ ...application, documents: [] });
+  }
+
+  /**
+   * A short-lived signed link to one document of the caller's own DRAFT
+   * (DEN-546). The applicant checks the file before the submit, when a wrong
+   * one can still be replaced.
+   *
+   * Only a DRAFT: after the submit nobody but an admin reads these documents,
+   * and a stolen session must not become a way to download an identity card.
+   * The link lives five minutes, which is enough to open it once.
+   */
+  async getDraftDocumentView(
+    userId: string,
+    applicationId: string,
+    kind: KycDocumentKind,
+  ): Promise<KycDocumentViewDto> {
+    const application = await this.requireOwnedApplication(userId, applicationId);
+    if (application.status !== KycStatus.DRAFT) {
+      throw new BadRequestException({
+        error: {
+          code: 'kyc_not_editable',
+          message: 'Documents can be viewed only while the application is a draft',
+        },
+      });
+    }
+
+    const doc = application.documents.find((d) => d.kind === kind);
+    if (!doc || doc.purgedAt) {
+      throw new NotFoundException({
+        error: { code: 'kyc_document_not_found', message: 'No document of this kind' },
+      });
+    }
+
+    if (!this.r2.isKycConfigured()) {
+      throw new HttpException(
+        {
+          error: {
+            code: 'storage_unavailable',
+            message: 'Cloud storage is not configured on this server',
+          },
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    const signed = await this.r2.kycSignedDownloadUrl(
+      doc.s3Key,
+      doc.bucket,
+      KYC_DRAFT_VIEW_TTL_SECONDS,
+    );
+    return {
+      kind: doc.kind,
+      url: signed.url,
+      expiresAt: signed.expiresAt.toISOString(),
+      contentType: doc.s3Key.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg',
+    };
   }
 
   /**

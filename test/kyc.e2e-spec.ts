@@ -1386,6 +1386,71 @@ describe('KYC verification (e2e)', () => {
     expect((await fetch(url.url)).status).toBe(404);
   }, 30_000);
 
+  it('22. the owner gets a signed view link to a DRAFT document; others and a decided application do not (DEN-546)', async () => {
+    const user = await makeUser();
+    const stranger = await makeUser();
+    const appId = await createApplication(user);
+    await seedDocuments(user, appId, ['id_front']);
+    const view = (kind: string, token = user.token) =>
+      request(app.getHttpServer())
+        .get(`/api/v1/kyc/applications/${appId}/documents/${kind}/view`)
+        .set('Authorization', `Bearer ${token}`);
+
+    const forbidden = await view('id_front', stranger.token);
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('not_kyc_owner');
+
+    const unknown = await view('passport_scan');
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error.code).toBe('invalid_kind');
+
+    const missing = await view('selfie');
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('kyc_document_not_found');
+
+    if (r2Configured) {
+      const ok = await view('id_front').expect(200);
+      expect(ok.body.kind).toBe('id_front');
+      expect(ok.body.contentType).toBe('image/jpeg');
+      expect(ok.body.url).toContain('X-Amz-Signature=');
+      expect(ok.body).not.toHaveProperty('s3Key');
+      const ttl = new Date(ok.body.expiresAt).getTime() - Date.now();
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(300_000);
+    }
+
+    await seedDocuments(user, appId, ['id_front', 'id_back', 'selfie', 'gewerbeschein']);
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+
+    const decided = await view('id_front');
+    expect(decided.status).toBe(400);
+    expect(decided.body.error.code).toBe('kyc_not_editable');
+  });
+
+  it('22a. the view link opens the uploaded file itself (DEN-546)', async () => {
+    if (!r2Configured) return;
+    const user = await makeUser();
+    const appId = await createApplication(user);
+    const pdf = await uploadDoc(user, appId, 'gewerbeschein', PDF, {
+      filename: 'gewerbeschein.pdf',
+      contentType: 'application/pdf',
+    });
+    expect(pdf.status).toBe(201);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/kyc/applications/${appId}/documents/gewerbeschein/view`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(200);
+    expect(res.body.contentType).toBe('application/pdf');
+    const fetched = await fetch(res.body.url);
+    expect(fetched.status).toBe(200);
+    expect(Buffer.from(await fetched.arrayBuffer()).equals(PDF)).toBe(true);
+  }, 30_000);
+
   it('20. the upload endpoint requires a bearer token, a `kind` and a file', async () => {
     if (!r2Configured) return;
     const user = await makeUser();

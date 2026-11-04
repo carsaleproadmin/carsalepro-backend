@@ -27,9 +27,10 @@ import { UploadKycDocumentDto } from './dto/upload-document.dto';
 import {
   KycApplicationDto,
   KycDocumentUploadResultDto,
+  KycDocumentViewDto,
   SubmitKycResultDto,
 } from './dto/kyc-response.dto';
-import { KYC_DOCUMENT_KINDS } from './kyc.constants';
+import { KYC_DOCUMENT_KINDS, KycDocumentKind } from './kyc.constants';
 import { MAX_KYC_UPLOAD_BYTES } from './kyc-upload';
 import { KycService } from './kyc.service';
 
@@ -115,6 +116,37 @@ export class KycController {
       });
     }
     return this.kyc.uploadDocument(userId, id, dto.kind, file);
+  }
+
+  @Get('applications/:id/documents/:kind/view')
+  @ApiOperation({
+    summary: 'Get a short-lived signed link to one document of a DRAFT application',
+    description:
+      'Only for a DRAFT application of the caller, so the applicant can check a file ' +
+      'before the submit (DEN-546). The link expires after five minutes.',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiParam({ name: 'kind', enum: [...KYC_DOCUMENT_KINDS] })
+  @ApiOkResponse({ type: KycDocumentViewDto })
+  @ApiResponse({
+    status: 400,
+    type: ErrorResponseDto,
+    description: 'invalid_kind / kyc_not_editable',
+  })
+  @ApiResponse({ status: 403, type: ErrorResponseDto, description: 'not_kyc_owner' })
+  @ApiResponse({ status: 404, type: ErrorResponseDto, description: 'kyc_document_not_found' })
+  @ApiResponse({ status: 503, type: ErrorResponseDto, description: 'storage_unavailable' })
+  viewDocument(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('kind') kind: string,
+  ): Promise<KycDocumentViewDto> {
+    if (!(KYC_DOCUMENT_KINDS as readonly string[]).includes(kind)) {
+      throw new BadRequestException({
+        error: { code: 'invalid_kind', message: 'Unknown KYC document kind' },
+      });
+    }
+    return this.kyc.getDraftDocumentView(userId, id, kind as KycDocumentKind);
   }
 
   @Post('applications/:id/reset')
