@@ -638,6 +638,12 @@ export class ReportsService {
       }
     }
     if (!row) {
+      // No row points to the object this request wrote, so remove it. The key
+      // carries the hash of the original: when the slot now holds the same
+      // key, another request stored this photo and the object is in use.
+      if (current?.r2Key !== r2Key) {
+        await this.r2.deleteObject(r2Key).catch(() => undefined);
+      }
       throw new ConflictException({
         error: 'photo_slot_busy',
         message: 'Another upload changed this photo slot. Try again.',

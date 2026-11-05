@@ -160,11 +160,14 @@ describe('ReportsService.uploadPhoto, parallel uploads of one slot', () => {
 
     it('gives 409 photo_slot_busy when the slot keeps changing', async () => {
       const other = (n: number) => row({ hash: `h-${n}`, r2Key: `report-photos/d-1/r-1/${n}.jpg` });
-      const { upload } = setup([other(1), other(2), other(3), other(4)], [0, 0, 0]);
+      const { r2, upload } = setup([other(1), other(2), other(3), other(4)], [0, 0, 0]);
 
       await expect(upload()).rejects.toMatchObject({
         response: expect.objectContaining({ error: 'photo_slot_busy' }),
       });
+      // No row points to the object this request wrote, so it is removed.
+      expect(r2.deleteObject).toHaveBeenCalledTimes(1);
+      expect(r2.deleteObject).toHaveBeenCalledWith(ours().r2Key);
     });
   });
 });
