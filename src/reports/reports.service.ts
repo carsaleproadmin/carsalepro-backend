@@ -327,6 +327,10 @@ export class ReportsService {
    * values they had when the listing was made. `null` removes the key, so a
    * volume the inspector cleared leaves the listing too. A failure here is
    * logged and never fails the re-sync: the report is already stored.
+   *
+   * A listing whose data was copied for the editor (`reportDataCopiedAt`,
+   * DEN-535) is not touched: from then on the vehicle data is the seller's,
+   * and a re-sync must not overwrite their edit.
    */
   private async syncListingEngineVolume(
     reportId: string,
@@ -334,7 +338,7 @@ export class ReportsService {
   ): Promise<void> {
     try {
       const listing = await this.prisma.listing.findFirst({
-        where: { reportId, source: 'report' },
+        where: { reportId, source: 'report', reportDataCopiedAt: null },
         select: { id: true, vehicleData: true },
       });
       if (!listing) return;
