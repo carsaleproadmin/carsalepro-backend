@@ -172,6 +172,28 @@ export class KycService {
       });
     }
 
+    // The status is checked again under a row lock. A submit that ran after
+    // the read above has moved the application on, and its documents are now
+    // evidence for the review: they must stay. The objects are deleted only
+    // after the rows, so a refused reset leaves nothing missing in the bucket.
+    const reset = await this.prisma.$transaction(async (tx) => {
+      const locked = await tx.kycApplication.updateMany({
+        where: { id: applicationId, status: KycStatus.DRAFT },
+        data: { status: KycStatus.DRAFT },
+      });
+      if (locked.count === 0) return false;
+      await tx.kycDocument.deleteMany({ where: { applicationId } });
+      return true;
+    });
+    if (!reset) {
+      throw new BadRequestException({
+        error: {
+          code: 'kyc_not_editable',
+          message: 'Only a draft application can be started over',
+        },
+      });
+    }
+
     for (const doc of application.documents) {
       if (this.r2.isKycConfigured()) {
         await this.r2.kycDeleteObject(doc.s3Key, doc.bucket).catch((err) => {
@@ -179,7 +201,6 @@ export class KycService {
         });
       }
     }
-    await this.prisma.kycDocument.deleteMany({ where: { applicationId } });
     this.logger.log(
       `KYC application ${applicationId} reset (${application.documents.length} document(s)) ` +
         `for user=${this.mask(userId)}`,
