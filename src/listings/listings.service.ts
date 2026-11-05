@@ -71,6 +71,13 @@ export interface ShowroomMirrorResult {
 @Injectable()
 export class ListingsService {
   private readonly logger = new Logger(ListingsService.name);
+  /**
+   * The copy in progress for each listing. A double click or a retry after a
+   * timeout joins the running copy instead of starting a second one, which
+   * would copy the same photos again: the hash check reads the gallery as it
+   * was at the start, and each stamp is written only at the end.
+   */
+  private readonly reportCopies = new Map<string, Promise<Listing>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -284,6 +291,20 @@ export class ListingsService {
    * is already in the gallery (same hash) is not copied twice.
    */
   async copyReportData(userId: string, id: string): Promise<Listing> {
+    const running = this.reportCopies.get(id);
+    if (running) {
+      // Ownership is checked again: the running copy can belong to another call.
+      await this.requireOwnedListing(userId, id);
+      return running;
+    }
+    const copy = this.copyReportDataOnce(userId, id).finally(() => {
+      if (this.reportCopies.get(id) === copy) this.reportCopies.delete(id);
+    });
+    this.reportCopies.set(id, copy);
+    return copy;
+  }
+
+  private async copyReportDataOnce(userId: string, id: string): Promise<Listing> {
     const listing = await this.requireOwnedListing(userId, id);
     if (listing.source === 'manual') return listing;
     if (listing.reportDataCopiedAt && listing.reportPhotosCopiedAt) return listing;
@@ -372,6 +393,17 @@ export class ListingsService {
       }
       const hash = createHash('sha256').update(bytes).digest('hex');
       if (hashes.has(hash)) continue;
+      // The in-process guard does not cover a second instance. Read the
+      // gallery again before the upload, so a copy that runs there does not
+      // get the same photo twice.
+      const copied = await this.prisma.listingPhoto.findFirst({
+        where: { listingId, hash },
+        select: { id: true },
+      });
+      if (copied) {
+        hashes.add(hash);
+        continue;
+      }
 
       const { width, height } = await this.photoProcessing.measure(bytes);
       // Same key layout and bucket choice as a seller upload (`addPhoto`).
