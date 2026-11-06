@@ -694,7 +694,35 @@ export class PublicService {
     if (!report) {
       throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
     }
+    return this.reportFullPayload(report);
+  }
 
+  /**
+   * The report of a listing, for the listing's OWNER, in any status - DEN-562.
+   *
+   * The listing editor previews the car page before the listing is on sale,
+   * and `reportFull` answers 404 until it is ACTIVE. The payload is the same
+   * masked one a buyer reads, so the preview shows the seller exactly what a
+   * buyer will see, and no more: the owner of a listing is not necessarily the
+   * owner of its report (a seller claims a report by its code).
+   *
+   * The caller has checked that `listing` belongs to the user.
+   */
+  async reportForOwnedListing(listing: Pick<Listing, 'source' | 'reportId' | 'status'>) {
+    const report =
+      listing.source === 'report' && listing.reportId && listing.status !== 'DELETED'
+        ? await this.prisma.report.findFirst({
+            where: { id: listing.reportId, deletedAt: null },
+          })
+        : null;
+    if (!report) {
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
+    }
+    return this.reportFullPayload(report);
+  }
+
+  /** The masked report a buyer reads. Shared by `reportFull` and the owner preview. */
+  private async reportFullPayload(report: Report) {
     return {
       code: report.code,
       date: report.createdAt.toISOString(),

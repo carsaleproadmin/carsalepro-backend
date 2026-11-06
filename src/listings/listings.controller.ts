@@ -42,6 +42,7 @@ import {
 } from './dto/listing-response.dto';
 import { PublishListingDto } from './dto/publish-listing.dto';
 import { UpdateListingDto } from './dto/update-listing.dto';
+import { PublicService } from '../public/public.service';
 import { ListingsService, ListingWithUploadState } from './listings.service';
 
 /** Same ceiling as report photos — an original camera JPEG fits well inside it. */
@@ -51,7 +52,10 @@ const MAX_PHOTO_UPLOAD_BYTES = 15 * 1024 * 1024;
 @ApiBearerAuth()
 @Controller('api/v1/listings')
 export class ListingsController {
-  constructor(private readonly listings: ListingsService) {}
+  constructor(
+    private readonly listings: ListingsService,
+    private readonly publicListings: PublicService,
+  ) {}
 
   // A Report ID is a bearer capability, so this endpoint is the one place a
   // valid code can be turned into a listing. It answers the same 404 for
@@ -101,6 +105,21 @@ export class ListingsController {
     @Param('id') id: string,
   ): Promise<ListingWithUploadState> {
     return this.listings.getOwned(userId, id);
+  }
+
+  @Get(':id/report')
+  @ApiOperation({
+    summary: 'Read the report of an owned listing, as a buyer will see it',
+    description:
+      'DEN-562. The listing editor previews the car page before the listing is on sale. ' +
+      'The payload is the masked one of GET /public/reports/:code/full, which answers ' +
+      'only for an ACTIVE listing. 404 `not_found` for a manual listing, a listing with ' +
+      'no report, a deleted listing or a deleted report.',
+  })
+  @ApiParam({ name: 'id', description: 'Listing id' })
+  async report(@CurrentUser('id') userId: string, @Param('id') id: string) {
+    const listing = await this.listings.getOwned(userId, id);
+    return this.publicListings.reportForOwnedListing(listing);
   }
 
   @Patch(':id')

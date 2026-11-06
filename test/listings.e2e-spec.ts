@@ -2044,4 +2044,94 @@ describe('Listings (e2e)', () => {
       });
     });
   });
+
+  // DEN-562. The editor previews the car page before the listing is on sale.
+  describe('GET /api/v1/listings/:id/report', () => {
+    async function draftWithReport(ownerId: string) {
+      const report = await seedReport({
+        code: uniqueCode(),
+        reportData: {
+          damages: [{ part: 'door' }],
+          signoff: { inspectorName: 'Max Mustermann' },
+        },
+      });
+      await prisma.report.update({ where: { id: report.id }, data: { vin: 'WBA8E9C50JA000001' } });
+      const listing = await prisma.listing.create({
+        data: {
+          sellerId: ownerId,
+          reportId: report.id,
+          source: 'report',
+          status: 'DRAFT',
+          priceCents: 1_000_000,
+          city: 'Berlin',
+        },
+      });
+      return { report, listing };
+    }
+
+    it('gives the owner of a DRAFT the masked report a buyer reads', async () => {
+      const owner = await registerUser(app);
+      const { report, listing } = await draftWithReport(owner.userId);
+      try {
+        const res = await request(app.getHttpServer())
+          .get(`/api/v1/listings/${listing.id}/report`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+        expect(res.body.code).toBe(report.code);
+        expect(res.body.qualityScore).toBe(87);
+        expect(res.body.reportData.damages).toEqual([{ part: 'door' }]);
+        // The same masking as the public route: no full VIN, no person, no PDF.
+        expect(res.body.vinMasked).not.toBe('WBA8E9C50JA000001');
+        expect(JSON.stringify(res.body)).not.toContain('WBA8E9C50JA000001');
+        expect(JSON.stringify(res.body)).not.toContain('Max Mustermann');
+        expect(res.body.pdf).toBeUndefined();
+
+        // The public route still refuses it: the listing is not on sale.
+        await request(app.getHttpServer())
+          .get(`/api/v1/public/reports/${report.code}/full`)
+          .expect(404);
+      } finally {
+        await cleanup({ listingId: listing.id, reportId: report.id });
+      }
+    });
+
+    it('refuses anybody but the owner', async () => {
+      const owner = await registerUser(app);
+      const stranger = await registerUser(app);
+      const { report, listing } = await draftWithReport(owner.userId);
+      try {
+        await request(app.getHttpServer())
+          .get(`/api/v1/listings/${listing.id}/report`)
+          .set('Authorization', `Bearer ${stranger.token}`)
+          .expect(403);
+        await request(app.getHttpServer())
+          .get(`/api/v1/listings/${listing.id}/report`)
+          .expect(401);
+      } finally {
+        await cleanup({ listingId: listing.id, reportId: report.id });
+      }
+    });
+
+    it('answers 404 for a manual listing and for a deleted report', async () => {
+      const owner = await registerUser(app);
+      const manual = await prisma.listing.create({
+        data: { sellerId: owner.userId, source: 'manual', status: 'DRAFT', priceCents: 1_000_000, city: 'Berlin' },
+      });
+      const { report, listing } = await draftWithReport(owner.userId);
+      try {
+        await request(app.getHttpServer())
+          .get(`/api/v1/listings/${manual.id}/report`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(404);
+        await prisma.report.update({ where: { id: report.id }, data: { deletedAt: new Date() } });
+        await request(app.getHttpServer())
+          .get(`/api/v1/listings/${listing.id}/report`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(404);
+      } finally {
+        await cleanup({ listingId: manual.id });
+        await cleanup({ listingId: listing.id, reportId: report.id });
+      }
+    });
+  });
 });
