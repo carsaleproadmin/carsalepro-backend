@@ -180,3 +180,32 @@ export function projectVehicleColumns(data: JsonObject): ProjectedVehicleColumns
 export function normalizeVehicleDataDto(dto: ListingVehicleV1Dto): JsonObject {
   return sanitizeVehicleData(toPlainJson(dto));
 }
+
+/**
+ * The most damage rows a listing holds. `ListingVehicleV1Dto` refuses more,
+ * so a copied list above it could never be saved again from the editor.
+ */
+export const MAX_LISTING_DAMAGES = 50;
+
+/** The report blocks that a manual listing payload shares with the report. */
+const SHARED_REPORT_BLOCKS = ['vehicle', 'operational', 'wheels', 'damages', 'thickness'] as const;
+
+/**
+ * The part of a report payload that a seller may edit as their own listing
+ * data (DEN-535). The result still goes through `sanitizeVehicleData`, which
+ * removes the inspector's cost figures.
+ *
+ * Damages are cut to {@link MAX_LISTING_DAMAGES}. The listing editor saves the
+ * whole list at once, and the DTO refuses a longer one, so a longer copy would
+ * block every later save of that section. The report keeps all its rows.
+ */
+export function editableReportBlocks(reportData: JsonObject): JsonObject {
+  const out: JsonObject = {};
+  for (const block of SHARED_REPORT_BLOCKS) {
+    const value = reportData[block];
+    if (value === undefined || value === null) continue;
+    out[block] = value;
+  }
+  if (Array.isArray(out.damages)) out.damages = out.damages.slice(0, MAX_LISTING_DAMAGES);
+  return out;
+}

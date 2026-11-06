@@ -82,6 +82,55 @@ describe('Listings (e2e)', () => {
     if (ids.reportId) await prisma.report.deleteMany({ where: { id: ids.reportId } });
   }
 
+  // DEN-538. The website warns the seller while the app still uploads photos.
+  it('1c. the claim, the owned read and the cabinet carry the report upload state', async () => {
+    const owner = await registerUser(app);
+    const code = uniqueCode();
+    const report = await seedReport({ code, userId: owner.userId });
+    await prisma.report.update({ where: { id: report.id }, data: { uploaded: false } });
+    let listingId: string | undefined;
+    try {
+      const created = await request(app.getHttpServer())
+        .post('/api/v1/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ reportCode: code })
+        .expect(201);
+      listingId = created.body.id as string;
+      expect(created.body.reportUploaded).toBe(false);
+
+      const owned = await request(app.getHttpServer())
+        .get(`/api/v1/listings/${listingId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      expect(owned.body.reportUploaded).toBe(false);
+
+      await prisma.report.update({ where: { id: report.id }, data: { uploaded: true } });
+      const mine = await request(app.getHttpServer())
+        .get('/api/v1/me/listings')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      const row = (mine.body.items as { id: string; reportUploaded: boolean | null }[]).find(
+        (item) => item.id === listingId,
+      );
+      expect(row?.reportUploaded).toBe(true);
+
+      // A manual listing has no report to wait for.
+      const manual = await request(app.getHttpServer())
+        .post('/api/v1/listings/manual')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({})
+        .expect(201);
+      const manualRead = await request(app.getHttpServer())
+        .get(`/api/v1/listings/${manual.body.id}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      expect(manualRead.body.reportUploaded).toBeNull();
+      await prisma.listing.deleteMany({ where: { id: manual.body.id } });
+    } finally {
+      await cleanup({ listingId, reportId: report.id });
+    }
+  });
+
   it('1. POST /listings as the report owner creates a DRAFT listing', async () => {
     const owner = await registerUser(app);
     const code = uniqueCode();
@@ -1103,6 +1152,309 @@ describe('Listings (e2e)', () => {
       }
     });
 
+    // DEN-535. R2 is stubbed: `.env.test` points at a real bucket, and this
+    // test must neither read report objects there nor write copies into it.
+    it('16b. copy-report-data gives a report-backed listing its own editable data, and the report does not change', async () => {
+      const owner = await newSeller();
+      const code = uniqueCode();
+      const deviceId = uniqueDeviceId();
+      const reportData = {
+        vehicle: { make: 'BMW', model: '320d', year: 2018, engineVolumeL: 2 },
+        operational: { mileageKm: 120000, keysCount: 2 },
+        wheels: [{ corner: 'fl', treadMm: 6 }],
+        damages: Array.from({ length: 60 }, (_, i) => ({
+          id: `d${i}`,
+          tier: 'T1',
+          partId: 'door_front_left',
+          hours: 2,
+          manualCostEur: 300,
+        })),
+        thickness: { panels: [{ panelId: 'hood', um: 110 }] },
+        checklist: { brakes: 'ok' },
+        scores: { total: 87 },
+      };
+      const report = await prisma.report.create({
+        data: {
+          deviceId,
+          code,
+          s3Key: `free/${deviceId}/${code}.pdf`,
+          tier: 'free',
+          uploaded: true,
+          userId: owner.userId,
+          make: 'BMW',
+          model: '320d',
+          year: 2018,
+          mileageKm: 120000,
+          reportData,
+          photosManifest: [
+            { s3Key: `report-photos/${deviceId}/r/front.jpg`, kind: 'exterior-front' },
+            { s3Key: `report-photos/${deviceId}/r/front-2.jpg`, kind: 'exterior-front' },
+            { s3Key: `report-photos/${deviceId}/r/dash.jpg`, kind: 'interior-interior_dashboard' },
+            { s3Key: `report-photos/${deviceId}/r/damage.jpg`, kind: 'damage-d1' },
+            { s3Key: `report-photos/${deviceId}/r/doc.jpg`, kind: 'passport' },
+          ],
+        },
+      });
+
+      const r2 = app.get(R2Service);
+      const sharp = (await import('sharp')).default;
+      const reads: string[] = [];
+      const writes: string[] = [];
+      jest.spyOn(r2, 'isConfigured').mockReturnValue(true);
+      jest.spyOn(r2, 'isPublicBucketConfigured').mockReturnValue(false);
+      jest.spyOn(r2, 'getObjectBytes').mockImplementation(async (key: string) => {
+        reads.push(key);
+        // Different bytes per key, so the hash check does not merge them.
+        return sharp({
+          create: { width: 40, height: 30, channels: 3, background: { r: reads.length, g: 0, b: 0 } },
+        })
+          .jpeg()
+          .toBuffer();
+      });
+      jest.spyOn(r2, 'putObject').mockImplementation(async (key: string) => {
+        writes.push(key);
+      });
+      jest
+        .spyOn(r2, 'createPresignedDownloadUrl')
+        .mockImplementation(async (key: string) => ({ url: `https://signed.test/${key}` }) as never);
+
+      let listingId: string | undefined;
+      try {
+        const created = await request(app.getHttpServer())
+          .post('/api/v1/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ reportCode: code })
+          .expect(201);
+        listingId = created.body.id as string;
+
+        const res = await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listingId}/copy-report-data`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(201);
+        expect(res.body.reportDataCopiedAt).toEqual(expect.any(String));
+        expect(res.body.source).toBe('report');
+
+        const data = res.body.vehicleData as Record<string, unknown>;
+        expect(data.vehicle).toEqual({ make: 'BMW', model: '320d', year: 2018, engineVolumeL: 2 });
+        expect(data.operational).toEqual({ mileageKm: 120000, keysCount: 2 });
+        expect(data.wheels).toEqual([{ corner: 'fl', treadMm: 6 }]);
+        expect(data.thickness).toEqual({ panels: [{ panelId: 'hood', um: 110 }] });
+        // Cut to what the listing DTO accepts, and without the cost figures.
+        const damages = data.damages as Record<string, unknown>[];
+        expect(damages).toHaveLength(50);
+        expect(damages[0]).toEqual({ id: 'd0', tier: 'T1', partId: 'door_front_left' });
+        // Inspector-only blocks never reach the listing.
+        expect(data.scores).toBeUndefined();
+        expect(data.checklist).toBeUndefined();
+
+        // Walk-around and cabin only: no damage close-up, no registration document.
+        expect(reads).toEqual([
+          `report-photos/${deviceId}/r/front.jpg`,
+          `report-photos/${deviceId}/r/front-2.jpg`,
+          `report-photos/${deviceId}/r/dash.jpg`,
+        ]);
+        const photos = await prisma.listingPhoto.findMany({
+          where: { listingId },
+          orderBy: { order: 'asc' },
+        });
+        // One photo per slot; the second photo of an angle goes to the free list.
+        expect(photos.map((p) => p.caption)).toEqual(['front', null, 'interior_dashboard']);
+        expect(photos.every((p) => p.r2Key.startsWith(`listings/${listingId}/`))).toBe(true);
+        expect(writes).toEqual(photos.map((p) => p.r2Key));
+        expect(photos[0]).toMatchObject({ width: 40, height: 30 });
+
+        // The seller may now edit the vehicle data.
+        await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listingId}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ vehicleData: { vehicle: { year: 2019 } } })
+          .expect(200);
+
+        // A second call changes nothing: no second copy of the photos.
+        await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listingId}/copy-report-data`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(201);
+        expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(3);
+
+        // The report is exactly as the inspector made it.
+        const after = await prisma.report.findUniqueOrThrow({ where: { id: report.id } });
+        expect(after.reportData).toEqual(reportData);
+        expect(after.year).toBe(2018);
+
+        // The cabinet counts the listing's own gallery now, not the manifest.
+        const mine = await request(app.getHttpServer())
+          .get('/api/v1/me/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+        const row = (mine.body.items as { id: string; photoCount: number; reportDataCopiedAt: string | null }[])
+          .find((item) => item.id === listingId);
+        expect(row?.photoCount).toBe(3);
+        expect(row?.reportDataCopiedAt).toEqual(expect.any(String));
+
+        // The buyer still sees the inspection, and the seller's own gallery.
+        await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listingId}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ priceCents: 1500000, city: 'Kiel' })
+          .expect(200);
+        await request(app.getHttpServer())
+          .post(`/api/v1/listings/${listingId}/publish`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ package: 'standard' })
+          .expect(201);
+        const page = await request(app.getHttpServer())
+          .get(`/api/v1/public/listings/${listingId}`)
+          .expect(200);
+        expect(page.body.inspection).toEqual({ status: 'inspected', reportCode: code });
+        expect(page.body.photos).toHaveLength(3);
+        expect(
+          (page.body.photos as { url: string; kind: string }[]).every(
+            (photo) => photo.kind === 'listing' && photo.url.includes(`listings/${listingId}/`),
+          ),
+        ).toBe(true);
+        // Seller data is shown as the seller's word, not as inspection data.
+        expect(page.body.declaredSpecs).toEqual({ engineVolumeL: 2 });
+        expect(page.body.vehicle.engineVolumeL).toBeNull();
+      } finally {
+        jest.restoreAllMocks();
+        if (listingId) await prisma.listingPhoto.deleteMany({ where: { listingId } });
+        await cleanup({ listingId, reportId: report.id });
+      }
+    });
+
+    // DEN-539. A copy taken while the app still uploads froze the gallery at
+    // the photos that had arrived.
+    it('16e. copy-report-data waits for the end of the upload before it copies the photos', async () => {
+      const owner = await newSeller();
+      const code = uniqueCode();
+      const deviceId = uniqueDeviceId();
+      const report = await prisma.report.create({
+        data: {
+          deviceId,
+          code,
+          s3Key: `free/${deviceId}/${code}.pdf`,
+          tier: 'free',
+          uploaded: false,
+          userId: owner.userId,
+          make: 'Mercedes-Benz',
+          model: 'CLK',
+          year: 2004,
+          reportData: { vehicle: { make: 'Mercedes-Benz', model: 'CLK', year: 2004 } },
+          photosManifest: [
+            { s3Key: `report-photos/${deviceId}/r/front.jpg`, kind: 'exterior-front' },
+          ],
+        },
+      });
+
+      const r2 = app.get(R2Service);
+      const sharp = (await import('sharp')).default;
+      const reads: string[] = [];
+      jest.spyOn(r2, 'isConfigured').mockReturnValue(true);
+      jest.spyOn(r2, 'isPublicBucketConfigured').mockReturnValue(false);
+      jest.spyOn(r2, 'getObjectBytes').mockImplementation(async (key: string) => {
+        reads.push(key);
+        // Different bytes per key, so the hash check does not merge them.
+        return sharp({
+          create: { width: 40, height: 30, channels: 3, background: { r: reads.length, g: 0, b: 0 } },
+        })
+          .jpeg()
+          .toBuffer();
+      });
+      jest.spyOn(r2, 'putObject').mockResolvedValue(undefined);
+      jest
+        .spyOn(r2, 'createPresignedDownloadUrl')
+        .mockImplementation(async (key: string) => ({ url: `https://signed.test/${key}` }) as never);
+
+      let listingId: string | undefined;
+      const copy = () =>
+        request(app.getHttpServer())
+          .post(`/api/v1/listings/${listingId}/copy-report-data`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(201);
+      try {
+        const created = await request(app.getHttpServer())
+          .post('/api/v1/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ reportCode: code })
+          .expect(201);
+        listingId = created.body.id as string;
+
+        // Still uploading: the data is copied and editable, the photos wait.
+        const early = await copy();
+        expect(early.body.reportDataCopiedAt).toEqual(expect.any(String));
+        expect(early.body.reportPhotosCopiedAt).toBeNull();
+        expect(reads).toEqual([]);
+        expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(0);
+        await request(app.getHttpServer())
+          .patch(`/api/v1/listings/${listingId}`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ vehicleData: { vehicle: { year: 2005 } } })
+          .expect(200);
+
+        // The cabinet still counts the report gallery meanwhile.
+        const mine = await request(app.getHttpServer())
+          .get('/api/v1/me/listings')
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+        const row = (mine.body.items as { id: string; photoCount: number }[]).find(
+          (item) => item.id === listingId,
+        );
+        expect(row?.photoCount).toBe(1);
+
+        // A photo arrives late, then the app completes the upload.
+        await prisma.report.update({
+          where: { id: report.id },
+          data: {
+            uploaded: true,
+            photosManifest: [
+              { s3Key: `report-photos/${deviceId}/r/front.jpg`, kind: 'exterior-front' },
+              { s3Key: `report-photos/${deviceId}/r/left.jpg`, kind: 'exterior-left' },
+            ],
+          },
+        });
+
+        const late = await copy();
+        expect(late.body.reportPhotosCopiedAt).toEqual(expect.any(String));
+        // The seller's edit survives: the data is not copied a second time.
+        expect((late.body.vehicleData as { vehicle: { year: number } }).vehicle.year).toBe(2005);
+        const photos = await prisma.listingPhoto.findMany({
+          where: { listingId },
+          orderBy: { order: 'asc' },
+        });
+        expect(photos.map((p) => p.caption)).toEqual(['left', 'front']);
+
+        // And only once.
+        await copy();
+        expect(await prisma.listingPhoto.count({ where: { listingId } })).toBe(2);
+      } finally {
+        jest.restoreAllMocks();
+        if (listingId) await prisma.listingPhoto.deleteMany({ where: { listingId } });
+        await cleanup({ listingId, reportId: report.id });
+      }
+    });
+
+    it('16c. copy-report-data on a manual listing changes nothing', async () => {
+      const seller = await newSeller();
+      const listing = await createManual(seller.token, { city: 'Kiel' });
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/copy-report-data`)
+        .set('Authorization', `Bearer ${seller.token}`)
+        .expect(201);
+      expect(res.body.reportDataCopiedAt).toBeNull();
+      expect(res.body.source).toBe('manual');
+    });
+
+    it('16d. copy-report-data refuses a listing the caller does not own', async () => {
+      const owner = await newSeller();
+      const other = await newSeller();
+      const listing = await createManual(owner.token, { city: 'Kiel' });
+      await request(app.getHttpServer())
+        .post(`/api/v1/listings/${listing.id}/copy-report-data`)
+        .set('Authorization', `Bearer ${other.token}`)
+        .expect(403);
+    });
+
     it('17. photos upload, list, reorder and delete', async () => {
       const seller = await newSeller();
       const listing = await createManual(seller.token, { city: 'Kiel' });
@@ -1690,6 +2042,96 @@ describe('Listings (e2e)', () => {
         const manifest = report.photosManifest as { s3Key: string }[];
         expect(objects.has(mirroredPhotoKey(listing.id, manifest[0].s3Key))).toBe(true);
       });
+    });
+  });
+
+  // DEN-562. The editor previews the car page before the listing is on sale.
+  describe('GET /api/v1/listings/:id/report', () => {
+    async function draftWithReport(ownerId: string) {
+      const report = await seedReport({
+        code: uniqueCode(),
+        reportData: {
+          damages: [{ part: 'door' }],
+          signoff: { inspectorName: 'Max Mustermann' },
+        },
+      });
+      await prisma.report.update({ where: { id: report.id }, data: { vin: 'WBA8E9C50JA000001' } });
+      const listing = await prisma.listing.create({
+        data: {
+          sellerId: ownerId,
+          reportId: report.id,
+          source: 'report',
+          status: 'DRAFT',
+          priceCents: 1_000_000,
+          city: 'Berlin',
+        },
+      });
+      return { report, listing };
+    }
+
+    it('gives the owner of a DRAFT the masked report a buyer reads', async () => {
+      const owner = await registerUser(app);
+      const { report, listing } = await draftWithReport(owner.userId);
+      try {
+        const res = await request(app.getHttpServer())
+          .get(`/api/v1/listings/${listing.id}/report`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(200);
+        expect(res.body.code).toBe(report.code);
+        expect(res.body.qualityScore).toBe(87);
+        expect(res.body.reportData.damages).toEqual([{ part: 'door' }]);
+        // The same masking as the public route: no full VIN, no person, no PDF.
+        expect(res.body.vinMasked).not.toBe('WBA8E9C50JA000001');
+        expect(JSON.stringify(res.body)).not.toContain('WBA8E9C50JA000001');
+        expect(JSON.stringify(res.body)).not.toContain('Max Mustermann');
+        expect(res.body.pdf).toBeUndefined();
+
+        // The public route still refuses it: the listing is not on sale.
+        await request(app.getHttpServer())
+          .get(`/api/v1/public/reports/${report.code}/full`)
+          .expect(404);
+      } finally {
+        await cleanup({ listingId: listing.id, reportId: report.id });
+      }
+    });
+
+    it('refuses anybody but the owner', async () => {
+      const owner = await registerUser(app);
+      const stranger = await registerUser(app);
+      const { report, listing } = await draftWithReport(owner.userId);
+      try {
+        await request(app.getHttpServer())
+          .get(`/api/v1/listings/${listing.id}/report`)
+          .set('Authorization', `Bearer ${stranger.token}`)
+          .expect(403);
+        await request(app.getHttpServer())
+          .get(`/api/v1/listings/${listing.id}/report`)
+          .expect(401);
+      } finally {
+        await cleanup({ listingId: listing.id, reportId: report.id });
+      }
+    });
+
+    it('answers 404 for a manual listing and for a deleted report', async () => {
+      const owner = await registerUser(app);
+      const manual = await prisma.listing.create({
+        data: { sellerId: owner.userId, source: 'manual', status: 'DRAFT', priceCents: 1_000_000, city: 'Berlin' },
+      });
+      const { report, listing } = await draftWithReport(owner.userId);
+      try {
+        await request(app.getHttpServer())
+          .get(`/api/v1/listings/${manual.id}/report`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(404);
+        await prisma.report.update({ where: { id: report.id }, data: { deletedAt: new Date() } });
+        await request(app.getHttpServer())
+          .get(`/api/v1/listings/${listing.id}/report`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .expect(404);
+      } finally {
+        await cleanup({ listingId: manual.id });
+        await cleanup({ listingId: listing.id, reportId: report.id });
+      }
     });
   });
 });

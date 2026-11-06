@@ -42,7 +42,8 @@ import {
 } from './dto/listing-response.dto';
 import { PublishListingDto } from './dto/publish-listing.dto';
 import { UpdateListingDto } from './dto/update-listing.dto';
-import { ListingsService } from './listings.service';
+import { PublicService } from '../public/public.service';
+import { ListingsService, ListingWithUploadState } from './listings.service';
 
 /** Same ceiling as report photos — an original camera JPEG fits well inside it. */
 const MAX_PHOTO_UPLOAD_BYTES = 15 * 1024 * 1024;
@@ -51,7 +52,10 @@ const MAX_PHOTO_UPLOAD_BYTES = 15 * 1024 * 1024;
 @ApiBearerAuth()
 @Controller('api/v1/listings')
 export class ListingsController {
-  constructor(private readonly listings: ListingsService) {}
+  constructor(
+    private readonly listings: ListingsService,
+    private readonly publicListings: PublicService,
+  ) {}
 
   // A Report ID is a bearer capability, so this endpoint is the one place a
   // valid code can be turned into a listing. It answers the same 404 for
@@ -63,7 +67,7 @@ export class ListingsController {
   create(
     @CurrentUser('id') userId: string,
     @Body() dto: CreateListingDto,
-  ): Promise<Listing> {
+  ): Promise<ListingWithUploadState> {
     return this.listings.create(userId, dto.reportCode);
   }
 
@@ -96,16 +100,35 @@ export class ListingsController {
       'nothing.',
   })
   @ApiParam({ name: 'id', description: 'Listing id' })
-  get(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<Listing> {
+  get(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<ListingWithUploadState> {
     return this.listings.getOwned(userId, id);
+  }
+
+  @Get(':id/report')
+  @ApiOperation({
+    summary: 'Read the report of an owned listing, as a buyer will see it',
+    description:
+      'DEN-562. The listing editor previews the car page before the listing is on sale. ' +
+      'The payload is the masked one of GET /public/reports/:code/full, which answers ' +
+      'only for an ACTIVE listing. 404 `not_found` for a manual listing, a listing with ' +
+      'no report, a deleted listing or a deleted report.',
+  })
+  @ApiParam({ name: 'id', description: 'Listing id' })
+  async report(@CurrentUser('id') userId: string, @Param('id') id: string) {
+    const listing = await this.listings.getOwned(userId, id);
+    return this.publicListings.reportForOwnedListing(listing);
   }
 
   @Patch(':id')
   @ApiOperation({
     summary: 'Update editable fields of an owned listing',
     description:
-      '`vehicleData` is accepted ONLY when the listing has `source: "manual"` ' +
-      '(otherwise 400 `vehicle_immutable`). It is deep-merged: objects merge, ' +
+      '`vehicleData` is accepted ONLY when the listing has `source: "manual"`, or ' +
+      'when its report data was copied (`POST /:id/copy-report-data`); otherwise 400 ' +
+      '`vehicle_immutable`. It is deep-merged: objects merge, ' +
       'arrays replace wholesale, an explicit null deletes the key.',
   })
   @ApiParam({ name: 'id' })
@@ -116,6 +139,21 @@ export class ListingsController {
     @Body() dto: UpdateListingDto,
   ): Promise<Listing> {
     return this.listings.update(userId, id, dto);
+  }
+
+  @Post(':id/copy-report-data')
+  @ApiOperation({
+    summary: 'Copy the report data into a report-backed listing, for the full editor',
+    description:
+      'DEN-535. Copies the vehicle, wheel, damage and paint data and the walk-around ' +
+      'and cabin photos of the report into the listing. After this the seller edits ' +
+      'the listing like a manual one. The report does not change. Idempotent: a manual ' +
+      'listing, or one that already has its copy, is returned as it is.',
+  })
+  @ApiParam({ name: 'id' })
+  @ApiResponse({ status: 503, type: ErrorResponseDto, description: 'storage_unavailable' })
+  copyReportData(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<Listing> {
+    return this.listings.copyReportData(userId, id);
   }
 
   @Post(':id/publish')

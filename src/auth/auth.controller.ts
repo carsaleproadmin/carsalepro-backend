@@ -46,7 +46,12 @@ export class AuthController {
     // The raw verification token goes to the notification layer and NOWHERE
     // else. It used to be returned here, which handed anyone who could call
     // this endpoint a working single-use credential. See SECURITY.md.
-    await this.auth.sendVerificationEmail(auth.user.id, auth.user.email, verification);
+    await this.auth.sendVerificationEmail(
+      auth.user.id,
+      auth.user.email,
+      verification,
+      dto.locale,
+    );
     return { token: auth.token, user: auth.user };
   }
 
@@ -69,7 +74,7 @@ export class AuthController {
     // Byte-identical response whether or not the address is registered: the
     // service swallows the distinction, so this endpoint is not an
     // account-existence oracle. The reset token is emailed, never returned.
-    await this.auth.requestPasswordResetAndNotify(dto.email);
+    await this.auth.requestPasswordResetAndNotify(dto.email, dto.locale);
     return { ok: true };
   }
 
@@ -99,7 +104,7 @@ export class AuthController {
   async resendVerification(@Body() dto: ResendVerificationDto) {
     // Same answer for a registered address, an unknown one and one that is
     // already confirmed — see requestReset above for why that matters.
-    await this.auth.resendVerificationEmail(dto.email);
+    await this.auth.resendVerificationEmail(dto.email, dto.locale);
     return { ok: true };
   }
 

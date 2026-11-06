@@ -284,6 +284,26 @@ describe('Stripe Connect onboarding: any country, any business type (e2e, Stripe
     expect(profile.stripeCountry).toBe('ES');
   });
 
+  it('9b. an account of ANOTHER Stripe platform is replaced too, though Stripe sends no code (DEN-544)', async () => {
+    const u = await registerInspector();
+    await onboard(u.token, { country: 'DE' }).expect(200);
+    const first = await accountOf(u.userId);
+    // The secret key was replaced with the key of another Stripe account. The
+    // stored id exists, but not on this platform, and the error has no code.
+    stripe.failNext('createAccountLink', {
+      type: 'StripeInvalidRequestError',
+      message:
+        'You requested an account link for an account that is not connected to your platform or does not exist.',
+    });
+
+    const res = await onboard(u.token).expect(200);
+
+    expect(res.body.accountLinkUrl).toBeTruthy();
+    const { account, profile } = await accountOf(u.userId);
+    expect(profile.stripeAccountId).not.toBe(first.profile.stripeAccountId);
+    expect(account.country).toBe('DE');
+  });
+
   // ============================================================
   // 10. What the UI reads back
   // ============================================================

@@ -42,12 +42,27 @@ describe('ReportsService.syncListingEngineVolume', () => {
     });
     await sync({ vehicle: { engineVolumeL: 1.968 } });
     expect(prisma.listing.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { reportId: 'r-1', source: 'report' } }),
+      expect.objectContaining({
+        where: { reportId: 'r-1', source: 'report', reportDataCopiedAt: null },
+      }),
     );
     expect(prisma.listing.update).toHaveBeenCalledWith({
       where: { id: 'l-1' },
       data: { vehicleData: { vehicle: { engineVolumeL: 2, doors: 5 }, equipment: ['ac'] } },
     });
+  });
+
+  /*
+   * The query is the only guard: a listing whose data the seller owns
+   * (copied for the editor) is not found, so nothing is written to it.
+   */
+  it('skips a listing whose data was copied for the editor', async () => {
+    const { prisma, sync } = setup(null);
+    await sync({ vehicle: { engineVolumeL: 2 } });
+    expect(prisma.listing.findFirst.mock.calls[0][0].where).toMatchObject({
+      reportDataCopiedAt: null,
+    });
+    expect(prisma.listing.update).not.toHaveBeenCalled();
   });
 
   it('removes the volume when the report no longer has one', async () => {

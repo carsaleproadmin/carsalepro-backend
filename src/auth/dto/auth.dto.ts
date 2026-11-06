@@ -72,6 +72,17 @@ export class LoginDto {
 export class PasswordResetRequestDto {
   @IsEmail()
   email!: string;
+
+  /*
+   * The language of the site page that sent the request. The reset letter
+   * uses it when a template for it exists, else English. Optional: the mobile
+   * app and an older site send only the address. Not held to a list, so that
+   * a new site language does not turn the request into a 400.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  locale?: string;
 }
 
 export class PasswordResetConfirmDto {
@@ -102,6 +113,12 @@ export class VerifyEmailDto {
 export class ResendVerificationDto {
   @IsEmail({}, { message: CODE.email })
   email!: string;
+
+  /** The language of the site page, for the letter (DEN-540). See PasswordResetRequestDto. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  locale?: string;
 }
 
 export class OAuthUpsertDto {

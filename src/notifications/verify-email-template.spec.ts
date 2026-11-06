@@ -82,3 +82,49 @@ describe('the verification letter', () => {
     expect(letter().subject).toBe('Confirm your email address');
   });
 });
+
+/*
+ * DEN-540. The auth letters exist in the four languages a person writes on the
+ * site. Ukrainian is the one locale that only these two types cover.
+ */
+describe('the auth letters in the four site languages', () => {
+  const payload = {
+    email: 'alice@example.com',
+    verifyUrl: 'https://carsalepro.de/verify?token=abc',
+    resetUrl: 'https://carsalepro.de/reset-password?token=abc',
+    expiresAt: EXPIRES,
+  };
+
+  it.each([
+    ['de', '27. August 2026, 09:14 UTC'],
+    ['ru', '27 августа 2026 г., 09:14 UTC'],
+    ['uk', '27 серпня 2026 р., 09:14 UTC'],
+  ] as const)('states the deadline in %s words', (locale, deadline) => {
+    expect(formatDeadline(EXPIRES, locale)).toBe(deadline);
+    for (const type of ['auth.verify_email', 'auth.password_reset'] as const) {
+      const m = renderTemplate(type, locale, payload);
+      expect(m.body).toContain(deadline);
+      expect(m.body).not.toContain(EXPIRES);
+    }
+  });
+
+  it.each(['de', 'en', 'ru', 'uk'])('carries the link in the body AND as the button in %s', (locale) => {
+    const verify = renderTemplate('auth.verify_email', locale, payload);
+    expect(verify.body).toContain(payload.verifyUrl);
+    expect(verify.cta?.url).toBe(payload.verifyUrl);
+    const reset = renderTemplate('auth.password_reset', locale, payload);
+    expect(reset.body).toContain(payload.resetUrl);
+    expect(reset.cta?.url).toBe(payload.resetUrl);
+  });
+
+  it('has a Ukrainian letter for the auth types only', () => {
+    expect(renderTemplate('auth.verify_email', 'uk', payload).subject).toBe(
+      'Підтвердіть адресу електронної пошти',
+    );
+    expect(renderTemplate('auth.password_reset', 'uk', payload).subject).toBe('Скидання пароля');
+    // Every other type still falls back to the German default for `uk`.
+    expect(renderTemplate('order.created', 'uk', {}).subject).toBe(
+      renderTemplate('order.created', 'de', {}).subject,
+    );
+  });
+});

@@ -2,6 +2,8 @@ import {
   DEFAULT_LOCALE,
   NotificationLocale,
   NotificationType,
+  PARTIAL_LOCALES,
+  PartialLocale,
   SUPPORTED_LOCALES,
 } from './notification-types';
 
@@ -27,7 +29,7 @@ export interface RenderedTemplate {
 }
 
 /**
- * An ISO timestamp as plain English: `26 August 2026, 14:32 UTC`.
+ * An ISO timestamp as plain text: `26 August 2026, 14:32 UTC` in English.
  *
  * The templates used to interpolate the ISO string straight into the sentence,
  * which put `2026-08-27T09:14:22.001Z` in front of a reader who is being asked
@@ -35,22 +37,33 @@ export interface RenderedTemplate {
  * know the reader's zone, and a time with no zone on it is worse than a time in
  * a zone the reader has to think about once.
  */
-export function formatDeadline(iso: unknown): string {
+export function formatDeadline(iso: unknown, locale: DeadlineLocale = 'en'): string {
   const at = new Date(String(iso ?? ''));
   if (Number.isNaN(at.getTime())) return '';
-  const date = at.toLocaleDateString('en-GB', {
+  const tag = DEADLINE_TAGS[locale];
+  const date = at.toLocaleDateString(tag, {
     day: 'numeric',
     month: 'long',
     year: 'numeric',
     timeZone: 'UTC',
   });
-  const time = at.toLocaleTimeString('en-GB', {
+  const time = at.toLocaleTimeString(tag, {
     hour: '2-digit',
     minute: '2-digit',
     timeZone: 'UTC',
   });
   return `${date}, ${time} UTC`;
 }
+
+type DeadlineLocale = NotificationLocale | PartialLocale;
+
+/** The date format of each letter language (DEN-540): `27. August 2026` in German. */
+const DEADLINE_TAGS: Record<DeadlineLocale, string> = {
+  de: 'de-DE',
+  en: 'en-GB',
+  ru: 'ru-RU',
+  uk: 'uk-UA',
+};
 
 type TemplateFn = (p: Record<string, unknown>) => RenderedTemplate;
 
@@ -73,19 +86,35 @@ function str(p: Record<string, unknown>, key: string, fallback = ''): string {
  * entry is a pure function of the payload, returning subject/body/short. Keep
  * payload reads defensive — a missing field must never throw.
  */
-const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> = {
+type LocaleTemplates = Record<NotificationLocale, TemplateFn> &
+  Partial<Record<PartialLocale, TemplateFn>>;
+
+const CATALOG: Record<NotificationType, LocaleTemplates> = {
+  /*
+   * The two auth letters are the only types with a Ukrainian version
+   * (DEN-540). They are written by a person in all four languages; the other
+   * 31 site languages get the English letter, because nobody checks a machine
+   * translation of a letter that carries a sign-in link.
+   */
   'auth.verify_email': {
     de: (p) => ({
       subject: 'E-Mail-Adresse bestätigen',
-      body: `Bitte bestätigen Sie Ihre E-Mail-Adresse: ${str(p, 'verifyUrl')}\n\nDer Link ist bis ${str(p, 'expiresAt')} gültig und kann nur einmal verwendet werden. Falls Sie sich nicht registriert haben, ignorieren Sie diese Nachricht.`,
+      body:
+        `Willkommen bei CarSalePro.\n\n` +
+        `Ein Schritt fehlt noch: Bestätigen Sie, dass ${str(p, 'email', 'diese Adresse')} Ihnen gehört. ` +
+        `Öffnen Sie den Link unten, dann ist Ihre Registrierung abgeschlossen.\n\n` +
+        `${str(p, 'verifyUrl')}\n\n` +
+        `Der Link funktioniert einmal und ist bis ${formatDeadline(p.expiresAt, 'de')} gültig. ` +
+        `Ist er bereits abgelaufen, melden Sie sich an und fordern Sie über den Hinweis in Ihrem Konto einen neuen an.\n\n` +
+        `Falls Sie kein CarSalePro-Konto angelegt haben, ist nichts zu tun - ` +
+        `ohne Klick auf den Link passiert nichts, und er läuft von selbst ab.`,
       short: 'Bitte bestätigen Sie Ihre E-Mail-Adresse.',
+      cta: { url: str(p, 'verifyUrl'), label: 'E-Mail-Adresse bestätigen' },
     }),
     /*
-     * The English letter is the one every new account gets, whatever language
-     * the site was read in - `AuthService.sendVerificationEmail` pins the
-     * locale to `en` (DEN-200). The German and Russian versions below are kept
-     * because the catalog is keyed by locale and because pinning is a caller's
-     * decision that a later caller may want to make differently.
+     * `AuthService.sendVerificationEmail` takes the language of the site page
+     * (DEN-540). With no page language (the mobile app, an older site) it
+     * still uses this English letter, as DEN-200 decided.
      */
     en: (p) => ({
       subject: 'Confirm your email address',
@@ -103,25 +132,57 @@ const CATALOG: Record<NotificationType, Record<NotificationLocale, TemplateFn>> 
     }),
     ru: (p) => ({
       subject: 'Подтвердите адрес электронной почты',
-      body: `Подтвердите ваш адрес электронной почты: ${str(p, 'verifyUrl')}\n\nСсылка действует до ${str(p, 'expiresAt')} и может быть использована один раз. Если вы не регистрировались, просто игнорируйте это сообщение.`,
+      body:
+        `Добро пожаловать в CarSalePro.\n\n` +
+        `Остался один шаг: подтвердите, что ${str(p, 'email', 'этот адрес')} принадлежит вам. ` +
+        `Откройте ссылку ниже, и регистрация будет завершена.\n\n` +
+        `${str(p, 'verifyUrl')}\n\n` +
+        `Ссылка срабатывает один раз и действует до ${formatDeadline(p.expiresAt, 'ru')}. ` +
+        `Если срок уже истёк, войдите в аккаунт и запросите новую ссылку в баннере в личном кабинете.\n\n` +
+        `Если вы не создавали аккаунт CarSalePro, ничего делать не нужно - ` +
+        `без перехода по ссылке ничего не произойдёт, и она истечёт сама.`,
       short: 'Подтвердите адрес электронной почты.',
+      cta: { url: str(p, 'verifyUrl'), label: 'Подтвердить адрес' },
+    }),
+    uk: (p) => ({
+      subject: 'Підтвердіть адресу електронної пошти',
+      body:
+        `Ласкаво просимо до CarSalePro.\n\n` +
+        `Залишився один крок: підтвердіть, що ${str(p, 'email', 'ця адреса')} належить вам. ` +
+        `Відкрийте посилання нижче, і реєстрацію буде завершено.\n\n` +
+        `${str(p, 'verifyUrl')}\n\n` +
+        `Посилання спрацьовує один раз і діє до ${formatDeadline(p.expiresAt, 'uk')}. ` +
+        `Якщо термін уже минув, увійдіть в акаунт і запросіть нове посилання в банері в особистому кабінеті.\n\n` +
+        `Якщо ви не створювали акаунт CarSalePro, нічого робити не потрібно - ` +
+        `без переходу за посиланням нічого не станеться, і воно саме втратить чинність.`,
+      short: 'Підтвердіть адресу електронної пошти.',
+      cta: { url: str(p, 'verifyUrl'), label: 'Підтвердити адресу' },
     }),
   },
   'auth.password_reset': {
     de: (p) => ({
       subject: 'Passwort zurücksetzen',
-      body: `Sie können Ihr Passwort hier zurücksetzen: ${str(p, 'resetUrl')}\n\nDer Link ist bis ${str(p, 'expiresAt')} gültig und kann nur einmal verwendet werden. Falls Sie das nicht angefordert haben, ist nichts zu tun — Ihr Passwort bleibt unverändert.`,
+      body: `Sie können Ihr Passwort hier zurücksetzen: ${str(p, 'resetUrl')}\n\nDer Link ist bis ${formatDeadline(p.expiresAt, 'de')} gültig und kann nur einmal verwendet werden. Falls Sie das nicht angefordert haben, ist nichts zu tun - Ihr Passwort bleibt unverändert.`,
       short: 'Link zum Zurücksetzen des Passworts.',
+      cta: { url: str(p, 'resetUrl'), label: 'Passwort zurücksetzen' },
     }),
     en: (p) => ({
       subject: 'Reset your password',
-      body: `You can reset your password here: ${str(p, 'resetUrl')}\n\nThe link is valid until ${str(p, 'expiresAt')} and can be used once. If you did not request this, no action is needed — your password is unchanged.`,
+      body: `You can reset your password here: ${str(p, 'resetUrl')}\n\nThe link is valid until ${formatDeadline(p.expiresAt)} and can be used once. If you did not request this, no action is needed - your password is unchanged.`,
       short: 'Password reset link.',
+      cta: { url: str(p, 'resetUrl'), label: 'Reset my password' },
     }),
     ru: (p) => ({
       subject: 'Сброс пароля',
-      body: `Вы можете сбросить пароль здесь: ${str(p, 'resetUrl')}\n\nСсылка действует до ${str(p, 'expiresAt')} и может быть использована один раз. Если вы не запрашивали сброс, ничего делать не нужно — пароль останется прежним.`,
+      body: `Вы можете сбросить пароль здесь: ${str(p, 'resetUrl')}\n\nСсылка действует до ${formatDeadline(p.expiresAt, 'ru')} и может быть использована один раз. Если вы не запрашивали сброс, ничего делать не нужно - пароль останется прежним.`,
       short: 'Ссылка для сброса пароля.',
+      cta: { url: str(p, 'resetUrl'), label: 'Сбросить пароль' },
+    }),
+    uk: (p) => ({
+      subject: 'Скидання пароля',
+      body: `Ви можете скинути пароль тут: ${str(p, 'resetUrl')}\n\nПосилання діє до ${formatDeadline(p.expiresAt, 'uk')} і може бути використане один раз. Якщо ви не запитували скидання, нічого робити не потрібно - пароль залишиться попереднім.`,
+      short: 'Посилання для скидання пароля.',
+      cta: { url: str(p, 'resetUrl'), label: 'Скинути пароль' },
     }),
   },
   'order.created': {
@@ -913,9 +974,14 @@ export function renderTemplate(
 ): RenderedTemplate {
   const loc = resolveLocale(locale);
   const byLocale = CATALOG[type];
-  const fn = byLocale?.[loc] ?? byLocale?.[DEFAULT_LOCALE];
+  const partial = isPartialLocale(locale) ? byLocale?.[locale] : undefined;
+  const fn = partial ?? byLocale?.[loc] ?? byLocale?.[DEFAULT_LOCALE];
   if (!fn) {
     return { subject: type, body: type, short: type };
   }
   return fn(payload ?? {});
+}
+
+function isPartialLocale(locale: string | undefined): locale is PartialLocale {
+  return locale !== undefined && (PARTIAL_LOCALES as string[]).includes(locale);
 }

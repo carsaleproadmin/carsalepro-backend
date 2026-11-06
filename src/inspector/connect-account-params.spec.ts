@@ -77,6 +77,26 @@ describe('resolveConnectAccountParams — the freedom this exists for', () => {
     expect(resolve({}, stored({ country: 'AT' })).country).toBe('AT');
   });
 
+  describe('the country of the profile location (DEN-551)', () => {
+    it('opens a new account in the country of the base address', () => {
+      expect(resolve({}, stored({ profileCountry: 'pl' })).country).toBe('PL');
+    });
+
+    it('falls back to the platform country when the location gives none', () => {
+      expect(resolve({}, stored({ profileCountry: null })).country).toBe('DE');
+      expect(resolve({}, stored({ profileCountry: 'XYZ' })).country).toBe('DE');
+    });
+
+    it('ranks below the request and below a stored choice', () => {
+      expect(resolve({ country: 'ES' }, stored({ profileCountry: 'PL' })).country).toBe('ES');
+      expect(resolve({}, stored({ country: 'AT', profileCountry: 'PL' })).country).toBe('AT');
+    });
+
+    it('never moves an existing account', () => {
+      expect(resolve({}, stored({ accountId: 'acct_1', profileCountry: 'PL' })).country).toBe('DE');
+    });
+  });
+
   it('prefers the request over a stored choice while no account exists', () => {
     const params = resolve({ country: 'ES', businessType: 'company' }, stored({ country: 'AT', businessType: 'individual' }));
     expect(params.country).toBe('ES');

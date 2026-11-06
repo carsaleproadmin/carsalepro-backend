@@ -1322,6 +1322,135 @@ describe('KYC verification (e2e)', () => {
     expect((await fetch(secondUrl.url)).status).toBe(200);
   }, 30_000);
 
+  it('21. reset empties a DRAFT and keeps its id; another user and a decided application are refused (DEN-543)', async () => {
+    const user = await makeUser();
+    const stranger = await makeUser();
+    const appId = await createApplication(user);
+    await seedDocuments(user, appId, ['id_front', 'id_back', 'selfie']);
+
+    const forbidden = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/reset`)
+      .set('Authorization', `Bearer ${stranger.token}`);
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('not_kyc_owner');
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(3);
+
+    const reset = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/reset`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    expect(reset.body.id).toBe(appId);
+    expect(reset.body.status).toBe('DRAFT');
+    expect(reset.body.documents).toEqual([]);
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(0);
+
+    // The old route that "Start over" called still returns the same draft, now empty.
+    const again = await request(app.getHttpServer())
+      .post('/api/v1/kyc/applications')
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+    expect(again.body.id).toBe(appId);
+    expect(again.body.documents).toEqual([]);
+
+    await seedDocuments(user, appId, ['id_front', 'id_back', 'selfie', 'gewerbeschein']);
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+
+    const decided = await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/reset`)
+      .set('Authorization', `Bearer ${user.token}`);
+    expect(decided.status).toBe(400);
+    expect(decided.body.error.code).toBe('kyc_not_editable');
+    expect(await prisma.kycDocument.count({ where: { applicationId: appId } })).toBe(4);
+  });
+
+  it('21a. reset deletes the stored objects, not only the rows (DEN-543)', async () => {
+    if (!r2Configured) return;
+    const user = await makeUser();
+    const appId = await createApplication(user);
+    expect((await uploadDoc(user, appId, 'id_front')).status).toBe(201);
+    const doc = await prisma.kycDocument.findFirstOrThrow({
+      where: { applicationId: appId, kind: 'id_front' },
+    });
+    const url = await r2.kycSignedDownloadUrl(doc.s3Key, doc.bucket);
+    expect((await fetch(url.url)).status).toBe(200);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/reset`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+
+    expect((await fetch(url.url)).status).toBe(404);
+  }, 30_000);
+
+  it('22. the owner gets a signed view link to a DRAFT document; others and a decided application do not (DEN-546)', async () => {
+    const user = await makeUser();
+    const stranger = await makeUser();
+    const appId = await createApplication(user);
+    await seedDocuments(user, appId, ['id_front']);
+    const view = (kind: string, token = user.token) =>
+      request(app.getHttpServer())
+        .get(`/api/v1/kyc/applications/${appId}/documents/${kind}/view`)
+        .set('Authorization', `Bearer ${token}`);
+
+    const forbidden = await view('id_front', stranger.token);
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('not_kyc_owner');
+
+    const unknown = await view('passport_scan');
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error.code).toBe('invalid_kind');
+
+    const missing = await view('selfie');
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('kyc_document_not_found');
+
+    if (r2Configured) {
+      const ok = await view('id_front').expect(200);
+      expect(ok.body.kind).toBe('id_front');
+      expect(ok.body.contentType).toBe('image/jpeg');
+      expect(ok.body.url).toContain('X-Amz-Signature=');
+      expect(ok.body).not.toHaveProperty('s3Key');
+      const ttl = new Date(ok.body.expiresAt).getTime() - Date.now();
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(300_000);
+    }
+
+    await seedDocuments(user, appId, ['id_front', 'id_back', 'selfie', 'gewerbeschein']);
+    await request(app.getHttpServer())
+      .post(`/api/v1/kyc/applications/${appId}/submit`)
+      .send({ termsAccepted: true })
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(201);
+
+    const decided = await view('id_front');
+    expect(decided.status).toBe(400);
+    expect(decided.body.error.code).toBe('kyc_not_editable');
+  });
+
+  it('22a. the view link opens the uploaded file itself (DEN-546)', async () => {
+    if (!r2Configured) return;
+    const user = await makeUser();
+    const appId = await createApplication(user);
+    const pdf = await uploadDoc(user, appId, 'gewerbeschein', PDF, {
+      filename: 'gewerbeschein.pdf',
+      contentType: 'application/pdf',
+    });
+    expect(pdf.status).toBe(201);
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v1/kyc/applications/${appId}/documents/gewerbeschein/view`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .expect(200);
+    expect(res.body.contentType).toBe('application/pdf');
+    const fetched = await fetch(res.body.url);
+    expect(fetched.status).toBe(200);
+    expect(Buffer.from(await fetched.arrayBuffer()).equals(PDF)).toBe(true);
+  }, 30_000);
+
   it('20. the upload endpoint requires a bearer token, a `kind` and a file', async () => {
     if (!r2Configured) return;
     const user = await makeUser();

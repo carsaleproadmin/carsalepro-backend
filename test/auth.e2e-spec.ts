@@ -452,6 +452,33 @@ describe('Auth + users (e2e)', () => {
         .expect(401);
     });
 
+    it('17a. the reset letter uses the page language, and English when no template exists', async () => {
+      const titleFor = async (locale?: string): Promise<unknown> => {
+        const email = uniqueEmail();
+        const reg = await request(app.getHttpServer())
+          .post('/api/v1/auth/register')
+          .send({ email, password, gdprConsent: true })
+          .expect(201);
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/password-reset')
+          .send(locale === undefined ? { email } : { email, locale })
+          .expect(200);
+        const row = await prisma.notification.findFirst({
+          where: { userId: reg.body.user.id, type: 'auth.password_reset', channel: 'email' },
+          orderBy: { createdAt: 'desc' },
+        });
+        return (row?.payload as Record<string, unknown> | undefined)?._title;
+      };
+
+      expect(await titleFor('ru')).toBe('Сброс пароля');
+      expect(await titleFor('en')).toBe('Reset your password');
+      expect(await titleFor('uk')).toBe('Скидання пароля');
+      // A machine-translated site language: English, not the German default.
+      expect(await titleFor('pl')).toBe('Reset your password');
+      // No locale (the mobile app, an older site): the account language, as before.
+      expect(await titleFor()).toBe('Passwort zurücksetzen');
+    });
+
     it('17b. the reset link is not readable through GET /notifications', async () => {
       const email = uniqueEmail();
       const reg = await request(app.getHttpServer())
@@ -583,24 +610,51 @@ describe('Auth + users (e2e)', () => {
       expect(after).toBe(before);
     });
 
-    it('22. the confirmation letter is in English whatever the account locale says', async () => {
+    it('22. the confirmation letter uses the page language, and English without one', async () => {
       /*
-       * The client's instruction (DEN-200), pinned end to end rather than at
-       * the template: the locale is chosen by AuthService, and a caller that
-       * stopped passing it would silently fall back to German.
+       * DEN-540, pinned end to end rather than at the template: the locale is
+       * chosen by AuthService, and a caller that stopped passing it would
+       * silently fall back to German. With no page language the letter stays
+       * in English, as DEN-200 decided.
        */
+      const titleFor = async (locale?: string): Promise<unknown> => {
+        const reg = await request(app.getHttpServer())
+          .post('/api/v1/auth/register')
+          .send({ email: uniqueEmail(), password, gdprConsent: true, ...(locale ? { locale } : {}) })
+          .expect(201);
+        const row = await prisma.notification.findFirst({
+          where: { userId: reg.body.user.id, type: 'auth.verify_email', channel: 'email' },
+          orderBy: { createdAt: 'desc' },
+        });
+        return (row?.payload as Record<string, unknown> | undefined)?._title;
+      };
+
+      expect(await titleFor('de')).toBe('E-Mail-Adresse bestätigen');
+      expect(await titleFor('ru')).toBe('Подтвердите адрес электронной почты');
+      expect(await titleFor('uk')).toBe('Підтвердіть адресу електронної пошти');
+      // A machine-translated site language: English, not the German default.
+      expect(await titleFor('pl')).toBe('Confirm your email address');
+      expect(await titleFor()).toBe('Confirm your email address');
+    });
+
+    it('22a. a re-send uses the page language of the re-send', async () => {
       const email = uniqueEmail();
       const reg = await request(app.getHttpServer())
         .post('/api/v1/auth/register')
-        .send({ email, password, gdprConsent: true, locale: 'ru' })
+        .send({ email, password, gdprConsent: true })
         .expect(201);
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/verify-email/resend')
+        .send({ email, locale: 'uk' })
+        .expect(200);
 
       const row = await prisma.notification.findFirst({
         where: { userId: reg.body.user.id, type: 'auth.verify_email', channel: 'email' },
         orderBy: { createdAt: 'desc' },
       });
-      const payload = row?.payload as Record<string, unknown>;
-      expect(payload._title).toBe('Confirm your email address');
+      expect((row?.payload as Record<string, unknown>)._title).toBe(
+        'Підтвердіть адресу електронної пошти',
+      );
     });
   });
 });

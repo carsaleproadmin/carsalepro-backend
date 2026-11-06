@@ -694,7 +694,35 @@ export class PublicService {
     if (!report) {
       throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
     }
+    return this.reportFullPayload(report);
+  }
 
+  /**
+   * The report of a listing, for the listing's OWNER, in any status - DEN-562.
+   *
+   * The listing editor previews the car page before the listing is on sale,
+   * and `reportFull` answers 404 until it is ACTIVE. The payload is the same
+   * masked one a buyer reads, so the preview shows the seller exactly what a
+   * buyer will see, and no more: the owner of a listing is not necessarily the
+   * owner of its report (a seller claims a report by its code).
+   *
+   * The caller has checked that `listing` belongs to the user.
+   */
+  async reportForOwnedListing(listing: Pick<Listing, 'source' | 'reportId' | 'status'>) {
+    const report =
+      listing.source === 'report' && listing.reportId && listing.status !== 'DELETED'
+        ? await this.prisma.report.findFirst({
+            where: { id: listing.reportId, deletedAt: null },
+          })
+        : null;
+    if (!report) {
+      throw new NotFoundException({ error: { code: 'not_found', message: 'Report not found' } });
+    }
+    return this.reportFullPayload(report);
+  }
+
+  /** The masked report a buyer reads. Shared by `reportFull` and the owner preview. */
+  private async reportFullPayload(report: Report) {
     return {
       code: report.code,
       date: report.createdAt.toISOString(),
@@ -773,8 +801,9 @@ export class PublicService {
        * listing gives its own value in `declaredSpecs`, as a claim of the
        * seller - provenance matters.
        */
-      engineVolumeL:
-        l.source === 'report' ? engineVolumeOf(l.vehicleData as JsonObject | null) : null,
+      engineVolumeL: hasSellerData(l)
+        ? null
+        : engineVolumeOf(l.vehicleData as JsonObject | null),
     };
   }
 
@@ -796,7 +825,7 @@ export class PublicService {
    * also holds the VIN, which the public page must not show.
    */
   private declaredSpecsOf(l: Listing): Record<string, unknown> | null {
-    if (l.source !== 'manual') return null;
+    if (!hasSellerData(l)) return null;
     const data = (l.vehicleData ?? null) as Record<string, unknown> | null;
     const vehicle = data?.vehicle;
     if (!vehicle || typeof vehicle !== 'object' || Array.isArray(vehicle)) return null;
@@ -809,7 +838,7 @@ export class PublicService {
   }
 
   private selfDeclarationOf(l: Listing): Record<string, unknown> | null {
-    if (l.source !== 'manual') return null;
+    if (!hasSellerData(l)) return null;
     const data = (l.vehicleData ?? null) as Record<string, unknown> | null;
     const declared = data?.selfDeclaration;
     return declared && typeof declared === 'object' && !Array.isArray(declared)
@@ -876,7 +905,13 @@ export class PublicService {
     listing: ListingWithReport,
     limit: number,
   ): Promise<{ url: string; thumbUrl?: string; kind?: string; angle?: string }[]> {
-    if (usesReportGallery({ source: listing.source, hasReport: Boolean(listing.report) })) {
+    if (
+      usesReportGallery({
+        source: listing.source,
+        hasReport: Boolean(listing.report),
+        reportPhotosCopiedAt: listing.reportPhotosCopiedAt,
+      })
+    ) {
       return this.reportPhotos(listing, listing.report?.photosManifest ?? null, limit);
     }
     const publicConfigured = this.r2.isPublicBucketConfigured();
@@ -993,6 +1028,16 @@ export class PublicService {
   private maskVin(vin: string): string {
     return vin.length === 17 ? `${vin.slice(0, 3)}**********${vin.slice(-4)}` : vin;
   }
+}
+
+/**
+ * True when the listing's `vehicleData` is the seller's word: a manual
+ * listing, or a report-backed one whose report data the seller copied and may
+ * have edited (DEN-535). The page then shows it as the seller's claims, beside
+ * the unchanged report, and never as inspection data.
+ */
+function hasSellerData(l: Pick<Listing, 'source' | 'reportDataCopiedAt'>): boolean {
+  return l.source === 'manual' || Boolean(l.reportDataCopiedAt);
 }
 
 /*

@@ -36,11 +36,15 @@ import {
 import {
   KycApplicationDto,
   KycDocumentUploadResultDto,
+  KycDocumentViewDto,
   SubmitKycResultDto,
 } from './dto/kyc-response.dto';
 import { hashKycDocument, KycUploadPart, resolveKycObject } from './kyc-upload';
 import { mrzIdentityKey } from './mrz';
 import { MrzOcrService } from './mrz-ocr.service';
+
+/** Lifetime of the applicant's own view link to a draft document (DEN-546). */
+const KYC_DRAFT_VIEW_TTL_SECONDS = 300;
 
 type KycApplicationWithDocs = KycApplication & { documents: KycDocument[] };
 
@@ -138,6 +142,127 @@ export class KycService {
     });
     this.logger.log(`KYC application ${created.id} created for user=${this.mask(userId)}`);
     return this.toApplicationDto(created);
+  }
+
+  /**
+   * Empty a DRAFT application: delete its documents from the bucket and the
+   * database, and return the draft with no documents - DEN-543.
+   *
+   * "Start over" used to call `createApplication`, which returns the active
+   * application when one exists. So the draft came back unchanged and the
+   * button did nothing. The application row is kept: it is the same draft, and
+   * a new row would only add an orphan to the admin history.
+   *
+   * Deleting the rows does not weaken the re-application checks (DEN-249,
+   * DEN-250). They read documents of REJECTED applications only, and a draft
+   * was never decided.
+   *
+   * A failed bucket delete is logged and does not stop the reset, the same as
+   * `purgeOldDocuments`: the row is the only reference to the object, and the
+   * applicant must not be locked into a draft by a storage error.
+   */
+  async resetDraft(userId: string, applicationId: string): Promise<KycApplicationDto> {
+    const application = await this.requireOwnedApplication(userId, applicationId);
+    if (application.status !== KycStatus.DRAFT) {
+      throw new BadRequestException({
+        error: {
+          code: 'kyc_not_editable',
+          message: 'Only a draft application can be started over',
+        },
+      });
+    }
+
+    // The status is checked again under a row lock. A submit that ran after
+    // the read above has moved the application on, and its documents are now
+    // evidence for the review: they must stay. The objects are deleted only
+    // after the rows, so a refused reset leaves nothing missing in the bucket.
+    const reset = await this.prisma.$transaction(async (tx) => {
+      const locked = await tx.kycApplication.updateMany({
+        where: { id: applicationId, status: KycStatus.DRAFT },
+        data: { status: KycStatus.DRAFT },
+      });
+      if (locked.count === 0) return false;
+      await tx.kycDocument.deleteMany({ where: { applicationId } });
+      return true;
+    });
+    if (!reset) {
+      throw new BadRequestException({
+        error: {
+          code: 'kyc_not_editable',
+          message: 'Only a draft application can be started over',
+        },
+      });
+    }
+
+    for (const doc of application.documents) {
+      if (this.r2.isKycConfigured()) {
+        await this.r2.kycDeleteObject(doc.s3Key, doc.bucket).catch((err) => {
+          this.logger.warn(`Failed to delete KYC object ${doc.s3Key}: ${String(err)}`);
+        });
+      }
+    }
+    this.logger.log(
+      `KYC application ${applicationId} reset (${application.documents.length} document(s)) ` +
+        `for user=${this.mask(userId)}`,
+    );
+
+    return this.toApplicationDto({ ...application, documents: [] });
+  }
+
+  /**
+   * A short-lived signed link to one document of the caller's own DRAFT
+   * (DEN-546). The applicant checks the file before the submit, when a wrong
+   * one can still be replaced.
+   *
+   * Only a DRAFT: after the submit nobody but an admin reads these documents,
+   * and a stolen session must not become a way to download an identity card.
+   * The link lives five minutes, which is enough to open it once.
+   */
+  async getDraftDocumentView(
+    userId: string,
+    applicationId: string,
+    kind: KycDocumentKind,
+  ): Promise<KycDocumentViewDto> {
+    const application = await this.requireOwnedApplication(userId, applicationId);
+    if (application.status !== KycStatus.DRAFT) {
+      throw new BadRequestException({
+        error: {
+          code: 'kyc_not_editable',
+          message: 'Documents can be viewed only while the application is a draft',
+        },
+      });
+    }
+
+    const doc = application.documents.find((d) => d.kind === kind);
+    if (!doc || doc.purgedAt) {
+      throw new NotFoundException({
+        error: { code: 'kyc_document_not_found', message: 'No document of this kind' },
+      });
+    }
+
+    if (!this.r2.isKycConfigured()) {
+      throw new HttpException(
+        {
+          error: {
+            code: 'storage_unavailable',
+            message: 'Cloud storage is not configured on this server',
+          },
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    const signed = await this.r2.kycSignedDownloadUrl(
+      doc.s3Key,
+      doc.bucket,
+      KYC_DRAFT_VIEW_TTL_SECONDS,
+    );
+    return {
+      kind: doc.kind,
+      url: signed.url,
+      expiresAt: signed.expiresAt.toISOString(),
+      contentType: doc.s3Key.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg',
+    };
   }
 
   /**

@@ -11,6 +11,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { AppConfig } from '../config/configuration';
 import { GeoService } from '../geo/geo.service';
+import { GeocodingService } from '../geo/geocoding.service';
 import {
   StripeService,
   classifyStripeError,
@@ -164,6 +165,7 @@ export class InspectorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly geo: GeoService,
+    private readonly geocoding: GeocodingService,
     private readonly stripe: StripeService,
     private readonly settings: SettingsService,
     config: ConfigService<AppConfig, true>,
@@ -301,7 +303,10 @@ export class InspectorService {
       });
     }
 
-    const params = this.resolveAccountParams(input, profile);
+    const params = this.resolveAccountParams(input, {
+      ...profile,
+      profileCountry: await this.profileCountryFor(userId, input, profile),
+    });
 
     // MOCK mode: no Stripe — mark onboarded with a fake account id immediately.
     // The two choices are still STORED, so the dev/test path answers the same
@@ -350,9 +355,31 @@ export class InspectorService {
    * named in the message, because "you cannot change it" without saying what it
    * currently is leaves the inspector nothing to act on.
    */
+  /**
+   * DEN-551. The country of the inspector's base location, asked only when it
+   * can decide anything: no account yet, no country in the request and none
+   * stored. Every other case returns null without a Mapbox call. The lookup
+   * never throws; an unknown country falls through to the platform default.
+   */
+  private async profileCountryFor(
+    userId: string,
+    input: ConnectAccountRequest,
+    profile: { stripeAccountId: string | null; stripeCountry: string | null },
+  ): Promise<string | null> {
+    if (profile.stripeAccountId || profile.stripeCountry) return null;
+    if (typeof input.country === 'string' && input.country.trim() !== '') return null;
+    const point = await this.geo.inspectorLocation(userId);
+    return point ? this.geocoding.countryCodeFor(point) : null;
+  }
+
   private resolveAccountParams(
     input: ConnectAccountRequest,
-    profile: { stripeAccountId: string | null; stripeCountry: string | null; stripeBusinessType: string | null },
+    profile: {
+      stripeAccountId: string | null;
+      stripeCountry: string | null;
+      stripeBusinessType: string | null;
+      profileCountry?: string | null;
+    },
   ): ConnectAccountParams {
     const resolution = resolveConnectAccountParams(
       input,
@@ -360,6 +387,7 @@ export class InspectorService {
         accountId: profile.stripeAccountId,
         country: profile.stripeCountry,
         businessType: profile.stripeBusinessType,
+        profileCountry: profile.profileCountry,
       },
       this.connectDefaultCountry,
     );
@@ -439,7 +467,7 @@ export class InspectorService {
         businessType: params.businessType,
       };
     } catch (err) {
-      if (!storedAccountId || classifyStripeError(err).code !== 'resource_missing') throw err;
+      if (!storedAccountId || !isStaleConnectAccountError(err)) throw err;
 
       this.logger.warn(
         `Stored Stripe Connect account no longer exists for inspector=${mask(userId)} ` +
@@ -538,7 +566,7 @@ export class InspectorService {
         },
       });
     }
-    if (failure.code === 'resource_missing') {
+    if (isStaleConnectAccountError(err)) {
       return new BadGatewayException({
         error: {
           code: 'connect_account_unavailable',
@@ -776,4 +804,21 @@ export class InspectorService {
       contact: resolveContact(user, profile),
     };
   }
+}
+
+/**
+ * True when Stripe says the stored connected account cannot be used by this
+ * platform any more - DEN-544.
+ *
+ * `resource_missing` is the answer for an account that was deleted. An account
+ * that belongs to ANOTHER platform account (the secret key was replaced with
+ * the key of a different Stripe account) gets a plain invalid_request_error
+ * with no code, and only its text says so. Production hit exactly that on
+ * 2026-11-03: every inspector onboarded under the old test account got 502
+ * `connect_onboarding_failed`, and the self-heal never ran.
+ */
+export function isStaleConnectAccountError(err: unknown): boolean {
+  const failure = classifyStripeError(err);
+  if (failure.code === 'resource_missing') return true;
+  return /not connected to your platform or does not exist/i.test(failure.message);
 }
